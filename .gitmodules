@@ -1,0 +1,3 @@
+[submodule "firmwares/Stethogram"]
+	path = firmwares/Stethogram
+	url = https://git.epl.tw/TigerHuang/tiger-huang-copd.git
