@@ -1,0 +1,33 @@
+:name: STM32 I2C Verification
+:description: Verifies I2C clock stretching
+
+mach create
+machine LoadPlatformDescription @platforms/boards/stm32f4_discovery.repl
+
+# 使用 DummyI2CSlave 確保有 ACK
+machine LoadPlatformDescriptionFromString "dummy: Mocks.DummyI2CSlave @ i2c1 0x68"
+
+# 載入 Python 腳本
+include @renode.py
+
+# 載入 Firmware
+sysbus LoadELF @firmwares/STM32/HardwareI2C/build/clockstretching.elf
+
+# --- 優化 Log 設定 ---
+
+# 1. 【修正】設定 NVIC (中斷控制器) 的 Log 等級為 Error
+#    這樣可以過濾掉 "[DEBUG] nvic: Set pending IRQ..." 這些洗版訊息
+# logLevel Error sysbus.nvic
+
+# 2. 開啟 I2C1 的詳細 Log，觀察 Firmware 行為
+sysbus LogPeripheralAccess i2c1
+sysbus.cpu LogFunctionNames true
+
+# 3. 設定全域 Log 等級為 Info 或 Debug (確保能看到 Python 的 Logger 輸出)
+#    0 = Debug, 1 = Info
+logLevel 0
+
+# ------------------
+
+echo "Starting Simulation..."
+start
