@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
+#include "utils.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -90,33 +91,18 @@ int main(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  // MPU6050_Init(&hi2c1);
+  uint8_t data = 0x75;
+  HAL_StatusTypeDef result = HAL_I2C_Master_Transmit(&hi2c1, 0x68 << 1, &data, 1, 50);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  // while (1) {
+//   while (1) {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
     
-  // }
-
-  // uint8_t data = 0;
-  // HAL_StatusTypeDef status = HAL_I2C_Mem_Read(&hi2c1, (0x68 << 1), 0x75, 1, &data, 1, HAL_MAX_DELAY);
-  // if (status != HAL_OK) {
-  //     printf("I2C read error: %d\r\n", status);
-  // } else {
-  //     printf("Register 0x75 data: 0x%02x\r\n", data);
-  // }
-
-  uint8_t data = 0x75;
-  char message[256];
-  int msg_len;
-  HAL_I2C_Master_Transmit(&hi2c1, 0x68 << 1, &data, 1, 100);
-  HAL_I2C_Master_Receive(&hi2c1, (0x68 << 1) | 0x01, &data, 1, 100);
-  sprintf(message, "Register 0x75 data: 0x%02x\r\n", data);
-  HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), 100);
+//   }
   /* USER CODE END 3 */
 }
 
