@@ -1097,10 +1097,10 @@ HAL_StatusTypeDef HAL_I2C_Master_Transmit(I2C_HandleTypeDef *hi2c, uint16_t DevA
     }
 
     /* Clear ADDR flag */
+    SYMBOL_MARKER("BEGIN_VERIFICATION");
     __HAL_I2C_CLEAR_ADDRFLAG(hi2c);
-
-    ANGR_MARKER("BEGIN_VERIFICATION");
-
+    SYMBOL_MARKER("END_VERIFICATION");
+    
     while (hi2c->XferSize > 0U)
     {
       /* Wait until TXE flag is set */
@@ -1151,8 +1151,6 @@ HAL_StatusTypeDef HAL_I2C_Master_Transmit(I2C_HandleTypeDef *hi2c, uint16_t DevA
 
     /* Generate Stop */
     SET_BIT(hi2c->Instance->CR1, I2C_CR1_STOP);
-
-    ANGR_MARKER("END_VERIFICATION");
 
     hi2c->State = HAL_I2C_STATE_READY;
     hi2c->Mode = HAL_I2C_MODE_NONE;

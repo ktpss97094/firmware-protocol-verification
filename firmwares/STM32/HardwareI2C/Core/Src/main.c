@@ -92,7 +92,8 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   uint8_t data = 0x75;
-  HAL_StatusTypeDef result = HAL_I2C_Master_Transmit(&hi2c1, 0x68 << 1, &data, 1, 50);
+  HAL_StatusTypeDef result = HAL_I2C_Master_Transmit(&hi2c1, 0x68 << 1, &data, 1, 100);
+//   SYMBOL_MARKER("END_VERIFICATION");
   /* USER CODE END 2 */
 
   /* Infinite loop */
