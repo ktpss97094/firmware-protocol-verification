@@ -18,12 +18,20 @@ class MemoryRegion(NamedTuple):
 
 
 class I2C(MemoryRegion):
+    CR1_OFFSET = 0x00
     DR_OFFSET = 0x10
     SR1_OFFSET = 0x14
     SR2_OFFSET = 0x18
 
+    CR1_STOP_MASK = 1 << 9
+
     SR1_TXE_MASK = 1 << 7
+    SR1_BTF_MASK = 1 << 2
     SR1_ADDR_MASK = 1 << 1
+
+    @property
+    def CR1(self):
+        return self.start + self.CR1_OFFSET
 
     @property
     def DR(self):
@@ -56,17 +64,17 @@ def get_symbol_addr(symbol_name, is_variable):
 OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"
 OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"
 ELF_PATH = "firmwares/STM32/HardwareI2C/build/clockstretching.elf"
-START_SYMBOL = "I2C_MasterRequestWrite"
-VERIFICATION_BEGIN_SYMBOL = "BEGIN_VERIFICATION"
+START_SYMBOL = "BEGIN_VERIFICATION"
+# VERIFICATION_BEGIN_SYMBOL = "BEGIN_VERIFICATION"
 VERIFICATION_END_SYMBOL = "END_VERIFICATION"
-# SYSTICK_VARIABLE_SYMBOL = "uwTick"
+SYSTICK_VARIABLE_SYMBOL = "uwTick"
 THUMB_MODE = True
 
 RAM = MemoryRegion(start=0x20000000, size=0x30000)
 CCMRAM = MemoryRegion(start=0x10000000, size=0x10000)
-FLASH = MemoryRegion(start=0x8000000, size=0x20000)
+FLASH = MemoryRegion(start=0x08000000, size=0x200000)
 I2C1 = I2C(start=0x40005400, size=0x400)
-VECTOR_TABLE_BASE_ADDR = MemoryRegion(start=0x00000000, size=0x400)
+VECTOR_TABLE = MemoryRegion(start=0x00000000, size=0x400)
 
 I2C_NAME = [
     "I2C_CR1",
@@ -129,6 +137,11 @@ I2C_RESET_VAL = {
     "I2C_FLTR": claripy.BVV(0b00000000000000000000000000000000, 32),
 }
 
+HAL_OK = 0x00
+HAL_ERROR = 0x01
+HAL_BUSY = 0x02
+HAL_TIMEOUT = 0x03
+
 found_violations = []
 
 avatar = avatar2.Avatar(
@@ -137,9 +150,9 @@ avatar = avatar2.Avatar(
 proj = angr.Project(ELF_PATH, auto_load_libs=False)
 
 START_ADDR = get_symbol_addr(START_SYMBOL, is_variable=False)
-VERIFICATION_BEGIN_ADDR = get_symbol_addr(VERIFICATION_BEGIN_SYMBOL, is_variable=False)
+# VERIFICATION_BEGIN_ADDR = get_symbol_addr(VERIFICATION_BEGIN_SYMBOL, is_variable=False)
 VERIFICATION_END_ADDR = get_symbol_addr(VERIFICATION_END_SYMBOL, is_variable=False)
-# SYSTICK_VARIABLE_ADDR = get_symbol_addr(SYSTICK_VARIABLE_SYMBOL, is_variable=True)
+SYSTICK_VARIABLE_ADDR = get_symbol_addr(SYSTICK_VARIABLE_SYMBOL, is_variable=True)
 
 """
 Avatar2 部分
@@ -150,8 +163,6 @@ stm32 = avatar.add_target(
     openocd_script=OPENOCD_INTERFACE_SCRIPT_PATH,
     additional_args=["-f", OPENOCD_TARGET_SCRIPT_PATH],
 )
-
-reg_names = list(stm32._arch.registers.keys())
 
 avatar.add_memory_range(RAM.start, RAM.size, name="sram", target=stm32)
 avatar.add_memory_range(CCMRAM.start, CCMRAM.size, name="ccmram", target=stm32)
@@ -165,6 +176,7 @@ stm32.wait()
 print("Hardware hit the breakpoint. Extracting state")
 
 # https://developer.arm.com/documentation/100166/0001/Programmers-Model/Processor-core-register-summary?lang=en
+# reg_names = list(stm32._arch.registers.keys())
 regs = {
     "r0": stm32.read_register("r0"),
     "r1": stm32.read_register("r1"),
@@ -188,7 +200,9 @@ if THUMB_MODE:
     regs["pc"] |= 1  # Thumb Mode
 sram_dump = stm32.read_memory(RAM.start, size=1, num_words=RAM.size, raw=True)
 ccmram_dump = stm32.read_memory(CCMRAM.start, size=1, num_words=CCMRAM.size, raw=True)
-flash_dump = stm32.read_memory(FLASH.start, size=1, num_words=FLASH.size, raw=True)
+vector_table_dump = stm32.read_memory(
+    FLASH.start, size=1, num_words=VECTOR_TABLE.size, raw=True
+)
 i2c1_dump = stm32.read_memory(I2C1.start, size=1, num_words=I2C1.size, raw=True)
 
 avatar.shutdown()
@@ -209,20 +223,17 @@ state = proj.factory.blank_state(
         # angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
     },
 )
+
 for reg_name, value in regs.items():
     setattr(state.regs, reg_name, value)
-
 state.memory.store(RAM.start, sram_dump)
 state.memory.store(CCMRAM.start, ccmram_dump)
-state.memory.store(FLASH.start, flash_dump)
 # 寫入 Vector Table Alias
 try:
-    state.memory.store(
-        VECTOR_TABLE_BASE_ADDR.start, flash_dump[: VECTOR_TABLE_BASE_ADDR.size]
-    )
-    print(f"Mapped Flash alias at {VECTOR_TABLE_BASE_ADDR.start:#x} (Vector Table)")
+    state.memory.store(VECTOR_TABLE.start, vector_table_dump)
+    print(f"Mapped Flash alias at {VECTOR_TABLE.start:#x} (Vector Table)")
 except Exception as e:
-    print(f"Warning: Failed to map Vector Table at 0x0: {e}")
+    print(f"Warning: Failed to map Vector Table at {VECTOR_TABLE.start:#x}: {e}")
 # 寫入 I2C1
 state.globals["symbolic_name_cnt"] = 0
 for i in range(len(I2C_NAME)):
@@ -235,11 +246,11 @@ for i in range(len(I2C_NAME)):
             & I2C_HARDWARE_DEPENDENT_MASK[I2C_NAME[i]]
         )
     )
-    state.globals["symbolic_name_cnt"] += 1
     state.memory.store(
         I2C1.start + i * 4,
         value,
     )
+state.globals["symbolic_name_cnt"] += 1
 
 """
 設定驗證開始時間點
@@ -267,11 +278,18 @@ def on_read_I2C1(state):
     addr = state.solver.eval(state.inspect.mem_read_address)
     idx = int((addr - I2C1.start) / 4)
 
+    prev_val = state.memory.load(
+        addr,
+        4,
+        endness=state.arch.memory_endness,
+        disable_actions=True,
+        inspect=False,
+    )
     value = claripy.BVS(f"{I2C_NAME[idx]}_{state.globals['symbolic_name_cnt']}", 32) & (
         I2C_NOT_RESERVED_MASK[I2C_NAME[idx]]
         & I2C_HARDWARE_DEPENDENT_MASK[I2C_NAME[idx]]
     ) | (
-        I2C_RESET_VAL[I2C_NAME[idx]]
+        prev_val
         & ~(
             I2C_NOT_RESERVED_MASK[I2C_NAME[idx]]
             & I2C_HARDWARE_DEPENDENT_MASK[I2C_NAME[idx]]
@@ -305,30 +323,8 @@ def on_read_I2C1(state):
         inspect=False,
     )
 
-    if state.globals.get("verification_enabled", False):
-        if addr == I2C1.SR2:
-            sr1 = state.memory.load(
-                I2C1.SR1,
-                4,
-                endness=state.arch.memory_endness,
-                disable_actions=True,
-                inspect=False,
-            )
-
-            # [Spec 1]
-            # firmware 並不會直接 clear ADDR (ADDR 為 read only)，是先 read SR1 再 read SR2 時由 hardware 自動清除
-            violation_condition = (sr1 & I2C1.SR1_ADDR_MASK) == 0
-            if state.solver.satisfiable(extra_constraints=[violation_condition]):
-                found_violations.append(True)
-                state.add_constraints(claripy.Not(violation_condition))
-                print("Found a violation path")
-
-
-def on_write_I2C1(state):
-    addr = state.solver.eval(state.inspect.mem_write_address)
-
     # if state.globals.get("verification_enabled", False):
-    #     if addr == I2C1.DR:
+    #     if addr == I2C1.SR2:
     #         sr1 = state.memory.load(
     #             I2C1.SR1,
     #             4,
@@ -337,12 +333,41 @@ def on_write_I2C1(state):
     #             inspect=False,
     #         )
 
-    #         # [Spec 2]
-    #         violation_condition = (sr1 & I2C.SR1_TXE_MASK) == 0
+    #         # [Spec 1]
+    #         # firmware 並不會直接 clear ADDR (ADDR 為 read only)，是先 read SR1 再 read SR2 時由 hardware 自動清除
+    #         violation_condition = (sr1 & I2C1.SR1_ADDR_MASK) == 0
     #         if state.solver.satisfiable(extra_constraints=[violation_condition]):
     #             found_violations.append(True)
     #             state.add_constraints(claripy.Not(violation_condition))
     #             print("Found a violation path")
+
+
+def on_write_I2C1(state):
+    addr = state.solver.eval(state.inspect.mem_write_address)
+    val = state.solver.eval(state.inspect.mem_write_expr)
+
+    if state.globals.get("verification_enabled", False):
+        sr1 = state.memory.load(
+            I2C1.SR1,
+            4,
+            endness=state.arch.memory_endness,
+            disable_actions=True,
+            inspect=False,
+        )
+
+        # [Spec 2]
+        # if addr == I2C1.DR:
+        #     violation_condition = (sr1 & I2C.SR1_TXE_MASK) == 0
+        #     if state.solver.satisfiable(extra_constraints=[violation_condition]):
+        #         found_violations.append(True)
+        #         state.add_constraints(claripy.Not(violation_condition))
+        #         print("Found a violation path")
+
+        # [Spec 3 (Part 1)]
+        if addr == I2C1.CR1 and (val & I2C.CR1_STOP_MASK != 0):
+            violation_condition = (sr1 & I2C.SR1_BTF_MASK) == 0
+            if state.solver.satisfiable(extra_constraints=[violation_condition]):
+                state.globals["spec3_violation_pending"] = True
 
 
 def read_in_I2C1(state):
@@ -380,39 +405,39 @@ state.inspect.b(
 """
 
 
-# def on_read_SysTick(state):
-#     addr = state.solver.eval(state.inspect.mem_read_address)
-#     origin_value = state.memory.load(
-#         addr,
-#         4,
-#         endness=state.arch.memory_endness,
-#         disable_actions=True,
-#         inspect=False,
-#     )
+def on_read_SysTick(state):
+    addr = state.solver.eval(state.inspect.mem_read_address)
+    origin_value = state.memory.load(
+        addr,
+        4,
+        endness=state.arch.memory_endness,
+        disable_actions=True,
+        inspect=False,
+    )
 
-#     new_value = origin_value + 30  # 每讀取一次 SysTick，SysTick 加 30
-#     state.memory.store(
-#         addr,
-#         new_value,
-#         endness=state.arch.memory_endness,
-#         disable_actions=True,
-#         inspect=False,
-#     )
-#     state.inspect.mem_read_expr = new_value
-
-
-# def read_in_SysTick(state):
-#     try:
-#         return (
-#             state.solver.eval(state.inspect.mem_read_address) == SYSTICK_VARIABLE_ADDR
-#         )
-#     except Exception:
-#         return False
+    new_value = origin_value + 5  # 每讀取一次 SysTick，SysTick 加 5
+    state.memory.store(
+        addr,
+        new_value,
+        endness=state.arch.memory_endness,
+        disable_actions=True,
+        inspect=False,
+    )
+    state.inspect.mem_read_expr = new_value
 
 
-# state.inspect.b(
-#     "mem_read", when=angr.BP_BEFORE, condition=read_in_SysTick, action=on_read_SysTick
-# )
+def read_in_SysTick(state):
+    try:
+        return (
+            state.solver.eval(state.inspect.mem_read_address) == SYSTICK_VARIABLE_ADDR
+        )
+    except Exception:
+        return False
+
+
+state.inspect.b(
+    "mem_read", when=angr.BP_BEFORE, condition=read_in_SysTick, action=on_read_SysTick
+)
 
 
 """
@@ -424,7 +449,7 @@ simgr = proj.factory.simgr(state)
 # 設定 loop 執行上限次數
 simgr.use_technique(
     angr.exploration_techniques.LoopSeer(
-        cfg=proj.analyses.CFGFast(normalize=True), bound=5
+        cfg=proj.analyses.CFGFast(normalize=True), bound=10
     )
 )
 
@@ -439,9 +464,10 @@ def monitor_exploration(simgr):
 
     print(f"Step: Active={n_active}, Found={n_found}")
 
-    if n_active > 500:
-        print("State explosion detected! Aborting exploration.")
-        simgr.move(from_stash="active", to_stash="exploded")
+    # if n_active > 500:
+    #     print("State explosion detected! Aborting exploration.")
+    #     simgr.move(from_stash="active", to_stash="exploded")
+    #     exit(1)
 
     return simgr
 
@@ -451,15 +477,28 @@ simgr.explore(
 )
 
 if len(found_violations) > 0:
-    print(f"Verification FAILURE! Found {len(found_violations)} violation path(s).")
+    print(f"Verification FAILURE! Found {len(found_violations)} violation path(s)")
 elif len(simgr.found) > 0:
-    for i in range(len(simgr.found)):
-        print(simgr.found[i].solver.eval(simgr.found[i].regs.r0))
-    print(f"Verification SUCCESS! Found {len(simgr.found)} paths that reached the end.")
+    # [Spec 3 (Part 2)]
+    for state in simgr.found:
+        r0 = state.solver.eval(state.regs.r0)
+
+        print(f"r0 = {r0}")
+
+        if r0 == HAL_OK and state.globals.get("spec3_violation_pending", False):
+            found_violations.append(True)
+            print("Found a violation path")
+    if len(found_violations) > 0:
+        print(f"Verification FAILURE! Found {len(found_violations)} violation path(s)")
+    else:
+        print(
+            f"Verification SUCCESS! Found {len(simgr.found)} paths that reached the end"
+        )
 elif len(simgr.errored) > 0:
-    print(f"\n[!!!] Critical Errors Detected: {len(simgr.errored)} states died.")
+    print(f"Errors Detected: {len(simgr.errored)} states died")
     for err in simgr.errored:
         print(f"  - Error: {err.error}")
         print(f"  - Last Addr: {hex(err.state.addr)}")
+        print(f"  - Traceback: {err.traceback}")
 else:
     print("No state reached the end")
