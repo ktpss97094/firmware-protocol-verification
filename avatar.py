@@ -1,9 +1,14 @@
 """
 Clock Stretching Spec
 
-1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
-2. write DR 前，若 TxE bit 為 0，則違反
-3. 最後一個 set STOP bit 前，若 BTF bit 為 0，則違反
+* Blocking Mode
+    1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
+    2. write DR 前，若 TxE bit 為 0，則違反
+    3. 最後一個 set STOP bit 前，若 BTF bit 為 0，則違反
+* DMA Mode
+    1. clear ADDR bit (I2C_Master_ADDR() 內) 前，若 ADDR bit 為 0，則違反
+    2. (無法檢查)
+    3. set STOP bit (I2C_MasterTransmit_BTF() 內) 前，若 BTF bit 為 0，則違反
 """
 
 import avatar2
@@ -63,7 +68,7 @@ def get_symbol_addr(symbol_name, is_variable):
 
 OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"
 OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"
-ELF_PATH = "firmwares/STM32/HardwareI2C/build/clockstretching.elf"
+ELF_PATH = "firmwares/STM32/I2C/Blocking_Mode/Hardware/build/clockstretching.elf"
 START_SYMBOL = "BEGIN_VERIFICATION"
 # VERIFICATION_BEGIN_SYMBOL = "BEGIN_VERIFICATION"
 VERIFICATION_END_SYMBOL = "END_VERIFICATION"
