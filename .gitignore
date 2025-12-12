@@ -1,5 +1,6 @@
 .venv/
 
 avatar2_output/
+results.txt
 build/
 .vscode/
