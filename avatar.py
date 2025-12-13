@@ -346,47 +346,48 @@ def on_read_I2C1(state):
     state.globals["symbolic_name_cnt"] += 1
 
     # 額外處理: ADDR set 之後就不能再把 ADDR 設為 symbolic 了，只有 read SR1, SR2 之後才會 clear ADDR，所以 ADDR set 之後不會有 ADDR 0 的可能 (reference manual p871: This bit is cleared by software reading SR1 register followed reading SR2)
-    if addr == I2C1.SR1:
-        sr1 = state.memory.load(
-            I2C1.SR1,
-            4,
-            endness=state.arch.memory_endness,
-            disable_actions=True,
-            inspect=False,
-        )
-
-        # 如果目前的 state ADDR 一定是 1
-        if not state.solver.satisfiable(
-            extra_constraints=[claripy.Not((sr1 & I2C1.SR1_ADDR_MASK) != 0)]
-        ):
-            state.add_constraints((val & I2C1.SR1_ADDR_MASK) != 0)  # 強制 ADDR bit 為 1
-
     # if addr == I2C1.SR1:
-    #     state.add_constraints(
-    #         ((val & I2C1.SR1_ADDR_MASK) | (prev_val & I2C1.SR1_ADDR_MASK))
-    #         == (val & I2C1.SR1_ADDR_MASK)
+    #     sr1 = state.memory.load(
+    #         I2C1.SR1,
+    #         4,
+    #         endness=state.arch.memory_endness,
+    #         disable_actions=True,
+    #         inspect=False,
     #     )
 
-    #     state.globals["SR1_read"] = True
-    # elif addr == I2C1.SR2:
-    #     if state.globals.get("SR1_read", False):
-    #         # clear ADDR bit
-    #         state.memory.store(
-    #             I2C1.SR1,
-    #             state.memory.load(
-    #                 I2C1.SR1,
-    #                 4,
-    #                 endness=state.arch.memory_endness,
-    #                 disable_actions=True,
-    #                 inspect=False,
-    #             )
-    #             & ~I2C1.SR1_ADDR_MASK,
-    #             endness=state.arch.memory_endness,
-    #             disable_actions=True,
-    #             inspect=False,
-    #         )
+    #     # 如果目前的 state ADDR 一定是 1
+    #     if not state.solver.satisfiable(
+    #         extra_constraints=[claripy.Not((sr1 & I2C1.SR1_ADDR_MASK) != 0)]
+    #     ):
+    #         state.add_constraints((val & I2C1.SR1_ADDR_MASK) != 0)  # 強制 ADDR bit 為 1
 
-    #         state.globals["SR1_read"] = False
+    if addr == I2C1.SR1:
+        # 如果先前的 ADDR 是 0，則此 constraint 無意義；如果先前的 ADDR 是 1，則新的 ADDR 一定要是 1
+        state.add_constraints(
+            ((prev_val & I2C1.SR1_ADDR_MASK) | (val & I2C1.SR1_ADDR_MASK))
+            == (val & I2C1.SR1_ADDR_MASK)
+        )
+
+        state.globals["SR1_read"] = True
+    elif addr == I2C1.SR2:
+        if state.globals.get("SR1_read", False):
+            # clear ADDR bit
+            # state.memory.store(
+            #     I2C1.SR1,
+            #     state.memory.load(
+            #         I2C1.SR1,
+            #         4,
+            #         endness=state.arch.memory_endness,
+            #         disable_actions=True,
+            #         inspect=False,
+            #     )
+            #     & ~I2C1.SR1_ADDR_MASK,
+            #     endness=state.arch.memory_endness,
+            #     disable_actions=True,
+            #     inspect=False,
+            # )
+
+            state.globals["SR1_read"] = False
 
     state.memory.store(
         addr,
