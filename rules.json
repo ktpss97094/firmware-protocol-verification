@@ -1,0 +1,17 @@
+[
+    {
+        "name": "SR1_Read_Flag_Set",
+        "trigger": { "type": "R", "address": "0x40005414" },
+        "condition": null,
+        "action": { "type": "VW", "flag_name": "SR1_read", "value": 1 }
+    },
+    {
+        "name": "Clear_ADDR_Sequence",
+        "trigger": { "type": "R", "address": "0x40005418" },
+        "condition": { "type": "VR", "flag_name": "SR1_read", "value": 1 },
+        "action": [
+            { "type": "W", "address": "0x40005414", "bit": 1, "value": 0 },
+            { "type": "VW", "flag_name": "SR1_read", "value": 0 }
+        ]
+    }
+]

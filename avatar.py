@@ -16,6 +16,8 @@ import angr
 import claripy
 from typing import NamedTuple
 import archinfo
+import json
+from PeripheralRulePlugin import PeripheralRulePlugin
 
 
 class MemoryRegion(NamedTuple):
@@ -70,7 +72,6 @@ def get_symbol_addr(symbol_name, is_variable):
 OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"
 OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"
 ELF_PATH = "firmwares/STM32/I2C/Blocking_Mode/Hardware/build/clockstretching.elf"
-# symbol 不要用 static function 的名稱 !!!
 BEGIN_SYMBOL = "HAL_I2C_Master_Transmit"
 END_SYMBOL = "END_SYMBOLIC_EXECUTION"
 BEGIN_VERIFICATION_SYMBOL = "BEGIN_VERIFICATION"
@@ -228,41 +229,11 @@ print("Setting up angr state")
 state = proj.factory.blank_state(
     addr=regs["pc"],
     add_options={
-        # angr.options.STRICT_PAGE_ACCESS,
         # ZERO_FILL_UNCONSTRAINED_MEMORY 及 ZERO_FILL_UNCONSTRAINED_REGISTERS 為指定當 Angr 讀取 Angr 未初始化的記憶體位置時，回傳 0 而不是 symbolic value
         # angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
         # angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
     },
 )
-
-"""
-Map 記憶體範圍
-"""
-
-# def map_mem_region(state, start, size, permissions):
-#     """
-#     以 Page (0x1000) 為單位進行映射。
-#     如果該 Page 已經存在 (例如 ELF 已經載入過)，則忽略錯誤跳過，
-#     確保不會因為重複映射而崩潰，同時補足未映射的空洞 (如 Stack/Heap)。
-#     """
-#     PAGE_SIZE = 0x1000
-#     # 計算對齊 Page 的起始與結束位址
-#     start_page = start & ~(PAGE_SIZE - 1)
-#     end_page = ((start + size + PAGE_SIZE - 1) // PAGE_SIZE) * PAGE_SIZE
-
-#     for page_addr in range(start_page, end_page, PAGE_SIZE):
-#         try:
-#             state.memory.map_region(page_addr, PAGE_SIZE, permissions)
-#         except angr.errors.SimMemoryError:
-#             # 這個 Page 已經被映射過了 (通常是 ELF 的 .data/.bss)
-#             # 我們直接忽略，沿用原本的映射即可
-#             pass
-
-
-# map_mem_region(state, RAM.start, RAM.size, 7)
-# map_mem_region(state, CCMRAM.start, CCMRAM.size, 7)
-# map_mem_region(state, I2C1.start, I2C1.size, 6)
-# map_mem_region(state, VECTOR_TABLE.start, VECTOR_TABLE.size, 7)
 
 for reg_name, value in regs.items():
     setattr(state.regs, reg_name, value)
@@ -361,33 +332,34 @@ def on_read_I2C1(state):
     #     ):
     #         state.add_constraints((val & I2C1.SR1_ADDR_MASK) != 0)  # 強制 ADDR bit 為 1
 
-    if addr == I2C1.SR1:
-        # 如果先前的 ADDR 是 0，則此 constraint 無意義；如果先前的 ADDR 是 1，則新的 ADDR 一定要是 1
-        state.add_constraints(
-            ((prev_val & I2C1.SR1_ADDR_MASK) | (val & I2C1.SR1_ADDR_MASK))
-            == (val & I2C1.SR1_ADDR_MASK)
-        )
+    # if addr == I2C1.SR1:
+    #     # 如果先前的 ADDR 是 0，則此 constraint 無意義；如果先前的 ADDR 是 1，則新的 ADDR 一定要是 1
+    #     state.add_constraints(
+    #         ((prev_val & I2C1.SR1_ADDR_MASK) | (val & I2C1.SR1_ADDR_MASK))
+    #         == (val & I2C1.SR1_ADDR_MASK)
+    #     )
 
-        state.globals["SR1_read"] = True
-    elif addr == I2C1.SR2:
-        if state.globals.get("SR1_read", False):
-            # clear ADDR bit
-            # state.memory.store(
-            #     I2C1.SR1,
-            #     state.memory.load(
-            #         I2C1.SR1,
-            #         4,
-            #         endness=state.arch.memory_endness,
-            #         disable_actions=True,
-            #         inspect=False,
-            #     )
-            #     & ~I2C1.SR1_ADDR_MASK,
-            #     endness=state.arch.memory_endness,
-            #     disable_actions=True,
-            #     inspect=False,
-            # )
+    #     state.globals["SR1_read"] = True
+    # elif addr == I2C1.SR2:
+    #     if state.globals.get("SR1_read", False):
+    #         # clear ADDR bit
+    #         # state.memory.store(
+    #         #     I2C1.SR1,
+    #         #     state.memory.load(
+    #         #         I2C1.SR1,
+    #         #         4,
+    #         #         endness=state.arch.memory_endness,
+    #         #         disable_actions=True,
+    #         #         inspect=False,
+    #         #     )
+    #         #     & ~I2C1.SR1_ADDR_MASK,
+    #         #     endness=state.arch.memory_endness,
+    #         #     disable_actions=True,
+    #         #     inspect=False,
+    #         # )
 
-            state.globals["SR1_read"] = False
+    #         state.globals["SR1_read"] = False
+    state.add_constraints(*state.rules.handle_memory_read(addr, prev_val, val))
 
     state.memory.store(
         addr,
@@ -513,6 +485,14 @@ state.inspect.b(
     "mem_read", when=angr.BP_BEFORE, condition=read_in_SysTick, action=on_read_SysTick
 )
 
+"""
+設定 rules
+"""
+
+angr.SimState.register_default("rules", PeripheralRulePlugin)
+with open("rules.json", "r") as f:
+    json_rules = json.load(f)
+state.rules.load_rules(json_rules)
 
 """
 設定 simulation_manager
