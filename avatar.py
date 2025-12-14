@@ -91,6 +91,7 @@ RAM = MemoryRegion(start=0x20000000, size=0x30000)
 CCMRAM = MemoryRegion(start=0x10000000, size=0x10000)
 FLASH = MemoryRegion(start=0x08000000, size=0x200000)
 I2C1 = I2C(start=0x40005400, size=0x400)
+DMA1 = MemoryRegion(start=0x40026000, size=0x400)
 VECTOR_TABLE = MemoryRegion(start=0x00000000, size=0x400)
 
 I2C_NAME = [
@@ -190,6 +191,7 @@ avatar.add_memory_range(RAM.start, RAM.size, name="sram", target=stm32)
 avatar.add_memory_range(CCMRAM.start, CCMRAM.size, name="ccmram", target=stm32)
 avatar.add_memory_range(FLASH.start, FLASH.size, name="flash", target=stm32)
 avatar.add_memory_range(I2C1.start, I2C1.size, name="i2c1", target=stm32)
+avatar.add_memory_range(DMA1.start, DMA1.size, name="dma1", target=stm32)
 
 avatar.init_targets()
 stm32.set_breakpoint(BEGIN_ADDR)
@@ -225,6 +227,7 @@ vector_table_dump = stm32.read_memory(
     FLASH.start, size=1, num_words=VECTOR_TABLE.size, raw=True
 )
 i2c1_dump = stm32.read_memory(I2C1.start, size=1, num_words=I2C1.size, raw=True)
+dma1_dump = stm32.read_memory(DMA1.start, size=1, num_words=DMA1.size, raw=True)
 
 avatar.shutdown()
 
@@ -253,7 +256,7 @@ try:
     print(f"Mapped Flash alias at {VECTOR_TABLE.start:#x} (Vector Table)")
 except Exception as e:
     print(f"Warning: Failed to map Vector Table at {VECTOR_TABLE.start:#x}: {e}")
-# 寫入 I2C1
+# 寫入 I2C1 FIXME: 應該不是用 I2C_RESET_VAL 而是用 i2c1_dump 出來的?
 state.globals["symbolic_name_cnt"] = 0
 for i in range(len(I2C_NAME)):
     value = claripy.BVS(f"{I2C_NAME[i]}_{state.globals['symbolic_name_cnt']}", 32) & (
@@ -269,6 +272,7 @@ for i in range(len(I2C_NAME)):
         I2C1.start + i * 4,
         value,
     )
+state.memory.store(DMA1.start, dma1_dump)
 state.globals["symbolic_name_cnt"] += 1
 
 """
@@ -409,8 +413,12 @@ def on_write_I2C1(state):
             inspect=False,
         )
 
-        if (cr2 & I2C.CR2_ITEVTEN_MASK) != 0 and (val & I2C.CR1_START_MASK) != 0:
-            fire_interrupt(state, 31)
+        if (
+            state.solver.is_true(cr2 & I2C.CR2_ITEVTEN_MASK != 0)
+            and (val & I2C.CR1_START_MASK) != 0
+        ):  # FIXME: 錯!!! 要在 SB bit set 時才會觸發 IRQ
+            print("[!] Interrupt condition met. Pending IRQ #31...")
+            state.globals["pending_irq"] = 31
 
     if state.globals.get("verification_enabled", False):
         sr1 = state.memory.load(
@@ -531,10 +539,6 @@ def fire_interrupt(state, irq_num):
     # 堆疊順序: xPSR, PC, LR, R12, R3, R2, R1, R0
     # 這裡簡化處理 xPSR，設為 0
     xpsr = claripy.BVV(0, 32)
-
-    # 注意: 保存的 PC 應該是「下一條要執行的指令」，但在 Angr Hook 中
-    # state.regs.pc 通常是當前指令。如果是在 mem_write hook 觸發，
-    # 這裡的 PC 正確性通常足夠讓邏輯繼續，因為中斷返回後會執行下一條。
     current_pc = state.regs.pc
     current_lr = state.regs.lr
 
@@ -563,11 +567,6 @@ def fire_interrupt(state, irq_num):
         disable_actions=True,
         inspect=False,
     )
-
-    # 處理 Thumb Bit (若地址最後一位是 1，要清掉)
-    # 這裡用 If 判斷，讓 Angr 處理符號情況，但通常 Vector Table 是具體的
-    if state.solver.eval(isr_addr & 1) == 1:
-        isr_addr = isr_addr & ~1
 
     print(f"    -> Jumping to ISR at {state.solver.eval(isr_addr):#x}")
     state.regs.pc = isr_addr
@@ -620,10 +619,15 @@ def monitor_exploration(simgr):
     監控 state 的狀況
     """
 
-    n_active = len(simgr.active)
-    n_found = len(simgr.found)
+    for state in simgr.active:
+        pending_irq = state.globals.get("pending_irq", None)
+        if pending_irq is not None:
+            # 清除 Flag
+            state.globals.pop("pending_irq")
+            # 觸發中斷 (此時 state 已經在一個 Block 執行結束的邊界，PC 是乾淨的下一條指令)
+            fire_interrupt(state, pending_irq)
 
-    print(f"Step: Active={n_active}, Found={n_found}")
+    print(f"Step: Active={len(simgr.active)}, Found={len(simgr.found)}")
 
     # if n_active > 500:
     #     print("State explosion detected! Aborting exploration.")
