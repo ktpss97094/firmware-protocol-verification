@@ -96,18 +96,18 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   uint8_t data = 0x75;
-  HAL_StatusTypeDef result = HAL_I2C_Master_Transmit_DMA(&hi2c1, 0x68 << 1, &data,1);
-  SYMBOL_MARKER("END_VERIFICATION");
+  HAL_StatusTypeDef result = HAL_I2C_Master_Transmit_DMA(&hi2c1, 0x68 << 1, &data, 1);
+  SYMBOL_MARKER("END_SYMBOLIC_EXECUTION");
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-//   while (1) {
+  while (1) {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
     
-//   }
+  }
   /* USER CODE END 3 */
 }
 

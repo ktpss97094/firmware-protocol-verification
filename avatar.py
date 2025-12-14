@@ -27,11 +27,15 @@ class MemoryRegion(NamedTuple):
 
 class I2C(MemoryRegion):
     CR1_OFFSET = 0x00
+    CR2_OFFSET = 0x04
     DR_OFFSET = 0x10
     SR1_OFFSET = 0x14
     SR2_OFFSET = 0x18
 
     CR1_STOP_MASK = 1 << 9
+    CR1_START_MASK = 1 << 8
+
+    CR2_ITEVTEN_MASK = 1 << 9
 
     SR1_TXE_MASK = 1 << 7
     SR1_BTF_MASK = 1 << 2
@@ -40,6 +44,10 @@ class I2C(MemoryRegion):
     @property
     def CR1(self):
         return self.start + self.CR1_OFFSET
+
+    @property
+    def CR2(self):
+        return self.start + self.CR2_OFFSET
 
     @property
     def DR(self):
@@ -71,8 +79,8 @@ def get_symbol_addr(symbol_name, is_variable):
 
 OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"
 OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"
-ELF_PATH = "firmwares/STM32/I2C/Blocking_Mode/Hardware/build/clockstretching.elf"
-BEGIN_SYMBOL = "HAL_I2C_Master_Transmit"
+ELF_PATH = "firmwares/STM32/I2C/DMA_Mode/build/clockstretching.elf"
+BEGIN_SYMBOL = "HAL_I2C_Master_Transmit_DMA"
 END_SYMBOL = "END_SYMBOLIC_EXECUTION"
 BEGIN_VERIFICATION_SYMBOL = "BEGIN_VERIFICATION"
 END_VERIFICATION_SYMBOL = "END_VERIFICATION"
@@ -392,6 +400,18 @@ def on_write_I2C1(state):
     addr = state.solver.eval(state.inspect.mem_write_address)
     val = state.solver.eval(state.inspect.mem_write_expr)
 
+    if addr == I2C1.CR1:
+        cr2 = state.memory.load(
+            I2C1.CR2,
+            4,
+            endness=state.arch.memory_endness,
+            disable_actions=True,
+            inspect=False,
+        )
+
+        if (cr2 & I2C.CR2_ITEVTEN_MASK) != 0 and (val & I2C.CR1_START_MASK) != 0:
+            fire_interrupt(state, 31)
+
     if state.globals.get("verification_enabled", False):
         sr1 = state.memory.load(
             I2C1.SR1,
@@ -484,6 +504,93 @@ def read_in_SysTick(state):
 state.inspect.b(
     "mem_read", when=angr.BP_BEFORE, condition=read_in_SysTick, action=on_read_SysTick
 )
+
+"""
+設定 interrupt
+"""
+
+MAGIC_RETURN_ADDR = 0xFFFFFFFF  # 特殊地址，用於攔截 ISR 返回
+
+
+def push_stack(state, value):
+    # 模擬 Cortex-M 堆疊操作 (Full Descending)
+    state.regs.sp -= 4
+    state.memory.store(state.regs.sp, value, endness=state.arch.memory_endness)
+
+
+def pop_stack(state):
+    val = state.memory.load(state.regs.sp, 4, endness=state.arch.memory_endness)
+    state.regs.sp += 4
+    return val
+
+
+def fire_interrupt(state, irq_num):
+    print(f"\n[!] Triggering IRQ #{irq_num} at PC: {state.addr:#x}")
+
+    # 1. 保存 Context (Cortex-M Exception Frame)
+    # 堆疊順序: xPSR, PC, LR, R12, R3, R2, R1, R0
+    # 這裡簡化處理 xPSR，設為 0
+    xpsr = claripy.BVV(0, 32)
+
+    # 注意: 保存的 PC 應該是「下一條要執行的指令」，但在 Angr Hook 中
+    # state.regs.pc 通常是當前指令。如果是在 mem_write hook 觸發，
+    # 這裡的 PC 正確性通常足夠讓邏輯繼續，因為中斷返回後會執行下一條。
+    current_pc = state.regs.pc
+    current_lr = state.regs.lr
+
+    push_stack(state, xpsr)
+    push_stack(state, current_pc)
+    push_stack(state, current_lr)
+    push_stack(state, state.regs.r12)
+    push_stack(state, state.regs.r3)
+    push_stack(state, state.regs.r2)
+    push_stack(state, state.regs.r1)
+    push_stack(state, state.regs.r0)
+
+    # 2. 設定 LR 為 Magic Return Address
+    # 當 ISR 執行 BX LR 時，會跳轉到這個地址，觸發我們的 Hook
+    state.regs.lr = MAGIC_RETURN_ADDR
+
+    # 3. 查表並跳轉
+    # IRQ #31 (I2C1_EV) 對應 Exception Number 47 (16 + 31)
+    isr_ptr_addr = VECTOR_TABLE.start + 4 * (16 + irq_num)
+
+    # 從記憶體讀取 ISR 地址 (注意要處理 Endness)
+    isr_addr = state.memory.load(
+        isr_ptr_addr,
+        4,
+        endness=state.arch.memory_endness,
+        disable_actions=True,
+        inspect=False,
+    )
+
+    # 處理 Thumb Bit (若地址最後一位是 1，要清掉)
+    # 這裡用 If 判斷，讓 Angr 處理符號情況，但通常 Vector Table 是具體的
+    if state.solver.eval(isr_addr & 1) == 1:
+        isr_addr = isr_addr & ~1
+
+    print(f"    -> Jumping to ISR at {state.solver.eval(isr_addr):#x}")
+    state.regs.pc = isr_addr
+
+
+def isr_return_hook(state):
+    print(f"\n[!] ISR Return triggered at {state.addr:#x}")
+
+    # 恢復 Context (順序與 push 相反)
+    state.regs.r0 = pop_stack(state)
+    state.regs.r1 = pop_stack(state)
+    state.regs.r2 = pop_stack(state)
+    state.regs.r3 = pop_stack(state)
+    state.regs.r12 = pop_stack(state)
+    state.regs.lr = pop_stack(state)
+    return_pc = pop_stack(state)
+    _ = pop_stack(state)  # Pop xPSR
+
+    print(f"    -> Returning to original context at {state.solver.eval(return_pc):#x}")
+    state.regs.pc = return_pc
+
+
+proj.hook(MAGIC_RETURN_ADDR, isr_return_hook, length=0)
 
 """
 設定 rules
