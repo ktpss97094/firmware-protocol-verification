@@ -1,182 +1,239 @@
 import angr
 import claripy
+import logging
+from fsm_definitions import I2C
 
 
 class PeripheralRulePlugin(angr.SimStatePlugin):
-    def __init__(self, rules=None, internal_vars=None):
+    def __init__(self, rules=None, internal_vars=None, base_addr=0x40005400):
         super(PeripheralRulePlugin, self).__init__()
-        self.rules = rules if rules is not None else []
-        self.vars = internal_vars if internal_vars is not None else {}
 
-        # 快取: (trigger address, trigger type) -> [rules]
-        self.trigger_map = {}
-        # 快取: address -> sticky bit mask
-        self.sticky_masks = {}
+        self.rules = rules if rules is not None else {}
+        self.base_addr = base_addr
 
-        if self.rules:
-            self._preprocess_rules()
+        if internal_vars is not None:
+            self.vars = internal_vars
+        else:
+            self.vars = {
+                "internal_state": "IDLE",
+                # 抽象變數仍保留用於邏輯判斷，但主要狀態將依賴 Memory 中的值
+                "TxE": 0,
+                "BTF": 0,
+                "ADDR": 0,
+                "SB": 0,
+                "sr1_read_pending": False,
+            }
+
+        self.symbolic_name_cnt = 0
 
     @angr.SimStatePlugin.memo
     def copy(self, memo):
-        # 當 state 分支時，複製變數狀態，但規則本身共享
-        return PeripheralRulePlugin(rules=self.rules, internal_vars=self.vars.copy())
+        new_vars = self.vars.copy()
+        return PeripheralRulePlugin(
+            rules=self.rules, internal_vars=new_vars, base_addr=self.base_addr
+        )
 
-    def merge(self, others, merge_conditions, common_ancestor=None):
-        # 1. 收集所有涉及的變數名稱
-        all_keys = set(self.vars.keys())
-        for o in others:
-            all_keys.update(o.vars.keys())
-
-        # 2. 針對每個變數進行合併
-        for key in all_keys:
-            # 取得每個 state 的值，若無則預設為 0
-            # self 的值對應 merge_conditions[0]
-            val_self = self.vars.get(key, 0)
-
-            # others 的值對應 merge_conditions[1:]
-            vals_others = [o.vars.get(key, 0) for o in others]
-
-            # 3. 使用 claripy.ite_cases 建立條件數值
-            # 邏輯: If condition_1 then val_1, elif condition_2 then val_2 ... else val_self
-            # 詳見 Angr 文件關於 Merging
-            merged_val = claripy.ite_cases(
-                zip(merge_conditions[1:], vals_others), val_self
+    def get_reg_value(self, offset):
+        """Helper: 從 state.memory 讀取目前的暫存器數值"""
+        addr = self.base_addr + offset
+        try:
+            val = self.state.memory.load(
+                addr,
+                4,
+                endness=self.state.arch.memory_endness,
+                disable_actions=True,
+                inspect=False,
             )
+            return val
+        except Exception as e:
+            print(f"Failed to load register from memory at offset {hex(offset)}: {e}")
+            return 0
 
-            self.vars[key] = merged_val
+    def _execute_action(self, action):
+        """執行規則中定義的動作 (直接操作 state.memory)"""
+        endness = self.state.arch.memory_endness
 
-        # 回傳 True 表示合併成功
-        return True
+        if isinstance(action, tuple):
+            op = action[0]
 
-    def load_rules(self, json_rules):
-        """外部呼叫此函式載入 JSON"""
-        self.rules = json_rules
-        self._preprocess_rules()
+            if op == "set_var":
+                self.vars[action[1]] = action[2]
 
-    def _preprocess_rules(self):
-        """解析規則，建立查找表與自動推論 Sticky Bits"""
-        self.trigger_map = {}
-        self.sticky_masks = {}
+            elif op == "set_bit":
+                offset, mask = action[1], action[2]
+                addr = self.base_addr + offset
+                val = self.state.memory.load(
+                    addr, 4, endness=endness, disable_actions=True, inspect=False
+                )
+                new_val = val | mask
+                self.state.memory.store(
+                    addr, new_val, endness=endness, disable_actions=True, inspect=False
+                )
 
-        for rule in self.rules:
-            # 1. 建立 Trigger Map
-            trig_addr = int(rule["trigger"]["address"], 16)
-            trig_type = rule["trigger"]["type"]  # "R" or "W"
-            key = (trig_addr, trig_type)
+            elif op == "clear_bit":
+                offset, mask = action[1], action[2]
+                addr = self.base_addr + offset
+                val = self.state.memory.load(
+                    addr, 4, endness=endness, disable_actions=True, inspect=False
+                )
+                new_val = val & (~mask)
+                self.state.memory.store(
+                    addr, new_val, endness=endness, disable_actions=True, inspect=False
+                )
 
-            if key not in self.trigger_map:
-                self.trigger_map[key] = []
-            self.trigger_map[key].append(rule)
+    def _inject_volatility_if_needed(self, offset, current_val):
+        """
+        根據 State-Aware Volatility 表，自動將允許變動的 Bits 轉為 Symbolic，
+        其餘 Status Bits 強制設為 0 (或保持原值)。
+        """
+        # 1. 取得當前狀態
+        current_state = self.vars.get("internal_state", "IDLE")
 
-            # 2. 自動推論 Sticky Bits
-            # 掃描所有 Action，如果是 Write Memory (W)，表示該 bit 會被硬體(規則)清除
-            # 這些 bit 在沒被清除時，應該保持 Sticky
-            actions = rule["action"]
-            if isinstance(actions, dict):
-                actions = [actions]
+        # 2. 查表決定 Mask
+        #    注意：這裡假設 STATE_VOLATILITY 定義的是 SR1 的 Mask
+        #    如果是其他 Register (如 SR2)，預設沒有 Volatility (Mask=0)
+        allowed_volatile_mask = 0
 
+        if offset == I2C.SR1_OFFSET:
+            allowed_volatile_mask = I2C.STATE_VOLATILITY.get(current_state, 0)
+
+        # 如果 Mask 為 0，表示此時硬體不應該變動這個 Register，直接回傳原值
+        if allowed_volatile_mask == 0:
+            return current_val
+
+        # 3. 檢查 Cache (防止 Loop 中路徑爆炸)
+        #    確保在同一個 State 內，只產生一次符號變數
+        cache_key = f"sym_injected_{current_state}_{offset}"
+        if self.state.globals.get(cache_key, False):
+            return current_val
+
+        # 4. 建立符號變數 (Symbolic Variable)
+        sym_name = f"hw_{current_state}_{hex(offset)}"
+        self.symbolic_name_cnt += 1
+        sym_bits = claripy.BVS(sym_name, 32)
+
+        # 5. [核心邏輯] 混合 Symbolic 與 Concrete
+        #    - 允許變動的部分 (Mask 內) -> 使用 Symbolic
+        #    - 不允許變動的部分 (Mask 外) -> 使用 current_val (通常是 0)
+        #      這保證了例如在 SB_WAIT 時，ADDR bit (不在 Mask 內) 會保持為 0，
+        #      避免 ISR 誤判。
+        final_val = (current_val & ~allowed_volatile_mask) | (
+            sym_bits & allowed_volatile_mask
+        )
+
+        # 6. 寫回 Memory
+        #    這樣後續的 Hook 或程式碼讀取時，就會拿到這個帶有符號的值
+        self.state.memory.store(
+            self.base_addr + offset,
+            final_val,
+            endness=self.state.arch.memory_endness,
+            disable_actions=True,
+            inspect=False,
+        )
+
+        # 7. 標記已注入
+        self.state.globals[cache_key] = True
+        print(
+            f"[Auto-Volatility] Injected symbolic bits {bin(allowed_volatile_mask)} at {hex(offset)} for state {current_state}"
+        )
+
+        return final_val
+
+    def handle_mmio(self, access_type, offset, val=None):
+        """
+        處理 MMIO 存取
+        """
+        current_state = self.vars.get("internal_state", "IDLE")
+
+        if current_state == "VIOLATION":
+            return
+
+        transitions = self.rules.get(current_state, [])
+        matched_transition = None
+
+        # 尋找匹配的規則
+        for trans in transitions:
+            if trans["trigger_type"] != access_type:
+                continue
+            if trans["offset"] != offset:
+                continue
+
+            if "guard" in trans:
+                try:
+                    guard_result = trans["guard"](val, self)
+
+                    # Default: only match transitions whose guards are provably true
+                    # Special-case VIOLATION: match if the guard is satisfiable (i.e., a possible violation)
+                    # and constrain the current path accordingly.
+                    if isinstance(guard_result, bool):
+                        if not guard_result:
+                            continue
+                    else:
+                        if trans.get("next_state") == "VIOLATION":
+                            if not self.state.solver.satisfiable(
+                                extra_constraints=[guard_result]
+                            ):
+                                continue
+                            self.state.solver.add(guard_result)
+                        else:
+                            if not self.state.solver.is_true(guard_result):
+                                continue
+                except Exception as e:
+                    print(f"Guard execution failed: {e}")
+                    continue
+
+            matched_transition = trans
+            break
+
+        # 執行轉移
+        if matched_transition:
+            new_state = matched_transition["next_state"]
+            prev_state = current_state
+
+            # [State Change Logic]
+            if new_state != prev_state:
+                self.vars["internal_state"] = new_state
+                print(f"[FSM] Transition: {prev_state} -> {new_state}")
+
+                # [Important] 狀態改變時，清除 Volatility Cache
+                # 這樣進入新狀態後，第一次讀取 SR1 會重新產生符號變數
+                keys_to_clear = [
+                    k
+                    for k in self.state.globals.keys()
+                    if k.startswith("sym_injected_")
+                ]
+                for k in keys_to_clear:
+                    del self.state.globals[k]
+
+            if new_state == "VIOLATION":
+                msg = matched_transition.get("error_msg", "Unknown violation")
+                print(f"[FSM] !!! VIOLATION DETECTED !!! : {msg}")
+                self.state.globals["violation_msg"] = msg
+                return
+
+            actions = matched_transition.get("actions", [])
             for act in actions:
-                if act["type"] == "W":  # Write Memory
-                    target_addr = int(act["address"], 16)
-                    bit = act.get("bit")
-                    if bit is not None:
-                        if target_addr not in self.sticky_masks:
-                            self.sticky_masks[target_addr] = 0
-                        self.sticky_masks[target_addr] |= 1 << bit
+                self._execute_action(act)
 
-    def _check_condition(self, condition):
-        """檢查規則的 Condition (支援 VR - Variable Read)"""
-        if condition is None:
-            return True
+        # [Read Handling] 自動注入 Volatility
+        if access_type == "read":
+            # 1. 先讀取當前記憶體值 (可能是之前 Write 寫入的，或初始值 0)
+            current_val = self.get_reg_value(offset)
 
-        if condition["type"] == "VR":
-            # 檢查內部變數是否符合
-            current_val = self.vars.get(condition["flag_name"], 0)  # 預設為 0
-            return current_val == condition["value"]
+            # 2. 嘗試注入符號變數 (如果當前狀態允許)
+            #    這會直接修改 state.memory
+            self._inject_volatility_if_needed(offset, current_val)
 
-        return False
+            # 注意：這裡不需要 return 值，因為 avatar2 hook 會再讀一次 memory，
+            # 到時候就會讀到我們剛剛寫入的 symbolic value。
 
-    def _execute_actions(self, actions, state):
-        """執行規則的 Actions (支援 VW 和 W)"""
-        if isinstance(actions, dict):
-            actions = [actions]
-
-        force_clear_mask = 0
-
-        for act in actions:
-            if act["type"] == "VW":  # Variable Write
-                self.vars[act["flag_name"]] = act["value"]
-
-            elif act["type"] == "W":  # Memory Write (Bit manipulation)
-                bit = act.get("bit")
-                val = act["value"]
-
-                # 目前只處理 clear bit (val=0) 的情況來做約束
-                if bit is not None and val == 0:
-                    # 這裡我們不直接寫記憶體，而是回傳 mask 讓外部施加約束
-                    # 因為我們正在處理的是符號變數的生成過程
-                    force_clear_mask |= 1 << bit
-
-        return force_clear_mask
-
-    def handle_memory_read(self, addr, prev_val, new_val):
-        constraints = []
-
-        # 1. 查找是否有觸發規則
-        triggered_rules = self.trigger_map.get((addr, "R"), [])
-
-        # force_clear_mask 改為符號變數 (預設為 0)
-        force_clear_mask = claripy.BVV(0, 32)
-
-        for rule in triggered_rules:
-            # check_condition 現在回傳的是符號布林值 (AST Bool)
-            # 例如: (SR1_read == 1)
-            cond = self._check_condition(rule["condition"])
-
-            # 計算此規則想要 Clear 的 mask
-            rule_mask_val = 0
-            actions = rule["action"]
-            if isinstance(actions, dict):
-                actions = [actions]
-            for act in actions:
-                if (
-                    act["type"] == "W"
-                    and act.get("bit") is not None
-                    and act["value"] == 0
-                ):
-                    rule_mask_val |= 1 << act["bit"]
-
-            # [關鍵] 條件式應用 mask: 如果條件成立，則 mask 生效，否則為 0
-            # 這樣即使 cond 是符號變數也能運作
-            current_rule_mask = claripy.If(
-                cond, claripy.BVV(rule_mask_val, 32), claripy.BVV(0, 32)
+        # [Write Handling] Passthrough
+        if access_type == "write":
+            addr = self.base_addr + offset
+            self.state.memory.store(
+                addr,
+                val,
+                endness=self.state.arch.memory_endness,
+                disable_actions=True,
+                inspect=False,
             )
-
-            # 累積 Mask
-            force_clear_mask |= current_rule_mask
-
-            # 處理 Internal Variable Update (VW) 的副作用比較複雜，
-            # 在符號化合併下，建議將 VW 視為產生一個新的符號變數，這需要更進階的處理。
-            # 簡單驗證場景下，若不需要精確追蹤合併後的變數寫入，可暫時忽略 VW 的符號化副作用。
-
-        # 2. 自動應用 Sticky Logic
-        sticky_mask_val = self.sticky_masks.get(addr, 0)
-
-        if sticky_mask_val != 0:
-            sticky_mask = claripy.BVV(sticky_mask_val, 32)
-
-            # 有效的 sticky mask = 原始 sticky mask & (非強制清除的部分)
-            # 注意: force_clear_mask 是符號變數，所以這裡運算都是符號運算
-            effective_sticky_mask = sticky_mask & (~force_clear_mask)
-
-            # 這裡的 If 判斷是針對 mask 是否為 0 (優化用)，可以用 solver.is_true 檢查，或直接加約束
-            # 為了保險，直接加約束，讓 solver 去處理
-            constraints.append(
-                (prev_val & effective_sticky_mask) | (new_val & effective_sticky_mask)
-                == (new_val & effective_sticky_mask)
-            )
-
-        # 應用強制清除的約束
-        constraints.append((new_val & force_clear_mask) == 0)
-
-        return constraints
