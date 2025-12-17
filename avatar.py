@@ -14,52 +14,10 @@ Clock Stretching Spec
 import avatar2
 import angr
 import claripy
-from typing import NamedTuple
 import archinfo
 import json
 from PeripheralRulePlugin import PeripheralRulePlugin
-
-
-class MemoryRegion(NamedTuple):
-    start: int
-    size: int
-
-
-class I2C(MemoryRegion):
-    CR1_OFFSET = 0x00
-    CR2_OFFSET = 0x04
-    DR_OFFSET = 0x10
-    SR1_OFFSET = 0x14
-    SR2_OFFSET = 0x18
-
-    CR1_STOP_MASK = 1 << 9
-    CR1_START_MASK = 1 << 8
-
-    CR2_ITEVTEN_MASK = 1 << 9
-
-    SR1_TXE_MASK = 1 << 7
-    SR1_BTF_MASK = 1 << 2
-    SR1_ADDR_MASK = 1 << 1
-
-    @property
-    def CR1(self):
-        return self.start + self.CR1_OFFSET
-
-    @property
-    def CR2(self):
-        return self.start + self.CR2_OFFSET
-
-    @property
-    def DR(self):
-        return self.start + self.DR_OFFSET
-
-    @property
-    def SR1(self):
-        return self.start + self.SR1_OFFSET
-
-    @property
-    def SR2(self):
-        return self.start + self.SR2_OFFSET
+from fsm_definitions import MemoryRegion, I2C, get_fsm_rules
 
 
 def get_symbol_addr(symbol_name, is_variable):
@@ -79,8 +37,8 @@ def get_symbol_addr(symbol_name, is_variable):
 
 OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"
 OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"
-ELF_PATH = "firmwares/STM32/I2C/DMA_Mode/build/clockstretching.elf"
-BEGIN_SYMBOL = "HAL_I2C_Master_Transmit_DMA"
+ELF_PATH = "firmwares/STM32/I2C/Blocking_Mode/Hardware/build/clockstretching.elf"
+BEGIN_SYMBOL = "HAL_I2C_Master_Transmit"
 END_SYMBOL = "END_SYMBOLIC_EXECUTION"
 BEGIN_VERIFICATION_SYMBOL = "BEGIN_VERIFICATION"
 END_VERIFICATION_SYMBOL = "END_VERIFICATION"
@@ -282,23 +240,23 @@ state.globals["symbolic_name_cnt"] += 1
 # state.globals["verification_enabled"] = True
 
 
-def enable_verification(state):
-    state.globals["verification_enabled"] = True
+# def enable_verification(state):
+#     state.globals["verification_enabled"] = True
 
 
-def check_verification_addr(state):
-    if THUMB_MODE:
-        return (state.inspect.instruction & ~1) == (VERIFICATION_BEGIN_ADDR & ~1)
-    else:
-        return state.inspect.instruction == VERIFICATION_BEGIN_ADDR
+# def check_verification_addr(state):
+#     if THUMB_MODE:
+#         return (state.inspect.instruction & ~1) == (VERIFICATION_BEGIN_ADDR & ~1)
+#     else:
+#         return state.inspect.instruction == VERIFICATION_BEGIN_ADDR
 
 
-state.inspect.b(
-    "instruction",
-    when=angr.BP_BEFORE,
-    condition=check_verification_addr,
-    action=enable_verification,
-)
+# state.inspect.b(
+#     "instruction",
+#     when=angr.BP_BEFORE,
+#     condition=check_verification_addr,
+#     action=enable_verification,
+# )
 
 """
 攔截 read/write I2C1 位址的指令
@@ -307,141 +265,33 @@ state.inspect.b(
 
 def on_read_I2C1(state):
     addr = state.solver.eval(state.inspect.mem_read_address)
-    idx = int((addr - I2C1.start) / 4)
+    offset = addr - I2C1.start
 
-    prev_val = state.memory.load(
-        addr,
-        4,
-        endness=state.arch.memory_endness,
-        disable_actions=True,
-        inspect=False,
-    )
-    val = claripy.BVS(f"{I2C_NAME[idx]}_{state.globals['symbolic_name_cnt']}", 32) & (
-        I2C_NOT_RESERVED_MASK[I2C_NAME[idx]]
-        & I2C_HARDWARE_DEPENDENT_MASK[I2C_NAME[idx]]
-    ) | (
-        prev_val
-        & ~(
-            I2C_NOT_RESERVED_MASK[I2C_NAME[idx]]
-            & I2C_HARDWARE_DEPENDENT_MASK[I2C_NAME[idx]]
-        )
-    )
-    state.globals["symbolic_name_cnt"] += 1
+    # 1. 觸發 FSM (狀態推進、Spec 檢查)
+    # Read 操作 val 傳 None
+    state.peripheral.handle_mmio("read", offset, None)
 
-    # 額外處理: ADDR set 之後就不能再把 ADDR 設為 symbolic 了，只有 read SR1, SR2 之後才會 clear ADDR，所以 ADDR set 之後不會有 ADDR 0 的可能 (reference manual p871: This bit is cleared by software reading SR1 register followed reading SR2)
-    # if addr == I2C1.SR1:
-    #     sr1 = state.memory.load(
-    #         I2C1.SR1,
-    #         4,
-    #         endness=state.arch.memory_endness,
-    #         disable_actions=True,
-    #         inspect=False,
-    #     )
+    # 2. 回傳模擬的暫存器數值
+    # 從 Plugin 的 registers 字典中取值
+    reg_val = state.peripheral.get_reg_value(offset)
 
-    #     # 如果目前的 state ADDR 一定是 1
-    #     if not state.solver.satisfiable(
-    #         extra_constraints=[claripy.Not((sr1 & I2C1.SR1_ADDR_MASK) != 0)]
-    #     ):
-    #         state.add_constraints((val & I2C1.SR1_ADDR_MASK) != 0)  # 強制 ADDR bit 為 1
-
-    # if addr == I2C1.SR1:
-    #     # 如果先前的 ADDR 是 0，則此 constraint 無意義；如果先前的 ADDR 是 1，則新的 ADDR 一定要是 1
-    #     state.add_constraints(
-    #         ((prev_val & I2C1.SR1_ADDR_MASK) | (val & I2C1.SR1_ADDR_MASK))
-    #         == (val & I2C1.SR1_ADDR_MASK)
-    #     )
-
-    #     state.globals["SR1_read"] = True
-    # elif addr == I2C1.SR2:
-    #     if state.globals.get("SR1_read", False):
-    #         # clear ADDR bit
-    #         # state.memory.store(
-    #         #     I2C1.SR1,
-    #         #     state.memory.load(
-    #         #         I2C1.SR1,
-    #         #         4,
-    #         #         endness=state.arch.memory_endness,
-    #         #         disable_actions=True,
-    #         #         inspect=False,
-    #         #     )
-    #         #     & ~I2C1.SR1_ADDR_MASK,
-    #         #     endness=state.arch.memory_endness,
-    #         #     disable_actions=True,
-    #         #     inspect=False,
-    #         # )
-
-    #         state.globals["SR1_read"] = False
-    state.add_constraints(*state.rules.handle_memory_read(addr, prev_val, val))
-
-    state.memory.store(
-        addr,
-        val,
-        endness=state.arch.memory_endness,
-        disable_actions=True,
-        inspect=False,
-    )
-
-    if state.globals.get("verification_enabled", False):
-        if addr == I2C1.SR2:
-            sr1 = state.memory.load(
-                I2C1.SR1,
-                4,
-                endness=state.arch.memory_endness,
-                disable_actions=True,
-                inspect=False,
-            )
-
-            # [Spec 1]
-            # firmware 並不會直接 clear ADDR (ADDR 為 read only)，是先 read SR1 再 read SR2 時由 hardware 自動清除
-            violation_condition = (sr1 & I2C1.SR1_ADDR_MASK) == 0
-            if state.solver.satisfiable(extra_constraints=[violation_condition]):
-                found_violations.append(True)
-                state.add_constraints(claripy.Not(violation_condition))
-                print("Found a violation path")
+    # 如果 reg_val 是整數，轉成 BVV；如果是符號，直接回傳
+    if isinstance(reg_val, int):
+        state.inspect.mem_read_expr = claripy.BVV(reg_val, 32)
+    else:
+        state.inspect.mem_read_expr = reg_val
 
 
 def on_write_I2C1(state):
     addr = state.solver.eval(state.inspect.mem_write_address)
-    val = state.solver.eval(state.inspect.mem_write_expr)
+    val = state.inspect.mem_write_expr  # 這是符號表達式 AST
+    offset = addr - I2C1.start
 
-    if addr == I2C1.CR1:
-        cr2 = state.memory.load(
-            I2C1.CR2,
-            4,
-            endness=state.arch.memory_endness,
-            disable_actions=True,
-            inspect=False,
-        )
+    # 1. 觸發 FSM
+    state.peripheral.handle_mmio("write", offset, val)
 
-        if (
-            state.solver.is_true(cr2 & I2C.CR2_ITEVTEN_MASK != 0)
-            and (val & I2C.CR1_START_MASK) != 0
-        ):  # FIXME: 錯!!! 要在 SB bit set 時才會觸發 IRQ
-            print("[!] Interrupt condition met. Pending IRQ #31...")
-            state.globals["pending_irq"] = 31
-
-    if state.globals.get("verification_enabled", False):
-        sr1 = state.memory.load(
-            I2C1.SR1,
-            4,
-            endness=state.arch.memory_endness,
-            disable_actions=True,
-            inspect=False,
-        )
-
-        # [Spec 2]
-        # if addr == I2C1.DR:
-        #     violation_condition = (sr1 & I2C.SR1_TXE_MASK) == 0
-        #     if state.solver.satisfiable(extra_constraints=[violation_condition]):
-        #         found_violations.append(True)
-        #         state.add_constraints(claripy.Not(violation_condition))
-        #         print("Found a violation path")
-
-        # [Spec 3 (Part 1)]
-        # if addr == I2C1.CR1 and (val & I2C.CR1_STOP_MASK != 0):
-        #     violation_condition = (sr1 & I2C.SR1_BTF_MASK) == 0
-        #     if state.solver.satisfiable(extra_constraints=[violation_condition]):
-        #         state.globals["spec3_violation_pending"] = True
+    # Write 操作不需要回傳值，但上面的 handle_mmio
+    # 最後的 fallback 邏輯會把 val 存入 registers，供下次 Read 使用
 
 
 def read_in_I2C1(state):
@@ -481,15 +331,17 @@ state.inspect.b(
 
 def on_read_SysTick(state):
     addr = state.solver.eval(state.inspect.mem_read_address)
-    origin_value = state.memory.load(
-        addr,
-        4,
-        endness=state.arch.memory_endness,
-        disable_actions=True,
-        inspect=False,
-    )
+    # origin_value = state.memory.load(
+    #     addr,
+    #     4,
+    #     endness=state.arch.memory_endness,
+    #     disable_actions=True,
+    #     inspect=False,
+    # )
 
-    new_value = origin_value + 5  # 每讀取一次 SysTick，SysTick 加 5
+    # new_value = origin_value + 5  # 每讀取一次 SysTick，SysTick 加 5
+    new_value = claripy.BVS(f"syst_tick_{state.globals.get('tick_cnt', 0)}", 32)
+    state.globals["tick_cnt"] = state.globals.get("tick_cnt", 0) + 1
     state.memory.store(
         addr,
         new_value,
@@ -517,88 +369,92 @@ state.inspect.b(
 設定 interrupt
 """
 
-MAGIC_RETURN_ADDR = 0xFFFFFFFF  # 特殊地址，用於攔截 ISR 返回
+# MAGIC_RETURN_ADDR = 0xFFFFFFFF  # 特殊地址，用於攔截 ISR 返回
 
 
-def push_stack(state, value):
-    # 模擬 Cortex-M 堆疊操作 (Full Descending)
-    state.regs.sp -= 4
-    state.memory.store(state.regs.sp, value, endness=state.arch.memory_endness)
+# def push_stack(state, value):
+#     # 模擬 Cortex-M 堆疊操作 (Full Descending)
+#     state.regs.sp -= 4
+#     state.memory.store(state.regs.sp, value, endness=state.arch.memory_endness)
 
 
-def pop_stack(state):
-    val = state.memory.load(state.regs.sp, 4, endness=state.arch.memory_endness)
-    state.regs.sp += 4
-    return val
+# def pop_stack(state):
+#     val = state.memory.load(state.regs.sp, 4, endness=state.arch.memory_endness)
+#     state.regs.sp += 4
+#     return val
 
 
-def fire_interrupt(state, irq_num):
-    print(f"\n[!] Triggering IRQ #{irq_num} at PC: {state.addr:#x}")
+# def fire_interrupt(state, irq_num):
+#     print(f"\n[!] Triggering IRQ #{irq_num} at PC: {state.addr:#x}")
 
-    # 1. 保存 Context (Cortex-M Exception Frame)
-    # 堆疊順序: xPSR, PC, LR, R12, R3, R2, R1, R0
-    # 這裡簡化處理 xPSR，設為 0
-    xpsr = claripy.BVV(0, 32)
-    current_pc = state.regs.pc
-    current_lr = state.regs.lr
+#     # 1. 保存 Context (Cortex-M Exception Frame)
+#     # 堆疊順序: xPSR, PC, LR, R12, R3, R2, R1, R0
+#     # 這裡簡化處理 xPSR，設為 0
+#     xpsr = claripy.BVV(0, 32)
+#     current_pc = state.regs.pc
+#     current_lr = state.regs.lr
 
-    push_stack(state, xpsr)
-    push_stack(state, current_pc)
-    push_stack(state, current_lr)
-    push_stack(state, state.regs.r12)
-    push_stack(state, state.regs.r3)
-    push_stack(state, state.regs.r2)
-    push_stack(state, state.regs.r1)
-    push_stack(state, state.regs.r0)
+#     push_stack(state, xpsr)
+#     push_stack(state, current_pc)
+#     push_stack(state, current_lr)
+#     push_stack(state, state.regs.r12)
+#     push_stack(state, state.regs.r3)
+#     push_stack(state, state.regs.r2)
+#     push_stack(state, state.regs.r1)
+#     push_stack(state, state.regs.r0)
 
-    # 2. 設定 LR 為 Magic Return Address
-    # 當 ISR 執行 BX LR 時，會跳轉到這個地址，觸發我們的 Hook
-    state.regs.lr = MAGIC_RETURN_ADDR
+#     # 2. 設定 LR 為 Magic Return Address
+#     # 當 ISR 執行 BX LR 時，會跳轉到這個地址，觸發我們的 Hook
+#     state.regs.lr = MAGIC_RETURN_ADDR
 
-    # 3. 查表並跳轉
-    # IRQ #31 (I2C1_EV) 對應 Exception Number 47 (16 + 31)
-    isr_ptr_addr = VECTOR_TABLE.start + 4 * (16 + irq_num)
+#     # 3. 查表並跳轉
+#     # IRQ #31 (I2C1_EV) 對應 Exception Number 47 (16 + 31)
+#     isr_ptr_addr = VECTOR_TABLE.start + 4 * (16 + irq_num)
 
-    # 從記憶體讀取 ISR 地址 (注意要處理 Endness)
-    isr_addr = state.memory.load(
-        isr_ptr_addr,
-        4,
-        endness=state.arch.memory_endness,
-        disable_actions=True,
-        inspect=False,
-    )
+#     # 從記憶體讀取 ISR 地址 (注意要處理 Endness)
+#     isr_addr = state.memory.load(
+#         isr_ptr_addr,
+#         4,
+#         endness=state.arch.memory_endness,
+#         disable_actions=True,
+#         inspect=False,
+#     )
 
-    print(f"    -> Jumping to ISR at {state.solver.eval(isr_addr):#x}")
-    state.regs.pc = isr_addr
-
-
-def isr_return_hook(state):
-    print(f"\n[!] ISR Return triggered at {state.addr:#x}")
-
-    # 恢復 Context (順序與 push 相反)
-    state.regs.r0 = pop_stack(state)
-    state.regs.r1 = pop_stack(state)
-    state.regs.r2 = pop_stack(state)
-    state.regs.r3 = pop_stack(state)
-    state.regs.r12 = pop_stack(state)
-    state.regs.lr = pop_stack(state)
-    return_pc = pop_stack(state)
-    _ = pop_stack(state)  # Pop xPSR
-
-    print(f"    -> Returning to original context at {state.solver.eval(return_pc):#x}")
-    state.regs.pc = return_pc
+#     print(f"    -> Jumping to ISR at {state.solver.eval(isr_addr):#x}")
+#     state.regs.pc = isr_addr
 
 
-proj.hook(MAGIC_RETURN_ADDR, isr_return_hook, length=0)
+# def isr_return_hook(state):
+#     print(f"\n[!] ISR Return triggered at {state.addr:#x}")
+
+#     # 恢復 Context (順序與 push 相反)
+#     state.regs.r0 = pop_stack(state)
+#     state.regs.r1 = pop_stack(state)
+#     state.regs.r2 = pop_stack(state)
+#     state.regs.r3 = pop_stack(state)
+#     state.regs.r12 = pop_stack(state)
+#     state.regs.lr = pop_stack(state)
+#     return_pc = pop_stack(state)
+#     _ = pop_stack(state)  # Pop xPSR
+
+#     print(f"    -> Returning to original context at {state.solver.eval(return_pc):#x}")
+#     state.regs.pc = return_pc
+
+
+# proj.hook(MAGIC_RETURN_ADDR, isr_return_hook, length=0)
 
 """
 設定 rules
 """
 
-angr.SimState.register_default("rules", PeripheralRulePlugin)
-with open("rules.json", "r") as f:
-    json_rules = json.load(f)
-state.rules.load_rules(json_rules)
+# angr.SimState.register_default("rules", PeripheralRulePlugin)
+# with open("rules.json", "r") as f:
+#     json_rules = json.load(f)
+# state.rules.load_rules(json_rules)
+
+state.register_plugin(
+    "peripheral", PeripheralRulePlugin(rules=get_fsm_rules(), base_addr=I2C1.start)
+)
 
 """
 設定 simulation_manager
@@ -619,13 +475,13 @@ def monitor_exploration(simgr):
     監控 state 的狀況
     """
 
-    for state in simgr.active:
-        pending_irq = state.globals.get("pending_irq", None)
-        if pending_irq is not None:
-            # 清除 Flag
-            state.globals.pop("pending_irq")
-            # 觸發中斷 (此時 state 已經在一個 Block 執行結束的邊界，PC 是乾淨的下一條指令)
-            fire_interrupt(state, pending_irq)
+    # for state in simgr.active:
+    #     pending_irq = state.globals.get("pending_irq", None)
+    #     if pending_irq is not None:
+    #         # 清除 Flag
+    #         state.globals.pop("pending_irq")
+    #         # 觸發中斷 (此時 state 已經在一個 Block 執行結束的邊界，PC 是乾淨的下一條指令)
+    #         fire_interrupt(state, pending_irq)
 
     print(f"Step: Active={len(simgr.active)}, Found={len(simgr.found)}")
 
@@ -638,7 +494,7 @@ def monitor_exploration(simgr):
 
 
 simgr.explore(
-    find=[VERIFICATION_END_ADDR, END_ADDR],
+    find=[lambda s: s.peripheral.vars.get("internal_state") == "VIOLATION", END_ADDR],
     num_find=float("inf"),
     step_func=monitor_exploration,
 )
@@ -674,21 +530,23 @@ if len(simgr.errored) > 0:
         except Exception as e:
             print(f"  Could not extract debug info: {e}")
         print("-" * 30)
-elif len(found_violations) > 0:
-    print(f"Verification FAILURE! Found {len(found_violations)} violation path(s)")
 elif len(simgr.found) > 0:
-    # [Spec 3 (Part 2)]
-    # for state in simgr.found:
-    #     r0 = state.solver.eval(state.regs.r0)
+    for s in simgr.found:
+        if s.peripheral.vars.get("internal_state") == "VIOLATION":
+            print("Verification FAILURE!")
+            exit(0)
+    print("Verification SUCCESS!")
+# else:
+# [Spec 3 (Part 2)]
+# for state in simgr.found:
+#     r0 = state.solver.eval(state.regs.r0)
 
-    #     print(f"r0 = {r0}")
+#     print(f"r0 = {r0}")
 
-    #     if r0 == HAL_OK and state.globals.get("spec3_violation_pending", False):
-    #         found_violations.append(True)
-    #         print("Found a violation path")
-    # if len(found_violations) > 0:
-    #     print(f"Verification FAILURE! Found {len(found_violations)} violation path(s)")
-    # else:
-    print(f"Verification SUCCESS! Found {len(simgr.found)} paths that reached the end")
-else:
-    print("No state reached the end")
+#     if r0 == HAL_OK and state.globals.get("spec3_violation_pending", False):
+#         found_violations.append(True)
+#         print("Found a violation path")
+# if len(found_violations) > 0:
+#     print(f"Verification FAILURE! Found {len(found_violations)} violation path(s)")
+# else:
+# print("Verification SUCCESS!")
