@@ -4,7 +4,7 @@ Clock Stretching Spec
 * Blocking Mode
     1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
     2. write DR 前，若 TxE bit 為 0，則違反
-    3. 最後一個 set STOP bit 前，若 BTF bit 為 0，則違反
+    3. set STOP bit 前，若 BTF bit 為 0 且 AF bit 為 0，則違反
 * DMA Mode
     1. clear ADDR bit (I2C_Master_ADDR() 內) 前，若 ADDR bit 為 0，則違反
     2. (無法檢查)
@@ -15,9 +15,8 @@ import avatar2
 import angr
 import claripy
 import archinfo
-import json
 from PeripheralRulePlugin import PeripheralRulePlugin
-from fsm_definitions import MemoryRegion, I2C, get_fsm_rules
+from EFSM import MemoryRegion, I2C, get_efsm_rules
 
 
 def get_symbol_addr(symbol_name, is_variable):
@@ -40,8 +39,6 @@ OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"
 ELF_PATH = "firmwares/STM32/I2C/Blocking_Mode/Hardware/build/clockstretching.elf"
 BEGIN_SYMBOL = "HAL_I2C_Master_Transmit"
 END_SYMBOL = "END_SYMBOLIC_EXECUTION"
-BEGIN_VERIFICATION_SYMBOL = "BEGIN_VERIFICATION"
-END_VERIFICATION_SYMBOL = "END_VERIFICATION"
 SYSTICK_VARIABLE_SYMBOL = "uwTick"
 THUMB_MODE = True
 
@@ -131,8 +128,6 @@ proj = angr.Project(
 
 BEGIN_ADDR = get_symbol_addr(BEGIN_SYMBOL, is_variable=False)
 END_ADDR = get_symbol_addr(END_SYMBOL, is_variable=False)
-VERIFICATION_BEGIN_ADDR = get_symbol_addr(BEGIN_VERIFICATION_SYMBOL, is_variable=False)
-VERIFICATION_END_ADDR = get_symbol_addr(END_VERIFICATION_SYMBOL, is_variable=False)
 SYSTICK_VARIABLE_ADDR = get_symbol_addr(SYSTICK_VARIABLE_SYMBOL, is_variable=True)
 
 """
@@ -214,49 +209,8 @@ try:
     print(f"Mapped Flash alias at {VECTOR_TABLE.start:#x} (Vector Table)")
 except Exception as e:
     print(f"Warning: Failed to map Vector Table at {VECTOR_TABLE.start:#x}: {e}")
-# 寫入 I2C1 FIXME: 應該不是用 I2C_RESET_VAL 而是用 i2c1_dump 出來的?
-state.globals["symbolic_name_cnt"] = 0
-for i in range(len(I2C_NAME)):
-    value = claripy.BVS(f"{I2C_NAME[i]}_{state.globals['symbolic_name_cnt']}", 32) & (
-        I2C_NOT_RESERVED_MASK[I2C_NAME[i]] & I2C_HARDWARE_DEPENDENT_MASK[I2C_NAME[i]]
-    ) | (
-        I2C_RESET_VAL[I2C_NAME[i]]
-        & ~(
-            I2C_NOT_RESERVED_MASK[I2C_NAME[i]]
-            & I2C_HARDWARE_DEPENDENT_MASK[I2C_NAME[i]]
-        )
-    )
-    state.memory.store(
-        I2C1.start + i * 4,
-        value,
-    )
+state.memory.store(I2C1.start, i2c1_dump)
 state.memory.store(DMA1.start, dma1_dump)
-state.globals["symbolic_name_cnt"] += 1
-
-"""
-設定驗證開始時間點
-"""
-
-# state.globals["verification_enabled"] = True
-
-
-# def enable_verification(state):
-#     state.globals["verification_enabled"] = True
-
-
-# def check_verification_addr(state):
-#     if THUMB_MODE:
-#         return (state.inspect.instruction & ~1) == (VERIFICATION_BEGIN_ADDR & ~1)
-#     else:
-#         return state.inspect.instruction == VERIFICATION_BEGIN_ADDR
-
-
-# state.inspect.b(
-#     "instruction",
-#     when=angr.BP_BEFORE,
-#     condition=check_verification_addr,
-#     action=enable_verification,
-# )
 
 """
 攔截 read/write I2C1 位址的指令
@@ -267,15 +221,9 @@ def on_read_I2C1(state):
     addr = state.solver.eval(state.inspect.mem_read_address)
     offset = addr - I2C1.start
 
-    # 1. 觸發 FSM (狀態推進、Spec 檢查)
-    # Read 操作 val 傳 None
     state.peripheral.handle_mmio("read", offset, None)
 
-    # 2. 回傳模擬的暫存器數值
-    # 從 Plugin 的 registers 字典中取值
     reg_val = state.peripheral.get_reg_value(offset)
-
-    # 如果 reg_val 是整數，轉成 BVV；如果是符號，直接回傳
     if isinstance(reg_val, int):
         state.inspect.mem_read_expr = claripy.BVV(reg_val, 32)
     else:
@@ -284,14 +232,10 @@ def on_read_I2C1(state):
 
 def on_write_I2C1(state):
     addr = state.solver.eval(state.inspect.mem_write_address)
-    val = state.inspect.mem_write_expr  # 這是符號表達式 AST
+    val = state.inspect.mem_write_expr
     offset = addr - I2C1.start
 
-    # 1. 觸發 FSM
     state.peripheral.handle_mmio("write", offset, val)
-
-    # Write 操作不需要回傳值，但上面的 handle_mmio
-    # 最後的 fallback 邏輯會把 val 存入 registers，供下次 Read 使用
 
 
 def read_in_I2C1(state):
@@ -447,13 +391,8 @@ state.inspect.b(
 設定 rules
 """
 
-# angr.SimState.register_default("rules", PeripheralRulePlugin)
-# with open("rules.json", "r") as f:
-#     json_rules = json.load(f)
-# state.rules.load_rules(json_rules)
-
 state.register_plugin(
-    "peripheral", PeripheralRulePlugin(rules=get_fsm_rules(), base_addr=I2C1.start)
+    "peripheral", PeripheralRulePlugin(base_addr=I2C1.start, rules=get_efsm_rules())
 )
 
 """
@@ -494,7 +433,7 @@ def monitor_exploration(simgr):
 
 
 simgr.explore(
-    find=[lambda s: s.peripheral.vars.get("internal_state") == "VIOLATION", END_ADDR],
+    find=[lambda s: s.peripheral.internal_state_vars["mode"] == "VIOLATION", END_ADDR],
     num_find=float("inf"),
     step_func=monitor_exploration,
 )
@@ -532,21 +471,7 @@ if len(simgr.errored) > 0:
         print("-" * 30)
 elif len(simgr.found) > 0:
     for s in simgr.found:
-        if s.peripheral.vars.get("internal_state") == "VIOLATION":
+        if s.peripheral.internal_state_vars["mode"] == "VIOLATION":
             print("Verification FAILURE!")
             exit(0)
     print("Verification SUCCESS!")
-# else:
-# [Spec 3 (Part 2)]
-# for state in simgr.found:
-#     r0 = state.solver.eval(state.regs.r0)
-
-#     print(f"r0 = {r0}")
-
-#     if r0 == HAL_OK and state.globals.get("spec3_violation_pending", False):
-#         found_violations.append(True)
-#         print("Found a violation path")
-# if len(found_violations) > 0:
-#     print(f"Verification FAILURE! Found {len(found_violations)} violation path(s)")
-# else:
-# print("Verification SUCCESS!")
