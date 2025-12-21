@@ -29,8 +29,8 @@ class I2C(MemoryRegion):
         "IDLE": {},
         "SB_WAIT": {SR1_OFFSET: SR1_SB_MASK},
         "ADDR_WAIT": {SR1_OFFSET: SR1_ADDR_MASK},
-        "MASTER_TX": {SR1_OFFSET: SR1_TXE_MASK | SR1_BTF_MASK},
-        "TX_BUSY": {SR1_OFFSET: SR1_TXE_MASK | SR1_BTF_MASK},
+        "TXE_SET_SRE_WRITE_DR": {SR1_OFFSET: SR1_TXE_MASK | SR1_BTF_MASK},
+        "TXE_SET_SRNE_WRITE_DR": {SR1_OFFSET: SR1_TXE_MASK | SR1_BTF_MASK},
         "BTF_SET": {},
     }
 
@@ -76,6 +76,7 @@ def get_efsm_rules():
                 "next_state": "SB_WAIT",
             }
         ],
+        # EV5
         "SB_WAIT": [
             {
                 "trigger_type": "write",
@@ -104,6 +105,7 @@ def get_efsm_rules():
                 "next_state": "SB_WAIT",
             },
         ],
+        # EV6
         "ADDR_WAIT": [
             # [Spec 1]
             {
@@ -132,7 +134,7 @@ def get_efsm_rules():
                         I2C.SR1_TXE_MASK,
                     ),  # reference manual p870: Set when DR is empty in transmission. TxE is not set during address phase
                 ],
-                "next_state": "MASTER_TX",
+                "next_state": "TXE_SET_SRE_WRITE_DR",
             },
             {
                 "trigger_type": "read",
@@ -142,7 +144,8 @@ def get_efsm_rules():
                 "next_state": "ADDR_WAIT",
             },
         ],
-        "MASTER_TX": [
+        # EV8_1
+        "TXE_SET_SRE_WRITE_DR": [
             # [Spec 2]
             {
                 "trigger_type": "write",
@@ -170,8 +173,9 @@ def get_efsm_rules():
                 "trigger_type": "read",
                 "offset": I2C.SR1_OFFSET,
                 "guard": lambda val, s: (
-                    (s.get_reg_value(I2C.SR1_OFFSET) & I2C.SR1_BTF_MASK) != 0
-                ),
+                    s.get_reg_value(I2C.SR1_OFFSET) & I2C.SR1_BTF_MASK
+                )
+                == 1,
                 "actions": [],
                 "next_state": "BTF_SET",
             },
@@ -186,21 +190,23 @@ def get_efsm_rules():
                         I2C.SR1_TXE_MASK,
                     ),  # reference manual p870: Cleared by software writing to the DR register
                 ],
-                "next_state": "TX_BUSY",
+                "next_state": "TXE_SET_SRNE_WRITE_DR",
             },
         ],
-        # 剛寫入 DR，但尚未轉移到 shift register 的暫態
-        "TX_BUSY": [
+        # EV8
+        "TXE_SET_SRNE_WRITE_DR": [
+            # [Spec 2]
             {
-                "trigger_type": "read",
-                "offset": I2C.SR1_OFFSET,
-                "guard": lambda val, s: True,
+                "trigger_type": "write",
+                "offset": I2C.DR_OFFSET,
+                "guard": lambda val, s: (
+                    s.get_reg_value(I2C.SR1_OFFSET) & I2C.SR1_TXE_MASK
+                )
+                == 0,
                 "actions": [],
-                "next_state": "MASTER_TX",
-            }
-        ],
-        # 傳輸完成等待下個步驟 (STOP, Repearted Start, or 寫入下一筆資料)
-        "BTF_SET": [
+                "next_state": "VIOLATION",
+                "error_msg": "Spec 2 Violation: Write DR when TxE is 0",
+            },
             # [Spec 3]
             {
                 "trigger_type": "write",
@@ -210,8 +216,34 @@ def get_efsm_rules():
                 & ((s.get_reg_value(I2C.SR1_OFFSET) & I2C.SR1_AF_MASK) == 0),
                 "actions": [],
                 "next_state": "VIOLATION",
-                "error_msg": "Spec 3 Violation: Set STOP when BTF is 0 and AF is 0 (in BTF_SET)",
+                "error_msg": "Spec 3 Violation: Set STOP when BTF is 0 and AF is 0 (in MASTER_TX)",
             },
+            {
+                "trigger_type": "write",
+                "offset": I2C.DR_OFFSET,
+                "guard": lambda val, s: True,
+                "actions": [
+                    (
+                        "clear_bit",
+                        I2C.SR1_OFFSET,
+                        I2C.SR1_TXE_MASK,
+                    ),
+                ],  # reference manual p870: Cleared by software writing to the DR register
+                "next_state": "TXE_SET_SRNE_WRITE_DR",
+            },
+            {
+                "trigger_type": "read",
+                "offset": I2C.SR1_OFFSET,
+                "guard": lambda val, s: (
+                    s.get_reg_value(I2C.SR1_OFFSET) & I2C.SR1_BTF_MASK
+                )
+                == 1,
+                "actions": [],
+                "next_state": "BTF_SET",
+            },
+        ],
+        # EV8_2
+        "BTF_SET": [
             {
                 "trigger_type": "write",
                 "offset": I2C.DR_OFFSET,
@@ -222,13 +254,9 @@ def get_efsm_rules():
                         I2C.SR1_OFFSET,
                         I2C.SR1_BTF_MASK,
                     ),  # reference manual p871: Cleared by software by either a read or write in the DR register
-                    (
-                        "clear_bit",
-                        I2C.SR1_OFFSET,
-                        I2C.SR1_TXE_MASK,
-                    ),  # reference manual p870: Cleared by software writing to the DR register
+                    # 不會 clear TxE，因為寫入 DR 後資料會直接進入 shift register
                 ],
-                "next_state": "TX_BUSY",
+                "next_state": "TXE_SET_SRNE_WRITE_DR",
             },
             # Stop condition OK
             {

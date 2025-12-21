@@ -8,7 +8,8 @@ Clock Stretching Spec
 * DMA Mode
     1. clear ADDR bit (I2C_Master_ADDR() 內) 前，若 ADDR bit 為 0，則違反
     2. (無法檢查)
-    3. set STOP bit (I2C_MasterTransmit_BTF() 內) 前，若 BTF bit 為 0，則違反
+    3. set STOP bit (I2C_MasterTransmit_BTF() 內) 前，若 BTF bit 為 0 且 AF bit 為 0，則違反
+    TODO: 我可以直接在 SB_WAIT state write DR 的 action 中觸發 IRQ，可參考 SEmu 的 chained execution
 """
 
 import avatar2
