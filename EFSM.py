@@ -31,7 +31,7 @@ class I2C(MemoryRegion):
         "ADDR_WAIT": {SR1_OFFSET: SR1_ADDR_MASK},
         "MASTER_TX": {SR1_OFFSET: SR1_TXE_MASK | SR1_BTF_MASK},
         "TX_BUSY": {SR1_OFFSET: SR1_TXE_MASK | SR1_BTF_MASK},
-        "BTF_WAIT": {SR1_OFFSET: SR1_BTF_MASK},
+        "BTF_SET": {},
     }
 
     @property
@@ -66,7 +66,13 @@ def get_efsm_rules():
                 "trigger_type": "write",
                 "offset": I2C.CR1_OFFSET,
                 "guard": lambda val, s: (val & I2C.CR1_START_MASK) != 0,
-                "actions": [],
+                "actions": [
+                    (
+                        "clear_bit",
+                        I2C.SR1_OFFSET,
+                        I2C.SR1_TXE_MASK,
+                    ),  # reference manual p870: Cleared ... or by hardware after a start or a stop condition
+                ],
                 "next_state": "SB_WAIT",
             }
         ],
@@ -82,6 +88,11 @@ def get_efsm_rules():
                         I2C.SR1_OFFSET,
                         I2C.SR1_SB_MASK,
                     ),  # reference manual p871: Cleared by software by reading the SR1 register followed by writing the DR register
+                    (
+                        "clear_bit",
+                        I2C.SR1_OFFSET,
+                        I2C.SR1_TXE_MASK,
+                    ),  # reference manual p870: Cleared by software writing to the DR register
                 ],
                 "next_state": "ADDR_WAIT",
             },
@@ -156,6 +167,15 @@ def get_efsm_rules():
                 "error_msg": "Spec 3 Violation: Set STOP when BTF is 0 and AF is 0 (in MASTER_TX)",
             },
             {
+                "trigger_type": "read",
+                "offset": I2C.SR1_OFFSET,
+                "guard": lambda val, s: (
+                    (s.get_reg_value(I2C.SR1_OFFSET) & I2C.SR1_BTF_MASK) != 0
+                ),
+                "actions": [],
+                "next_state": "BTF_SET",
+            },
+            {
                 "trigger_type": "write",
                 "offset": I2C.DR_OFFSET,
                 "guard": lambda val, s: True,
@@ -169,7 +189,7 @@ def get_efsm_rules():
                 "next_state": "TX_BUSY",
             },
         ],
-        # TX_BUSY state 代表剛寫入 DR，但尚未轉移到 shift register 的暫態
+        # 剛寫入 DR，但尚未轉移到 shift register 的暫態
         "TX_BUSY": [
             {
                 "trigger_type": "read",
@@ -179,7 +199,8 @@ def get_efsm_rules():
                 "next_state": "MASTER_TX",
             }
         ],
-        "BTF_WAIT": [
+        # 傳輸完成等待下個步驟 (STOP, Repearted Start, or 寫入下一筆資料)
+        "BTF_SET": [
             # [Spec 3]
             {
                 "trigger_type": "write",
@@ -189,7 +210,7 @@ def get_efsm_rules():
                 & ((s.get_reg_value(I2C.SR1_OFFSET) & I2C.SR1_AF_MASK) == 0),
                 "actions": [],
                 "next_state": "VIOLATION",
-                "error_msg": "Spec 3 Violation: Set STOP when BTF is 0 and AF is 0 (in BTF_WAIT)",
+                "error_msg": "Spec 3 Violation: Set STOP when BTF is 0 and AF is 0 (in BTF_SET)",
             },
             {
                 "trigger_type": "write",
