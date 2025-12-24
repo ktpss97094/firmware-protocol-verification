@@ -276,17 +276,17 @@ state.inspect.b(
 
 def on_read_SysTick(state):
     addr = state.solver.eval(state.inspect.mem_read_address)
-    # origin_value = state.memory.load(
-    #     addr,
-    #     4,
-    #     endness=state.arch.memory_endness,
-    #     disable_actions=True,
-    #     inspect=False,
-    # )
+    origin_value = state.memory.load(
+        addr,
+        4,
+        endness=state.arch.memory_endness,
+        disable_actions=True,
+        inspect=False,
+    )
 
-    # new_value = origin_value + 5  # 每讀取一次 SysTick，SysTick 加 5
-    new_value = claripy.BVS(f"syst_tick_{state.globals.get('tick_cnt', 0)}", 32)
-    state.globals["tick_cnt"] = state.globals.get("tick_cnt", 0) + 1
+    new_value = origin_value + 5  # 每讀取一次 SysTick，SysTick 加 5
+    # new_value = claripy.BVS(f"syst_tick_{state.globals.get('tick_cnt', 0)}", 32)
+    # state.globals["tick_cnt"] = state.globals.get("tick_cnt", 0) + 1
     state.memory.store(
         addr,
         new_value,
@@ -394,6 +394,21 @@ state.inspect.b(
 
 state.register_plugin(
     "peripheral", PeripheralRulePlugin(base_addr=I2C1.start, rules=get_efsm_rules())
+)
+
+"""
+debug 專用
+"""
+
+
+def stop_and_debug(state):
+    state.globals["DEBUG"] = True
+
+
+state.inspect.b(
+    "instruction",
+    instruction=get_symbol_addr("SYMBOL_FUNCTION", False),
+    action=stop_and_debug,
 )
 
 """

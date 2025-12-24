@@ -58,6 +58,8 @@ class I2C(MemoryRegion):
 def get_efsm_rules():
     """
     state 內的規則順序會影響執行結果。需先放 特例/嚴格 再放通例/寬鬆
+
+    WARNING: 檢查 bit 是 1 還是 0 用 != 0 跟 == 0，不要用 == 1 !!! (== 1 只會檢查最低位元)
     """
 
     return {
@@ -156,7 +158,7 @@ def get_efsm_rules():
                 == 0,
                 "actions": [],
                 "next_state": "VIOLATION",
-                "error_msg": "Spec 2 Violation: Write DR when TxE is 0",
+                "error_msg": "Spec 2 Violation: Write DR when TxE is 0 (in TXE_SET_SRE_WRITE_DR)",
             },
             # [Spec 3]
             {
@@ -167,7 +169,7 @@ def get_efsm_rules():
                 & ((s.get_reg_value(I2C.SR1_OFFSET) & I2C.SR1_AF_MASK) == 0),
                 "actions": [],
                 "next_state": "VIOLATION",
-                "error_msg": "Spec 3 Violation: Set STOP when BTF is 0 and AF is 0 (in MASTER_TX)",
+                "error_msg": "Spec 3 Violation: Set STOP when BTF is 0 and AF is 0 (in TXE_SET_SRE_WRITE_DR)",
             },
             {
                 "trigger_type": "read",
@@ -175,7 +177,7 @@ def get_efsm_rules():
                 "guard": lambda val, s: (
                     s.get_reg_value(I2C.SR1_OFFSET) & I2C.SR1_BTF_MASK
                 )
-                == 1,
+                != 0,
                 "actions": [],
                 "next_state": "BTF_SET",
             },
@@ -184,11 +186,7 @@ def get_efsm_rules():
                 "offset": I2C.DR_OFFSET,
                 "guard": lambda val, s: True,
                 "actions": [
-                    (
-                        "clear_bit",
-                        I2C.SR1_OFFSET,
-                        I2C.SR1_TXE_MASK,
-                    ),  # reference manual p870: Cleared by software writing to the DR register
+                    # reference manual p870: TxE is not cleared by writing the first data being transmitted
                 ],
                 "next_state": "TXE_SET_SRNE_WRITE_DR",
             },
@@ -205,7 +203,7 @@ def get_efsm_rules():
                 == 0,
                 "actions": [],
                 "next_state": "VIOLATION",
-                "error_msg": "Spec 2 Violation: Write DR when TxE is 0",
+                "error_msg": "Spec 2 Violation: Write DR when TxE is 0 (in TXE_SET_SRNE_WRITE_DR)",
             },
             # [Spec 3]
             {
@@ -216,7 +214,7 @@ def get_efsm_rules():
                 & ((s.get_reg_value(I2C.SR1_OFFSET) & I2C.SR1_AF_MASK) == 0),
                 "actions": [],
                 "next_state": "VIOLATION",
-                "error_msg": "Spec 3 Violation: Set STOP when BTF is 0 and AF is 0 (in MASTER_TX)",
+                "error_msg": "Spec 3 Violation: Set STOP when BTF is 0 and AF is 0 (in TXE_SET_SRNE_WRITE_DR)",
             },
             {
                 "trigger_type": "write",
@@ -237,7 +235,7 @@ def get_efsm_rules():
                 "guard": lambda val, s: (
                     s.get_reg_value(I2C.SR1_OFFSET) & I2C.SR1_BTF_MASK
                 )
-                == 1,
+                != 0,
                 "actions": [],
                 "next_state": "BTF_SET",
             },
@@ -254,7 +252,7 @@ def get_efsm_rules():
                         I2C.SR1_OFFSET,
                         I2C.SR1_BTF_MASK,
                     ),  # reference manual p871: Cleared by software by either a read or write in the DR register
-                    # 不會 clear TxE，因為寫入 DR 後資料會直接進入 shift register
+                    # 不會 clear TxE，因為寫入 DR 後資料會直接進入 shift register (reference manual p870: TxE is not cleared ... or by writing data when BTF is set)
                 ],
                 "next_state": "TXE_SET_SRNE_WRITE_DR",
             },
