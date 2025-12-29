@@ -8,9 +8,7 @@ Clock Stretching Spec
 * DMA Mode
     1. clear ADDR bit (I2C_Master_ADDR() 內) 前，若 ADDR bit 為 0，則違反
     2. (無法檢查)
-    3. set STOP bit (I2C_MasterTransmit_BTF() 內) 前，若 BTF bit 為 0 且 AF bit 為 0，則違反
-    TODO: 我可以直接在 SB_WAIT state write DR 的 action 中觸發 IRQ，可參考 SEmu 的 chained execution
-"""
+    3. set STOP bit (I2C_MasterTransmit_BTF() 內) 前，若 BTF bit 為 0 且 AF bit 為 0，則違反"""
 
 import avatar2
 import angr
@@ -18,6 +16,7 @@ import claripy
 import archinfo
 from PeripheralRulePlugin import PeripheralRulePlugin
 from EFSM import MemoryRegion, I2C, get_efsm_rules
+from SymbolicPolicy import SymbolicPolicy
 
 
 def get_symbol_addr(symbol_name, is_variable):
@@ -392,8 +391,15 @@ state.inspect.b(
 設定 rules
 """
 
+symbolic_policy = SymbolicPolicy.get_state_symbolic_cls()
+symbolic_policy.set_bounded_arg(index=3, name="Size", bits=32, lo=1, hi=3)
+symbolic_policy.apply_function_args(proj=proj, state=state, arg_count=5)
+
 state.register_plugin(
-    "peripheral", PeripheralRulePlugin(base_addr=I2C1.start, rules=get_efsm_rules())
+    "peripheral",
+    PeripheralRulePlugin(
+        base_addr=I2C1.start, rules=get_efsm_rules(), symbolic_policy=symbolic_policy
+    ),
 )
 
 """

@@ -24,16 +24,6 @@ class I2C(MemoryRegion):
     SR1_ADDR_MASK = 1 << 1
     SR1_SB_MASK = 1 << 0
 
-    # 定義在哪個 state 下哪些 bits 要設為 symbolic
-    STATE_SYMBOLIC = {
-        "IDLE": {},
-        "SB_WAIT": {SR1_OFFSET: SR1_SB_MASK},
-        "ADDR_WAIT": {SR1_OFFSET: SR1_ADDR_MASK},
-        "TXE_SET_SRE_WRITE_DR": {SR1_OFFSET: SR1_TXE_MASK | SR1_BTF_MASK},
-        "TXE_SET_SRNE_WRITE_DR": {SR1_OFFSET: SR1_TXE_MASK | SR1_BTF_MASK},
-        "BTF_SET": {},
-    }
-
     @property
     def CR1(self):
         return self.start + self.CR1_OFFSET

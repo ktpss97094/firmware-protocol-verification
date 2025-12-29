@@ -1,15 +1,21 @@
 import angr
 import claripy
 import copy
-from EFSM import I2C
 
 
 class PeripheralRulePlugin(angr.SimStatePlugin):
-    def __init__(self, base_addr, rules, internal_state_vars=None):
+    def __init__(
+        self,
+        base_addr,
+        rules,
+        internal_state_vars=None,
+        symbolic_policy=None,
+    ):
         super(PeripheralRulePlugin, self).__init__()
 
         self.rules = rules
         self.base_addr = base_addr
+        self.symbolic_policy = symbolic_policy
         self.internal_state_vars = (
             {
                 "mode": "IDLE",
@@ -25,6 +31,7 @@ class PeripheralRulePlugin(angr.SimStatePlugin):
             rules=self.rules,
             internal_state_vars=copy.deepcopy(self.internal_state_vars),
             base_addr=self.base_addr,
+            symbolic_policy=self.symbolic_policy,
         )
 
     def get_reg_value(self, offset):
@@ -96,8 +103,11 @@ class PeripheralRulePlugin(angr.SimStatePlugin):
         current_state_name = self.internal_state_vars["mode"]
 
         # 1. 取得該狀態基本的 symbolic 定義 (例如 ADDR_WAIT 中 SR1 要是 symbolic)
-        # 注意：你需要確保 I2C.STATE_SYMBOLIC 裡包含基本的定義
-        base_mask = I2C.STATE_SYMBOLIC.get(current_state_name, {}).get(offset, 0)
+        base_mask = (
+            0
+            if self.symbolic_policy is None
+            else self.symbolic_policy.mmio_symbolic_mask(current_state_name, offset)
+        )
 
         if base_mask == 0:
             return 0
@@ -143,7 +153,6 @@ class PeripheralRulePlugin(angr.SimStatePlugin):
         將要設為 symbolic 的 bits 設為 symbolic
         """
         current_state = self.internal_state_vars["mode"]
-        # symbolic_mask = I2C.STATE_SYMBOLIC.get(current_state, 0).get(offset, 0)
         symbolic_mask = self._get_symbolic_mask(offset)
 
         if symbolic_mask == 0:
