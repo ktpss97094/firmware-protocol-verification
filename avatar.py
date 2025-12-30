@@ -41,6 +41,7 @@ BEGIN_SYMBOL = "HAL_I2C_Master_Transmit"
 END_SYMBOL = "END_SYMBOLIC_EXECUTION"
 SYSTICK_VARIABLE_SYMBOL = "uwTick"
 THUMB_MODE = True
+USE_RENODE = True
 
 RAM = MemoryRegion(start=0x20000000, size=0x30000)
 CCMRAM = MemoryRegion(start=0x10000000, size=0x10000)
@@ -134,11 +135,20 @@ SYSTICK_VARIABLE_ADDR = get_symbol_addr(SYSTICK_VARIABLE_SYMBOL, is_variable=Tru
 Avatar2 部分
 """
 
-stm32 = avatar.add_target(
-    avatar2.OpenOCDTarget,
-    openocd_script=OPENOCD_INTERFACE_SCRIPT_PATH,
-    additional_args=["-f", OPENOCD_TARGET_SCRIPT_PATH],
-)
+if USE_RENODE:
+    stm32 = avatar.add_target(
+        avatar2.GDBTarget,
+        gdb_port=3333,
+        gdb_serial_device="127.0.0.1",
+        serial=False,
+        gdb_additional_args=[ELF_PATH],
+    )
+else:
+    stm32 = avatar.add_target(
+        avatar2.OpenOCDTarget,
+        openocd_script=OPENOCD_INTERFACE_SCRIPT_PATH,
+        additional_args=["-f", OPENOCD_TARGET_SCRIPT_PATH],
+    )
 
 avatar.add_memory_range(RAM.start, RAM.size, name="sram", target=stm32)
 avatar.add_memory_range(CCMRAM.start, CCMRAM.size, name="ccmram", target=stm32)
@@ -148,6 +158,8 @@ avatar.add_memory_range(DMA1.start, DMA1.size, name="dma1", target=stm32)
 
 avatar.init_targets()
 stm32.set_breakpoint(BEGIN_ADDR)
+if USE_RENODE:
+    stm32.protocols.execution.console_command("monitor start")
 stm32.cont()
 stm32.wait()
 print("Hardware hit the breakpoint. Extracting state")
@@ -175,7 +187,13 @@ regs = {
 }
 regs["pc"] = proj.arch.x_addr(regs["pc"], thumb=THUMB_MODE)  # Thumb Mode
 sram_dump = stm32.read_memory(RAM.start, size=1, num_words=RAM.size, raw=True)
-ccmram_dump = stm32.read_memory(CCMRAM.start, size=1, num_words=CCMRAM.size, raw=True)
+try:
+    ccmram_dump = stm32.read_memory(
+        CCMRAM.start, size=1, num_words=CCMRAM.size, raw=True
+    )
+except Exception as e:
+    print(f"[WARNING] avatar2 read CCMRAM: {e}")
+    ccmram_dump = None
 vector_table_dump = stm32.read_memory(
     FLASH.start, size=1, num_words=VECTOR_TABLE.size, raw=True
 )
@@ -202,7 +220,8 @@ state = proj.factory.blank_state(
 for reg_name, value in regs.items():
     setattr(state.regs, reg_name, value)
 state.memory.store(RAM.start, sram_dump)
-state.memory.store(CCMRAM.start, ccmram_dump)
+if ccmram_dump:
+    state.memory.store(CCMRAM.start, ccmram_dump)
 # 寫入 Vector Table Alias
 try:
     state.memory.store(VECTOR_TABLE.start, vector_table_dump)
