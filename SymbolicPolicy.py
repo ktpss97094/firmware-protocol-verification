@@ -1,9 +1,7 @@
 from __future__ import annotations
 import claripy
 from dataclasses import dataclass
-from typing import Dict, Optional
 from angr.sim_type import SimTypeInt, SimTypeFunction
-from EFSM import I2C
 
 
 @dataclass(frozen=True)
@@ -27,39 +25,12 @@ class SymbolicPolicy:
     2. Function args symbolic
     """
 
-    def __init__(
-        self,
-        *,
-        mmio_state_symbolic,
-    ):
-        self._mmio_state_symbolic = (
-            mmio_state_symbolic if mmio_state_symbolic is not None else {}
-        )
+    def __init__(self):
         self._arg_symbolic = {}
 
     @classmethod
-    def get_state_symbolic_cls(cls) -> SymbolicPolicy:
-        return cls(
-            mmio_state_symbolic={
-                "IDLE": {},
-                "SB_WAIT": {I2C.SR1_OFFSET: I2C.SR1_SB_MASK},
-                "ADDR_WAIT": {I2C.SR1_OFFSET: I2C.SR1_ADDR_MASK},
-                "TXE_SET_SRE_WRITE_DR": {
-                    I2C.SR1_OFFSET: I2C.SR1_TXE_MASK | I2C.SR1_BTF_MASK
-                },
-                "TXE_SET_SRNE_WRITE_DR": {
-                    I2C.SR1_OFFSET: I2C.SR1_TXE_MASK | I2C.SR1_BTF_MASK
-                },
-                "BTF_SET": {},
-            }
-        )
-
-    def mmio_symbolic_mask(self, fsm_state, offset):
-        return self._mmio_state_symbolic.get(fsm_state, {}).get(offset, 0)
-
-    def add_mmio_symbolic(self, fsm_state, offset, mask) -> None:
-        state_map = self._mmio_state_symbolic.setdefault(fsm_state, {})
-        state_map[offset] = state_map.get(offset, 0) | mask
+    def get_cls(cls) -> SymbolicPolicy:
+        return cls()
 
     def set_bounded_arg(self, *, index, name, bits, lo, hi):
         self._arg_symbolic[index] = BoundedSymbolicInt(

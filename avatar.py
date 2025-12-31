@@ -9,6 +9,8 @@ Clock Stretching Spec
     1. clear ADDR bit (I2C_Master_ADDR() 內) 前，若 ADDR bit 為 0，則違反
     2. (無法檢查)
     3. set STOP bit (I2C_MasterTransmit_BTF() 內) 前，若 BTF bit 為 0，則違反
+
+Spec 內提到的 bits 需要把 reference manual 內提到的規則 model 出來
 """
 
 import avatar2
@@ -17,6 +19,7 @@ import claripy
 import archinfo
 from typing import NamedTuple
 from angr.sim_type import SimTypeInt
+from SymbolicPolicy import SymbolicPolicy
 
 I2C_NAME = [
     "I2C_CR1",
@@ -104,46 +107,9 @@ class I2C(MemoryRegion):
     SR1_SB_MASK = 1 << 0
 
     def read(self, state, offset):
-        symbolic_mask = 0
-        idx = int(offset / 4)
-
         match offset:
             case self.SR1_OFFSET:
                 state.globals["I2C1_SR1_read"] = True
-
-                prev_val = state.memory.load(
-                    self.start + offset,
-                    4,
-                    endness=state.arch.memory_endness,
-                    disable_actions=True,
-                    inspect=False,
-                )
-
-                hardware_dependent_mask = (
-                    I2C_NOT_RESERVED_MASK[I2C_NAME[idx]]
-                    & I2C_HARDWARE_DEPENDENT_MASK[I2C_NAME[idx]]
-                )
-
-                for i in range(32):
-                    mask = hardware_dependent_mask & (1 << i)
-
-                    if not prev_val[i].symbolic:
-                        symbolic_mask |= mask
-
-                state.memory.store(
-                    self.start + self.SR1_OFFSET,
-                    (prev_val & ~symbolic_mask)
-                    | (
-                        claripy.BVS(
-                            f"I2C1_SR1_sym_{state.globals.get('symbolic_cnt', 0)}", 32
-                        )
-                        & symbolic_mask
-                    ),
-                    endness=state.arch.memory_endness,
-                    disable_actions=True,
-                    inspect=False,
-                )
-                state.globals["symbolic_cnt"] = state.globals.get("symbolic_cnt", 0) + 1
 
             case self.SR2_OFFSET:
                 if state.globals.get("I2C1_SR1_read", False):
@@ -166,7 +132,7 @@ class I2C(MemoryRegion):
                         state.add_constraints(claripy.Not(violation_condition))
                         print("Found a violation path")
 
-                    # clear ADDR
+                    # (ADDR) This bit is cleared by software reading SR1 register followed reading SR2
                     state.memory.store(
                         self.start + self.SR1_OFFSET,
                         sr1 & ~I2C.SR1_ADDR_MASK,
@@ -190,6 +156,26 @@ class I2C(MemoryRegion):
                 if state.solver.satisfiable(extra_constraints=[val[8] == 1]):
                     state.globals["is_address_phase"] = True
 
+                    # 將 ADDR 設為 symbolic、SB 設為 1
+                    state.memory.store(
+                        self.start + self.SR1_OFFSET,
+                        (sr1 & ~(self.SR1_ADDR_MASK | self.SR1_SB_MASK))
+                        | (1 & self.SR1_SB_MASK)
+                        | (
+                            claripy.BVS(
+                                f"I2C1_sym_{state.globals.get('symbolic_cnt', 0)}",
+                                32,
+                            )
+                            & self.SR1_ADDR_MASK
+                        ),
+                        endness=state.arch.memory_endness,
+                        disable_actions=True,
+                        inspect=False,
+                    )
+                    state.globals["symbolic_cnt"] = (
+                        state.globals.get("symbolic_cnt", 0) + 1
+                    )
+
                 # [Spec 3 (Part 1)]
                 if state.solver.satisfiable(
                     extra_constraints=[val[9] == 1, sr1[2] == 0]
@@ -197,6 +183,14 @@ class I2C(MemoryRegion):
                     state.globals["spec3_violation_pending"] = True
 
             case self.DR_OFFSET:
+                sr1 = state.memory.load(
+                    self.start + self.SR1_OFFSET,
+                    4,
+                    endness=state.arch.memory_endness,
+                    disable_actions=True,
+                    inspect=False,
+                )
+
                 # reference manual p870: TxE is not set during address phase。所以在 address phase 不能檢查 Spec 2
                 if state.globals.get("is_address_phase", False):
                     # 10-bit addressing 的 addressing phase 會 write 兩次 DR。第一次 write (header) 時是 11110xxx
@@ -207,14 +201,6 @@ class I2C(MemoryRegion):
                     else:
                         state.globals["is_address_phase"] = False
                 else:
-                    sr1 = state.memory.load(
-                        self.start + self.SR1_OFFSET,
-                        4,
-                        endness=state.arch.memory_endness,
-                        disable_actions=True,
-                        inspect=False,
-                    )
-
                     # [Spec 2]
                     violation_condition = sr1[7] == 0
                     if state.solver.satisfiable(
@@ -223,6 +209,23 @@ class I2C(MemoryRegion):
                         found_violations.append(True)
                         state.add_constraints(claripy.Not(violation_condition))
                         print("Found a violation path")
+
+                # 將 TxE, BTF 設為 symbolic
+                sym_var = claripy.BVS(
+                    f"I2C1_sym_{state.globals.get('symbolic_cnt', 0)}", 32
+                )
+                state.add_constraints(
+                    claripy.Or(sym_var[2] == 0, sym_var[7] == 1)
+                )  # BTF == 1 --> TxE == 1
+                state.memory.store(
+                    self.start + self.SR1_OFFSET,
+                    (sr1 & ~(self.SR1_TXE_MASK | self.SR1_BTF_MASK))
+                    | (sym_var & (self.SR1_TXE_MASK | self.SR1_BTF_MASK)),
+                    endness=state.arch.memory_endness,
+                    disable_actions=True,
+                    inspect=False,
+                )
+                state.globals["symbolic_cnt"] = state.globals.get("symbolic_cnt", 0) + 1
 
     @property
     def CR1(self):
@@ -566,19 +569,33 @@ state.inspect.b(
 # proj.hook(MAGIC_RETURN_ADDR, isr_return_hook, length=0)
 
 """
+Precondition
+"""
+
+
+def precondition():
+    # 設定 functon 參數 symbolic
+    symbolic_policy = SymbolicPolicy.get_cls()
+    symbolic_policy.set_bounded_arg(index=3, name="Size", bits=32, lo=1, hi=3)
+    symbolic_policy.apply_function_args(proj=proj, state=state, arg_count=5)
+
+
+precondition()
+
+"""
 debug 專用
 """
 
 
-def stop_and_debug(state):
-    state.globals["DEBUG"] = True
+# def stop_and_debug(state):
+#     state.globals["DEBUG"] = True
 
 
-state.inspect.b(
-    "instruction",
-    instruction=get_symbol_addr("SYMBOL_FUNCTION", False),
-    action=stop_and_debug,
-)
+# state.inspect.b(
+#     "instruction",
+#     instruction=get_symbol_addr("SYMBOL_FUNCTION", False),
+#     action=stop_and_debug,
+# )
 
 """
 設定 simulation_manager
