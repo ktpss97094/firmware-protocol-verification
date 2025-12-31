@@ -163,7 +163,7 @@ class I2C(MemoryRegion):
                         | (1 & self.SR1_SB_MASK)
                         | (
                             claripy.BVS(
-                                f"I2C1_sym_{state.globals.get('symbolic_cnt', 0)}",
+                                f"I2C1_sym_{state.globals.get('sym_cnt', 0)}",
                                 32,
                             )
                             & self.SR1_ADDR_MASK
@@ -172,9 +172,7 @@ class I2C(MemoryRegion):
                         disable_actions=True,
                         inspect=False,
                     )
-                    state.globals["symbolic_cnt"] = (
-                        state.globals.get("symbolic_cnt", 0) + 1
-                    )
+                    state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
 
                 # [Spec 3 (Part 1)]
                 if state.solver.satisfiable(
@@ -211,9 +209,7 @@ class I2C(MemoryRegion):
                         print("Found a violation path")
 
                 # 將 TxE, BTF 設為 symbolic
-                sym_var = claripy.BVS(
-                    f"I2C1_sym_{state.globals.get('symbolic_cnt', 0)}", 32
-                )
+                sym_var = claripy.BVS(f"I2C1_sym_{state.globals.get('sym_cnt', 0)}", 32)
                 state.add_constraints(
                     claripy.Or(sym_var[2] == 0, sym_var[7] == 1)
                 )  # BTF == 1 --> TxE == 1
@@ -225,7 +221,7 @@ class I2C(MemoryRegion):
                     disable_actions=True,
                     inspect=False,
                 )
-                state.globals["symbolic_cnt"] = state.globals.get("symbolic_cnt", 0) + 1
+                state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
 
     @property
     def CR1(self):
@@ -464,9 +460,11 @@ def on_read_SysTick(state):
         inspect=False,
     )
 
-    new_value = origin_value + 5  # 每讀取一次 SysTick，SysTick 加 5
-    # new_value = claripy.BVS(f"syst_tick_{state.globals.get('tick_cnt', 0)}", 32)
-    # state.globals["tick_cnt"] = state.globals.get("tick_cnt", 0) + 1
+    # new_value = origin_value + 5  # 每讀取一次 SysTick，SysTick 加 5
+    delta = claripy.BVS(f"SysTick_sym_{state.globals.get('sym_cnt', 0)}", 32)
+    state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
+    state.add_constraints(delta >= 0)
+    new_value = origin_value + delta
     state.memory.store(
         addr,
         new_value,
