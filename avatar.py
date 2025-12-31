@@ -4,51 +4,19 @@ Clock Stretching Spec
 * Blocking Mode
     1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
     2. write DR 前，若 TxE bit 為 0，則違反
-    3. set STOP bit 前，若 BTF bit 為 0 且 AF bit 為 0，則違反
+    3. set STOP bit 前，若 BTF bit 為 0 且回傳 HAL_OK，則違反
 * DMA Mode
     1. clear ADDR bit (I2C_Master_ADDR() 內) 前，若 ADDR bit 為 0，則違反
     2. (無法檢查)
-    3. set STOP bit (I2C_MasterTransmit_BTF() 內) 前，若 BTF bit 為 0 且 AF bit 為 0，則違反"""
+    3. set STOP bit (I2C_MasterTransmit_BTF() 內) 前，若 BTF bit 為 0，則違反
+"""
 
 import avatar2
 import angr
 import claripy
 import archinfo
-from PeripheralRulePlugin import PeripheralRulePlugin
-from EFSM import MemoryRegion, I2C, get_efsm_rules
-from SymbolicPolicy import SymbolicPolicy
-
-
-def get_symbol_addr(symbol_name, is_variable):
-    sym = proj.loader.main_object.get_symbol(symbol_name)
-
-    if sym:
-        addr = sym.rebased_addr
-
-        # Thumb Mode
-        if not is_variable:
-            addr = proj.arch.x_addr(addr, thumb=THUMB_MODE)
-
-        return addr
-    else:
-        raise ValueError(f"Symbol '{symbol_name}' not found in ELF")
-
-
-OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"
-OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"
-ELF_PATH = "firmwares/STM32/I2C/Blocking_Mode/Hardware/build/clockstretching.elf"
-BEGIN_SYMBOL = "HAL_I2C_Master_Transmit"
-END_SYMBOL = "END_SYMBOLIC_EXECUTION"
-SYSTICK_VARIABLE_SYMBOL = "uwTick"
-THUMB_MODE = True
-USE_RENODE = True
-
-RAM = MemoryRegion(start=0x20000000, size=0x30000)
-CCMRAM = MemoryRegion(start=0x10000000, size=0x10000)
-FLASH = MemoryRegion(start=0x08000000, size=0x200000)
-I2C1 = I2C(start=0x40005400, size=0x400)
-DMA1 = MemoryRegion(start=0x40026000, size=0x400)
-VECTOR_TABLE = MemoryRegion(start=0x00000000, size=0x400)
+from typing import NamedTuple
+from angr.sim_type import SimTypeInt
 
 I2C_NAME = [
     "I2C_CR1",
@@ -110,6 +78,203 @@ I2C_RESET_VAL = {
     "I2C_TRISE": claripy.BVV(0b00000000000000000000000000000010, 32),
     "I2C_FLTR": claripy.BVV(0b00000000000000000000000000000000, 32),
 }
+
+
+class MemoryRegion(NamedTuple):
+    start: int
+    size: int
+
+
+class I2C(MemoryRegion):
+    CR1_OFFSET = 0x00
+    CR2_OFFSET = 0x04
+    DR_OFFSET = 0x10
+    SR1_OFFSET = 0x14
+    SR2_OFFSET = 0x18
+
+    CR1_STOP_MASK = 1 << 9
+    CR1_START_MASK = 1 << 8
+
+    CR2_ITEVTEN_MASK = 1 << 9
+
+    SR1_AF_MASK = 1 << 10
+    SR1_TXE_MASK = 1 << 7
+    SR1_BTF_MASK = 1 << 2
+    SR1_ADDR_MASK = 1 << 1
+    SR1_SB_MASK = 1 << 0
+
+    def read(self, state, offset):
+        symbolic_mask = 0
+        idx = int(offset / 4)
+
+        match offset:
+            case self.SR1_OFFSET:
+                state.globals["I2C1_SR1_read"] = True
+
+                prev_val = state.memory.load(
+                    self.start + offset,
+                    4,
+                    endness=state.arch.memory_endness,
+                    disable_actions=True,
+                    inspect=False,
+                )
+
+                hardware_dependent_mask = (
+                    I2C_NOT_RESERVED_MASK[I2C_NAME[idx]]
+                    & I2C_HARDWARE_DEPENDENT_MASK[I2C_NAME[idx]]
+                )
+
+                for i in range(32):
+                    mask = hardware_dependent_mask & (1 << i)
+
+                    if not prev_val[i].symbolic:
+                        symbolic_mask |= mask
+
+                state.memory.store(
+                    self.start + self.SR1_OFFSET,
+                    (prev_val & ~symbolic_mask)
+                    | (
+                        claripy.BVS(
+                            f"I2C1_SR1_sym_{state.globals.get('symbolic_cnt', 0)}", 32
+                        )
+                        & symbolic_mask
+                    ),
+                    endness=state.arch.memory_endness,
+                    disable_actions=True,
+                    inspect=False,
+                )
+                state.globals["symbolic_cnt"] = state.globals.get("symbolic_cnt", 0) + 1
+
+            case self.SR2_OFFSET:
+                if state.globals.get("I2C1_SR1_read", False):
+                    state.globals["I2C1_SR1_read"] = False
+
+                    sr1 = state.memory.load(
+                        self.start + self.SR1_OFFSET,
+                        4,
+                        endness=state.arch.memory_endness,
+                        disable_actions=True,
+                        inspect=False,
+                    )
+
+                    # [Spec 1]
+                    violation_condition = sr1[1] == 0
+                    if state.solver.satisfiable(
+                        extra_constraints=[violation_condition]
+                    ):
+                        found_violations.append(True)
+                        state.add_constraints(claripy.Not(violation_condition))
+                        print("Found a violation path")
+
+                    # clear ADDR
+                    state.memory.store(
+                        self.start + self.SR1_OFFSET,
+                        sr1 & ~I2C.SR1_ADDR_MASK,
+                        endness=state.arch.memory_endness,
+                        disable_actions=True,
+                        inspect=False,
+                    )
+
+    def write(self, state, offset, val):
+        match offset:
+            case self.CR1_OFFSET:
+                sr1 = state.memory.load(
+                    self.start + self.SR1_OFFSET,
+                    4,
+                    endness=state.arch.memory_endness,
+                    disable_actions=True,
+                    inspect=False,
+                )
+
+                # set START bit 時進入 address phase
+                if state.solver.satisfiable(extra_constraints=[val[8] == 1]):
+                    state.globals["is_address_phase"] = True
+
+                # [Spec 3 (Part 1)]
+                if state.solver.satisfiable(
+                    extra_constraints=[val[9] == 1, sr1[2] == 0]
+                ):
+                    state.globals["spec3_violation_pending"] = True
+
+            case self.DR_OFFSET:
+                # reference manual p870: TxE is not set during address phase。所以在 address phase 不能檢查 Spec 2
+                if state.globals.get("is_address_phase", False):
+                    # 10-bit addressing 的 addressing phase 會 write 兩次 DR。第一次 write (header) 時是 11110xxx
+                    if state.solver.satisfiable(
+                        extra_constraints=[(val & 0xF8) == 0xF0]
+                    ):
+                        pass
+                    else:
+                        state.globals["is_address_phase"] = False
+                else:
+                    sr1 = state.memory.load(
+                        self.start + self.SR1_OFFSET,
+                        4,
+                        endness=state.arch.memory_endness,
+                        disable_actions=True,
+                        inspect=False,
+                    )
+
+                    # [Spec 2]
+                    violation_condition = sr1[7] == 0
+                    if state.solver.satisfiable(
+                        extra_constraints=[violation_condition]
+                    ):
+                        found_violations.append(True)
+                        state.add_constraints(claripy.Not(violation_condition))
+                        print("Found a violation path")
+
+    @property
+    def CR1(self):
+        return self.start + self.CR1_OFFSET
+
+    @property
+    def CR2(self):
+        return self.start + self.CR2_OFFSET
+
+    @property
+    def DR(self):
+        return self.start + self.DR_OFFSET
+
+    @property
+    def SR1(self):
+        return self.start + self.SR1_OFFSET
+
+    @property
+    def SR2(self):
+        return self.start + self.SR2_OFFSET
+
+
+def get_symbol_addr(symbol_name, is_variable):
+    sym = proj.loader.main_object.get_symbol(symbol_name)
+
+    if sym:
+        addr = sym.rebased_addr
+
+        # Thumb Mode
+        if not is_variable:
+            addr = proj.arch.x_addr(addr, thumb=THUMB_MODE)
+
+        return addr
+    else:
+        raise ValueError(f"Symbol '{symbol_name}' not found in ELF")
+
+
+OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"
+OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"
+ELF_PATH = "firmwares/STM32/I2C/Blocking_Mode/Hardware/build/clockstretching.elf"
+BEGIN_SYMBOL = "HAL_I2C_Master_Transmit"
+END_SYMBOL = "END_SYMBOLIC_EXECUTION"
+SYSTICK_VARIABLE_SYMBOL = "uwTick"
+THUMB_MODE = True
+USE_RENODE = False
+
+RAM = MemoryRegion(start=0x20000000, size=0x30000)
+CCMRAM = MemoryRegion(start=0x10000000, size=0x10000)
+FLASH = MemoryRegion(start=0x08000000, size=0x200000)
+I2C1 = I2C(start=0x40005400, size=0x400)
+DMA1 = MemoryRegion(start=0x40026000, size=0x400)
+VECTOR_TABLE = MemoryRegion(start=0x00000000, size=0x400)
 
 HAL_OK = 0x00
 HAL_ERROR = 0x01
@@ -240,13 +405,7 @@ def on_read_I2C1(state):
     addr = state.solver.eval(state.inspect.mem_read_address)
     offset = addr - I2C1.start
 
-    state.peripheral.handle_mmio("read", offset, None)
-
-    reg_val = state.peripheral.get_reg_value(offset)
-    if isinstance(reg_val, int):
-        state.inspect.mem_read_expr = claripy.BVV(reg_val, 32)
-    else:
-        state.inspect.mem_read_expr = reg_val
+    I2C1.read(state, offset)
 
 
 def on_write_I2C1(state):
@@ -254,7 +413,7 @@ def on_write_I2C1(state):
     val = state.inspect.mem_write_expr
     offset = addr - I2C1.start
 
-    state.peripheral.handle_mmio("write", offset, val)
+    I2C1.write(state, offset, val)
 
 
 def read_in_I2C1(state):
@@ -407,21 +566,6 @@ state.inspect.b(
 # proj.hook(MAGIC_RETURN_ADDR, isr_return_hook, length=0)
 
 """
-設定 rules
-"""
-
-symbolic_policy = SymbolicPolicy.get_state_symbolic_cls()
-symbolic_policy.set_bounded_arg(index=3, name="Size", bits=32, lo=1, hi=3)
-symbolic_policy.apply_function_args(proj=proj, state=state, arg_count=5)
-
-state.register_plugin(
-    "peripheral",
-    PeripheralRulePlugin(
-        base_addr=I2C1.start, rules=get_efsm_rules(), symbolic_policy=symbolic_policy
-    ),
-)
-
-"""
 debug 專用
 """
 
@@ -474,7 +618,7 @@ def monitor_exploration(simgr):
 
 
 simgr.explore(
-    find=[lambda s: s.peripheral.internal_state_vars["mode"] == "VIOLATION", END_ADDR],
+    find=END_ADDR,
     num_find=float("inf"),
     step_func=monitor_exploration,
 )
@@ -487,7 +631,6 @@ if len(simgr.errored) > 0:
         print(f"  Crashed at (PC): {hex(err.state.addr)}")
 
         try:
-            # 取得執行歷史 (最後 10 個 Basic Blocks)
             history = list(err.state.history.bbl_addrs)[-10:]
             print("  Traceback (Last 10 Basic Blocks):")
             for h_addr in history:
@@ -497,22 +640,41 @@ if len(simgr.errored) > 0:
                 last_block_addr = history[-1]
                 block = proj.factory.block(last_block_addr)
                 print(f"  Last Block Assembly ({hex(last_block_addr)}):")
-                block.pp()  # 印出最後執行的組語，讓我們看看它是 POP 還是 BLX
+                block.pp()
 
-            sp_val = err.state.solver.eval(err.state.regs.sp)
-            lr_val = err.state.solver.eval(err.state.regs.lr)
-            r0_val = err.state.solver.eval(err.state.regs.r0)
             print("  Registers at crash:")
-            print(f"    SP: {hex(sp_val)}")
-            print(f"    LR: {hex(lr_val)} (Return Address)")
-            print(f"    R0: {hex(r0_val)}")
+            print(f"    SP: {hex(err.state.solver.eval(err.state.regs.sp))}")
+            print(
+                f"    LR: {hex(err.state.solver.eval(err.state.regs.lr))} (Return Address)"
+            )
+            print(f"    R0: {hex(err.state.solver.eval(err.state.regs.r0))}")
 
         except Exception as e:
             print(f"  Could not extract debug info: {e}")
+
         print("-" * 30)
 elif len(simgr.found) > 0:
-    for s in simgr.found:
-        if s.peripheral.internal_state_vars["mode"] == "VIOLATION":
-            print("Verification FAILURE!")
-            exit(0)
-    print("Verification SUCCESS!")
+
+    def postcondition():
+        # [Spec 3 (Part 2)]
+        for state in simgr.found:
+            return_val = state.solver.eval(
+                proj.factory.cc().return_val(SimTypeInt()).get_value(state)
+            )
+
+            if return_val == HAL_OK and state.globals.get(
+                "spec3_violation_pending", False
+            ):
+                found_violations.append(True)
+                print("Found a violation path")
+
+    postcondition()
+
+    if len(found_violations) > 0:
+        print(f"Verification FAILURE! Found {len(found_violations)} violation path(s)")
+    else:
+        print(
+            f"Verification SUCCESS! Found {len(simgr.found)} paths that reached the end"
+        )
+else:
+    print("No state reached the end")

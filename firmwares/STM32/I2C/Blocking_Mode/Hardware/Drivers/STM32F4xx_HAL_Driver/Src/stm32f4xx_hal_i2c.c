@@ -1122,8 +1122,6 @@ HAL_StatusTypeDef HAL_I2C_Master_Transmit(I2C_HandleTypeDef *hi2c, uint16_t DevA
       hi2c->XferCount--;
       hi2c->XferSize--;
 
-      SYMBOL_FUNCTION();
-
       if ((__HAL_I2C_GET_FLAG(hi2c, I2C_FLAG_BTF) == SET) && (hi2c->XferSize != 0U))
       {
         /* Write data to DR */
@@ -7260,7 +7258,7 @@ static HAL_StatusTypeDef I2C_WaitOnFlagUntilTimeout(I2C_HandleTypeDef *hi2c, uin
   */
 static HAL_StatusTypeDef I2C_WaitOnMasterAddressFlagUntilTimeout(I2C_HandleTypeDef *hi2c, uint32_t Flag, uint32_t Timeout, uint32_t Tickstart)
 {
-  if (__HAL_I2C_GET_FLAG(hi2c, Flag) == RESET)
+  while (__HAL_I2C_GET_FLAG(hi2c, Flag) == RESET)
   {
     if (__HAL_I2C_GET_FLAG(hi2c, I2C_FLAG_AF) == SET)
     {
