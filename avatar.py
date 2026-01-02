@@ -3,14 +3,11 @@ Clock Stretching Spec
 
 * Blocking Mode
     1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
-    2. write DR 前，若 TxE bit 為 0，則違反
+    2. write DR 前，若 TxE bit 為 0 且不是 addressing phase，則違反
     3. set STOP bit 前，若 BTF bit 為 0 且回傳 HAL_OK，則違反
 * DMA Mode
-    1. clear ADDR bit (I2C_Master_ADDR() 內) 前，若 ADDR bit 為 0，則違反
-    2. (無法檢查)
-    3. set STOP bit (I2C_MasterTransmit_BTF() 內) 前，若 BTF bit 為 0，則違反
-
-Spec 內提到的 bits 需要把 reference manual 內提到的規則 model 出來
+    1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
+    2. set STOP bit 前，若 PE bit 為 0，則違反
 """
 
 import avatar2
@@ -33,18 +30,20 @@ I2C_NAME = [
     "I2C_TRISE",
     "I2C_FLTR",
 ]
-I2C_NOT_RESERVED_MASK = {
-    "I2C_CR1": 0b00000000000000001011111111111011,
-    "I2C_CR2": 0b00000000000000000001111100111111,
-    "I2C_OAR1": 0b00000000000000001000001111111111,
-    "I2C_OAR2": 0b00000000000000000000000011111111,
-    "I2C_DR": 0b00000000000000000000000011111111,
-    "I2C_SR1": 0b00000000000000001101111111011111,
-    "I2C_SR2": 0b00000000000000001111111111110111,
-    "I2C_CCR": 0b00000000000000001100111111111111,
-    "I2C_TRISE": 0b00000000000000000000000000111111,
-    "I2C_FLTR": 0b00000000000000000000000000011111,
-}
+
+
+# I2C_NOT_RESERVED_MASK = {
+#     "I2C_CR1": 0b00000000000000001011111111111011,
+#     "I2C_CR2": 0b00000000000000000001111100111111,
+#     "I2C_OAR1": 0b00000000000000001000001111111111,
+#     "I2C_OAR2": 0b00000000000000000000000011111111,
+#     "I2C_DR": 0b00000000000000000000000011111111,
+#     "I2C_SR1": 0b00000000000000001101111111011111,
+#     "I2C_SR2": 0b00000000000000001111111111110111,
+#     "I2C_CCR": 0b00000000000000001100111111111111,
+#     "I2C_TRISE": 0b00000000000000000000000000111111,
+#     "I2C_FLTR": 0b00000000000000000000000000011111,
+# }
 # I2C_HARDWARE_DEPENDENT_MASK = {
 #     "I2C_CR1": 0b00000000000000000011111100000000,
 #     "I2C_CR2": 0b00000000000000000000000000000000,
@@ -57,29 +56,38 @@ I2C_NOT_RESERVED_MASK = {
 #     "I2C_TRISE": 0b00000000000000000000000000000000,
 #     "I2C_FLTR": 0b00000000000000000000000000000000,
 # }
-I2C_HARDWARE_DEPENDENT_MASK = {
-    "I2C_CR1": 0b00000000000000000000000000000000,
-    "I2C_CR2": 0b00000000000000000000000000000000,
-    "I2C_OAR1": 0b00000000000000000000000000000000,
-    "I2C_OAR2": 0b00000000000000000000000000000000,
-    "I2C_DR": 0b00000000000000000000000011111111,
-    "I2C_SR1": 0b00000000000000001101111111011111,
-    "I2C_SR2": 0b00000000000000001111111111110111,
-    "I2C_CCR": 0b00000000000000000000000000000000,
-    "I2C_TRISE": 0b00000000000000000000000000000000,
-    "I2C_FLTR": 0b00000000000000000000000000000000,
-}
-I2C_RESET_VAL = {
-    "I2C_CR1": claripy.BVV(0b00000000000000000000000000000000, 32),
-    "I2C_CR2": claripy.BVV(0b00000000000000000000000000000000, 32),
-    "I2C_OAR1": claripy.BVV(0b00000000000000000000000000000000, 32),
-    "I2C_OAR2": claripy.BVV(0b00000000000000000000000000000000, 32),
-    "I2C_DR": claripy.BVV(0b00000000000000000000000000000000, 32),
-    "I2C_SR1": claripy.BVV(0b00000000000000000000000000000000, 32),
-    "I2C_SR2": claripy.BVV(0b00000000000000000000000000000000, 32),
-    "I2C_CCR": claripy.BVV(0b00000000000000000000000000000000, 32),
-    "I2C_TRISE": claripy.BVV(0b00000000000000000000000000000010, 32),
-    "I2C_FLTR": claripy.BVV(0b00000000000000000000000000000000, 32),
+# I2C_HARDWARE_DEPENDENT_MASK = {
+#     "I2C_CR1": 0b00000000000000000000000000000000,
+#     "I2C_CR2": 0b00000000000000000000000000000000,
+#     "I2C_OAR1": 0b00000000000000000000000000000000,
+#     "I2C_OAR2": 0b00000000000000000000000000000000,
+#     "I2C_DR": 0b00000000000000000000000011111111,
+#     "I2C_SR1": 0b00000000000000001101111111011111,
+#     "I2C_SR2": 0b00000000000000001111111111110111,
+#     "I2C_CCR": 0b00000000000000000000000000000000,
+#     "I2C_TRISE": 0b00000000000000000000000000000000,
+#     "I2C_FLTR": 0b00000000000000000000000000000000,
+# }
+# I2C_RESET_VAL = {
+#     "I2C_CR1": claripy.BVV(0b00000000000000000000000000000000, 32),
+#     "I2C_CR2": claripy.BVV(0b00000000000000000000000000000000, 32),
+#     "I2C_OAR1": claripy.BVV(0b00000000000000000000000000000000, 32),
+#     "I2C_OAR2": claripy.BVV(0b00000000000000000000000000000000, 32),
+#     "I2C_DR": claripy.BVV(0b00000000000000000000000000000000, 32),
+#     "I2C_SR1": claripy.BVV(0b00000000000000000000000000000000, 32),
+#     "I2C_SR2": claripy.BVV(0b00000000000000000000000000000000, 32),
+#     "I2C_CCR": claripy.BVV(0b00000000000000000000000000000000, 32),
+#     "I2C_TRISE": claripy.BVV(0b00000000000000000000000000000010, 32),
+#     "I2C_FLTR": claripy.BVV(0b00000000000000000000000000000000, 32),
+# }
+def get_default_symbolic_mask(offset):
+    return SYMBOLIC_MASK.get(I2C_NAME[offset // 4], 0)
+
+
+SYMBOLIC_MASK = {
+    "I2C_SR1": 0b00000000000000000000010010001111,
+    "I2C_SR2": 0b00000000000000000000000000000010,
+    "uwTick": None,
 }
 
 
@@ -128,8 +136,8 @@ class I2C(MemoryRegion):
                     if state.solver.satisfiable(
                         extra_constraints=[violation_condition]
                     ):
-                        found_violations.append(True)
-                        state.add_constraints(claripy.Not(violation_condition))
+                        state.globals["violation"] = True
+                        # state.add_constraints(claripy.Not(violation_condition))
                         print("Found a violation path")
 
                     # (ADDR) This bit is cleared by software reading SR1 register followed reading SR2
@@ -140,6 +148,43 @@ class I2C(MemoryRegion):
                         disable_actions=True,
                         inspect=False,
                     )
+
+        symbolic_mask = get_default_symbolic_mask(offset)
+        prev_val = state.memory.load(
+            self.start + offset,
+            4,
+            endness=state.arch.memory_endness,
+            disable_actions=True,
+            inspect=False,
+        )
+        for i in range(32):
+            mask = symbolic_mask & (1 << i)
+            if (
+                mask
+                and prev_val[i].symbolic
+                and not (
+                    state.solver.min(prev_val[i]) == 0
+                    and state.solver.max(prev_val[i]) == ((1 << prev_val[i].size()) - 1)
+                )
+            ):
+                # 不做 symbolic
+                symbolic_mask &= ~(1 << i)
+
+        state.memory.store(
+            self.start + offset,
+            (prev_val & ~symbolic_mask)
+            | (
+                claripy.BVS(
+                    f"I2C1_sym_{state.globals.get('sym_cnt', 0)}",
+                    32,
+                )
+                & symbolic_mask
+            ),
+            endness=state.arch.memory_endness,
+            disable_actions=True,
+            inspect=False,
+        )
+        state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
 
     def write(self, state, offset, val):
         match offset:
@@ -156,23 +201,23 @@ class I2C(MemoryRegion):
                 if state.solver.satisfiable(extra_constraints=[val[8] == 1]):
                     state.globals["is_address_phase"] = True
 
-                    # 將 ADDR 設為 symbolic、SB 設為 1
-                    state.memory.store(
-                        self.start + self.SR1_OFFSET,
-                        (sr1 & ~(self.SR1_ADDR_MASK | self.SR1_SB_MASK))
-                        | (1 & self.SR1_SB_MASK)
-                        | (
-                            claripy.BVS(
-                                f"I2C1_sym_{state.globals.get('sym_cnt', 0)}",
-                                32,
-                            )
-                            & self.SR1_ADDR_MASK
-                        ),
-                        endness=state.arch.memory_endness,
-                        disable_actions=True,
-                        inspect=False,
-                    )
-                    state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
+                #     # 將 ADDR 設為 symbolic、SB 設為 1
+                #     state.memory.store(
+                #         self.start + self.SR1_OFFSET,
+                #         (sr1 & ~(self.SR1_ADDR_MASK | self.SR1_SB_MASK))
+                #         | (1 & self.SR1_SB_MASK)
+                #         | (
+                #             claripy.BVS(
+                #                 f"I2C1_sym_{state.globals.get('sym_cnt', 0)}",
+                #                 32,
+                #             )
+                #             & self.SR1_ADDR_MASK
+                #         ),
+                #         endness=state.arch.memory_endness,
+                #         disable_actions=True,
+                #         inspect=False,
+                #     )
+                #     state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
 
                 # [Spec 3 (Part 1)]
                 if state.solver.satisfiable(
@@ -204,24 +249,36 @@ class I2C(MemoryRegion):
                     if state.solver.satisfiable(
                         extra_constraints=[violation_condition]
                     ):
-                        found_violations.append(True)
-                        state.add_constraints(claripy.Not(violation_condition))
+                        state.globals["violation"] = True
+                        # state.add_constraints(claripy.Not(violation_condition))
                         print("Found a violation path")
 
-                # 將 TxE, BTF 設為 symbolic
-                sym_var = claripy.BVS(f"I2C1_sym_{state.globals.get('sym_cnt', 0)}", 32)
-                state.add_constraints(
-                    claripy.Or(sym_var[2] == 0, sym_var[7] == 1)
-                )  # BTF == 1 --> TxE == 1
-                state.memory.store(
-                    self.start + self.SR1_OFFSET,
-                    (sr1 & ~(self.SR1_TXE_MASK | self.SR1_BTF_MASK))
-                    | (sym_var & (self.SR1_TXE_MASK | self.SR1_BTF_MASK)),
-                    endness=state.arch.memory_endness,
-                    disable_actions=True,
-                    inspect=False,
-                )
-                state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
+                # # 將 TxE, BTF 設為 symbolic
+                # sym_var = claripy.BVS(f"I2C1_sym_{state.globals.get('sym_cnt', 0)}", 32)
+                # state.add_constraints(
+                #     claripy.Or(sym_var[2] == 0, sym_var[7] == 1)
+                # )  # BTF == 1 --> TxE == 1
+                # state.memory.store(
+                #     self.start + self.SR1_OFFSET,
+                #     (sr1 & ~(self.SR1_TXE_MASK | self.SR1_BTF_MASK))
+                #     | (sym_var & (self.SR1_TXE_MASK | self.SR1_BTF_MASK)),
+                #     endness=state.arch.memory_endness,
+                #     disable_actions=True,
+                #     inspect=False,
+                # )
+                # state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
+
+                # if state.globals.get("I2C1_SR1_read", False):
+                #     state.globals["I2C1_SR1_read"] = False
+
+                #     # reference manual p871: (SB) Cleared by software by reading the SR1 register followed by writing the DR register
+                #     state.memory.store(
+                #         self.start + self.SR1_OFFSET,
+                #         (sr1 & ~(I2C.SR1_SB_MASK)) | I2C.SR1_SB_MASK,
+                #         endness=state.arch.memory_endness,
+                #         disable_actions=True,
+                #         inspect=False,
+                #     )
 
     @property
     def CR1(self):
@@ -622,6 +679,14 @@ def monitor_exploration(simgr):
     #         # 觸發中斷 (此時 state 已經在一個 Block 執行結束的邊界，PC 是乾淨的下一條指令)
     #         fire_interrupt(state, pending_irq)
 
+    if "violated" not in simgr.stashes:
+        simgr.stashes["violated"] = []
+    simgr.move(
+        from_stash="active",
+        to_stash="violated",
+        filter_func=lambda s: s.globals.get("violation", False),
+    )
+
     print(f"Step: Active={len(simgr.active)}, Found={len(simgr.found)}")
 
     # if n_active > 500:
@@ -680,16 +745,18 @@ elif len(simgr.found) > 0:
             if return_val == HAL_OK and state.globals.get(
                 "spec3_violation_pending", False
             ):
-                found_violations.append(True)
+                simgr.stashes["violated"].append(state)
                 print("Found a violation path")
 
     postcondition()
 
-    if len(found_violations) > 0:
-        print(f"Verification FAILURE! Found {len(found_violations)} violation path(s)")
+    if len(simgr.stashes["violated"]) > 0:
+        print(
+            f"Verification FAILURE! Found {len(simgr.stashes['violated'])} violation state(s)"
+        )
     else:
         print(
-            f"Verification SUCCESS! Found {len(simgr.found)} paths that reached the end"
+            f"Verification SUCCESS! Found {len(simgr.found)} states that reached the end"
         )
 else:
     print("No state reached the end")
