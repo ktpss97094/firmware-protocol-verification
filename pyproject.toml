@@ -1,0 +1,12 @@
+[project]
+name = "thesis"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "angr>=9.2.191",
+    "avatar2",
+    "setuptools>=80.9.0",
+]
+
+[tool.uv.sources]
+avatar2 = { git = "https://github.com/ktpss97094/avatar2.git" }
