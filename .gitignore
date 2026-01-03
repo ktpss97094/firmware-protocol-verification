@@ -1,6 +1,5 @@
 .venv/
 
-avatar2_output/
 results.txt
 __pycache__/
 build/

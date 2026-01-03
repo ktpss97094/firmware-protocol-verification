@@ -4817,6 +4817,7 @@ void HAL_I2C_EV_IRQHandler(I2C_HandleTypeDef *hi2c)
     }
     /* ADDR Set --------------------------------------------------------------*/
     else if ((I2C_CHECK_FLAG(sr1itflags, I2C_FLAG_ADDR) != RESET) && (I2C_CHECK_IT_SOURCE(itsources, I2C_IT_EVT) != RESET))
+    // else if (1 && (I2C_CHECK_IT_SOURCE(itsources, I2C_IT_EVT) != RESET))
     {
       I2C_Master_ADDR(hi2c);
     }

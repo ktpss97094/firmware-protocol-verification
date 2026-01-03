@@ -97,7 +97,6 @@ int main(void)
   /* USER CODE BEGIN 2 */
   uint8_t data[3] = {0x75, 0x76, 0x33};
   HAL_StatusTypeDef result = HAL_I2C_Master_Transmit_DMA(&hi2c1, 0x68 << 1, data, 3);
-  SYMBOL_MARKER("END_SYMBOLIC_EXECUTION");
   /* USER CODE END 2 */
 
   /* Infinite loop */

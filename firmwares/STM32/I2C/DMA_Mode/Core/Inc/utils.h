@@ -4,4 +4,6 @@
 /* 插入 symbol */
 #define SYMBOL_MARKER(name) __asm__ volatile (".global " #name "\n" #name ":")
 
+void SYMBOL_FUNCTION(void);
+
 #endif
