@@ -1,40 +1,59 @@
 import re
 import warnings
 import logging
-import sys
+import archinfo
 from project import config
 
 
-def setup_logging(logger):
-    handler = logging.StreamHandler(sys.stdout)
+logger = logging.getLogger(__name__)
 
-    formatter = logging.Formatter("%(levelname)s: %(message)s")
-    handler.setFormatter(formatter)
 
-    logger.addHandler(handler)
-
-    logger.setLevel(logging.INFO)
-
-    logger.propagate = False
+def init_logging():
+    logging.config.dictConfig(config.LOGGING_CONFIG)
 
 
 def get_default_symbolic_mask(name_dict, offset, symbolic_mask):
     return symbolic_mask.get(name_dict[offset // 4], 0)
 
 
+def normalize_code_addr(proj, addr, target=None, is_executing_pc=False):
+    """
+    處理 Thumb Mode 等情況
+
+    :param is_executing_pc: 是否為當前正在執行的 pc 值
+    """
+
+    # Arm Cortex-M 僅支援 Thumb 指令集
+    if isinstance(proj.arch, archinfo.ArchARMCortexM):
+        return addr | 1
+
+    if isinstance(proj.arch, archinfo.ArchARM):
+        if addr % 2 == 1:
+            return addr
+
+        if is_executing_pc and target:
+            try:
+                cpsr = target.read_register("cpsr")
+                if cpsr & 0x20:
+                    return addr | 1
+            except Exception as e:
+                logger.warning(f"Failed to read CPSR for PC normalization: {e}")
+                return addr
+
+    return addr
+
+
 def get_symbol_addr(proj, symbol_name, is_variable):
     sym = proj.loader.main_object.get_symbol(symbol_name)
-
-    if sym:
-        addr = sym.rebased_addr
-
-        # Thumb Mode
-        if not is_variable:
-            addr = proj.arch.x_addr(addr, thumb=config.THUMB_MODE)
-
-        return addr
-    else:
+    if not sym:
         raise ValueError(f"Symbol '{symbol_name}' not found in ELF")
+
+    addr = sym.rebased_addr
+
+    if is_variable:
+        return addr
+
+    return normalize_code_addr(proj, addr)
 
 
 def read_MMIO_renode(avatar_target, base_addr, size):
