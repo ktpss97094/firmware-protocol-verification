@@ -1,5 +1,5 @@
 """
-Clock Stretching Spec
+I2C Master Clock Stretching Spec
 
 * Blocking Mode
     1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
@@ -7,11 +7,7 @@ Clock Stretching Spec
     3. set STOP bit 前，若 BTF bit 為 0 且回傳 HAL_OK，則違反
 * DMA Mode
     1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
-    2. 若 slave stretch SCL 的時間 < master 硬體 timeout，並且沒有其他 error，則最後必須呼叫 I2C_DMAXferCplt() 或 TxCpltCallback() (傳輸成功)
-    3. 若 slave stretch SCL 的時間 >= master 硬體 timeout，則最後必須呼叫 I2C_DMAError() 或 ErrorCallback()，並且錯誤碼為 timeout
-        * 如果 firmware 因為等待過久而報錯，那就代表 firmware 不支援長時間的 clock stretching
-        > MPU-9250 的 SCL low period 最小是 1.3 μs，沒有最大值
-        > STM32F429xx 沒有 I2C 硬體 timeout，但在 SMBus 模式下 clock low timeout delay 為 25 ms (reference manual §27.2)
+    2. set STOP bit 前，若 BTF bit 為 0，則違反
 """
 
 import avatar2
