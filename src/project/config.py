@@ -8,8 +8,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 Path
 """
 FIRMWARE_PATH = str(
-    PROJECT_ROOT / "firmwares/STM32/I2C/DMA_Mode/build/clockstretching.elf"
-)
+    PROJECT_ROOT
+    / "firmwares/STM32/I2C/Blocking_Mode/Hardware/build/clockstretching.elf"
+)  # MODIFY:
 AVATAR_LOG_PATH = "/tmp/avatar"
 OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"
 OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"
@@ -23,9 +24,9 @@ ANGR_ARCH = archinfo.ArchARMCortexM(endness=archinfo.Endness.LE)
 """
 Symbolic Execution
 """
-BEGIN_SYMBOL = "HAL_I2C_EV_IRQHandler"
+BEGIN_SYMBOL = "HAL_I2C_Master_Transmit"  # MODIFY:
 END_SYMBOL = "END_SYMBOLIC_EXECUTION"
-# SYSTICK_VARIABLE_SYMBOL = "uwTick"
+SYSTICK_VARIABLE_SYMBOL = "uwTick"  # MODIFY:
 
 """
 Renode

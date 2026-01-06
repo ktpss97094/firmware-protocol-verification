@@ -87,7 +87,7 @@ class I2C(MemoryRegion):
                         inspect=False,
                     )
 
-                    # [Spec 1]
+                    # [Spec 1] MODIFY:
                     violation_condition = sr1[1] == 0
                     if state.solver.satisfiable(
                         extra_constraints=[violation_condition]
@@ -148,8 +148,8 @@ class I2C(MemoryRegion):
     def write(self, state, offset, val):
         match offset:
             case self.CR1_OFFSET:
-                cr1 = state.memory.load(
-                    self.start + self.CR1_OFFSET,
+                sr1 = state.memory.load(
+                    self.start + self.SR1_OFFSET,
                     4,
                     endness=state.arch.memory_endness,
                     disable_actions=True,
@@ -160,13 +160,11 @@ class I2C(MemoryRegion):
                 if state.solver.satisfiable(extra_constraints=[val[8] == 1]):
                     state.globals["is_address_phase"] = True
 
-                # [Spec 3 (Part 1)]
-                if state.solver.satisfiable(
-                    extra_constraints=[val[9] == 1, cr1[0] == 0]
-                ):
-                    # state.globals["spec3_violation_pending"] = True
-                    print("Found a violation path")
-                    state.globals["violation"] = True
+                # [Spec 3 (Part 1)] MODIFY:
+                if not state.solver.satisfiable(
+                    extra_constraints=[val[9] != 1]
+                ) and state.solver.satisfiable(extra_constraints=[sr1[2] == 0]):
+                    state.globals["spec3_violation_pending"] = True
 
             case self.DR_OFFSET:
                 sr1 = state.memory.load(
@@ -187,14 +185,13 @@ class I2C(MemoryRegion):
                     else:
                         state.globals["is_address_phase"] = False
                 else:
-                    # [Spec 2]
-                    # violation_condition = sr1[7] == 0
-                    # if state.solver.satisfiable(
-                    #     extra_constraints=[violation_condition]
-                    # ):
-                    #     print("Found a violation path")
-                    #     state.globals["violation"] = True
-                    pass
+                    # [Spec 2] MODIFY:
+                    violation_condition = sr1[7] == 0
+                    if state.solver.satisfiable(
+                        extra_constraints=[violation_condition]
+                    ):
+                        print("Found a violation path")
+                        state.globals["violation"] = True
 
     @property
     def CR1(self):
@@ -394,7 +391,7 @@ def precondition(proj, state):
     # 設定 functon 參數 symbolic
     symbolic_policy = SymbolicPolicy.get_cls()
     symbolic_policy.set_bounded_arg(index=3, name="Size", bits=32, lo=1, hi=3)
-    symbolic_policy.apply_function_args(proj=proj, state=state, arg_count=4)
+    symbolic_policy.apply_function_args(proj=proj, state=state, arg_count=5)
 
 
 def monitor_exploration(simgr):
@@ -448,15 +445,16 @@ def main():
     )
 
     BEGIN_ADDR = get_symbol_addr(proj, config.BEGIN_SYMBOL, is_variable=False)
-    # END_ADDRS = [get_symbol_addr(proj, config.END_SYMBOL, is_variable=False)]
-    END_ADDRS = [
-        0xFFFFFFE1,
-        0xFFFFFFF9,
-        0xFFFFFFFD,
-    ]  # ARMv7-M Architecture Reference Manual §B1.5.8 Exception return behavior
-    # SYSTICK_VARIABLE_ADDR = get_symbol_addr(
-    #     proj, config.SYSTICK_VARIABLE_SYMBOL, is_variable=True
-    # )
+    # MODIFY:
+    END_ADDRS = [get_symbol_addr(proj, config.END_SYMBOL, is_variable=False)]
+    # END_ADDRS = [
+    #     0xFFFFFFE1,
+    #     0xFFFFFFF9,
+    #     0xFFFFFFFD,
+    # ]  # ARMv7-M Architecture Reference Manual §B1.5.8 Exception return behavior
+    SYSTICK_VARIABLE_ADDR = get_symbol_addr(
+        proj, config.SYSTICK_VARIABLE_SYMBOL, is_variable=True
+    )
 
     """
     avatar2 部分
@@ -577,16 +575,19 @@ def main():
         condition=partial(write_in_I2C1, I2C1=I2C1),
         action=partial(on_write_I2C1, I2C1=I2C1),
     )
-    # state.inspect.b(
-    #     "mem_read", when=angr.BP_AFTER, condition=partial(read_in_SysTick, SYSTICK_VARIABLE_ADDR=SYSTICK_VARIABLE_ADDR), action=on_read_SysTick
-    # )
+    state.inspect.b(
+        "mem_read",
+        when=angr.BP_AFTER,
+        condition=partial(read_in_SysTick, SYSTICK_VARIABLE_ADDR=SYSTICK_VARIABLE_ADDR),
+        action=on_read_SysTick,
+    )  # MODIFY:
     # state.inspect.b(
     #     "instruction",
     #     instruction=get_symbol_addr("SYMBOL_FUNCTION", False),
     #     action=stop_and_debug,
     # )
 
-    # precondition(proj, state)
+    precondition(proj, state)  # MODIFY:
 
     simgr = proj.factory.simgr(state)
     simgr.use_technique(
@@ -634,18 +635,18 @@ def main():
     elif len(simgr.found) > 0:
 
         def postcondition():
-            # [Spec 3 (Part 2)]
-            # for state in simgr.found:
-            #     return_val = state.solver.eval(
-            #         proj.factory.cc().return_val(SimTypeInt()).get_value(state)
-            #     )
+            # [Spec 3 (Part 2)] MODIFY:
+            for state in simgr.found:
+                return_val = state.solver.eval(
+                    proj.factory.cc().return_val(SimTypeInt()).get_value(state)
+                )
 
-            #     if return_val == constants.HAL_StatusTypeDef.HAL_OK and state.globals.get(
-            #         "spec3_violation_pending", False
-            #     ):
-            #         print("Found a violation path")
-            #         simgr.stashes["violated"].append(state)
-            pass
+                if (
+                    return_val == constants.HAL_StatusTypeDef.HAL_OK
+                    and state.globals.get("spec3_violation_pending", False)
+                ):
+                    print("Found a violation path")
+                    simgr.stashes["violated"].append(state)
 
         postcondition()
 
