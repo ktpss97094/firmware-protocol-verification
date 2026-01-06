@@ -1,0 +1,8 @@
+# cmake
+build/
+
+# Makefile 目前為 STM32CubeMX 自動產生
+Makefile
+
+# CBMC 輸出
+results.txt

@@ -5,9 +5,29 @@ I2C Master Clock Stretching Spec
     1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
     2. write DR 前，若 TxE bit 為 0 且不是 addressing phase，則違反
     3. set STOP bit 前，若 BTF bit 為 0 且回傳 HAL_OK，則違反
+    Symbolic Variables:
+        SR2 (BUSY)
+        uwTick
+        SR1 (SB, ADD10, AF, ADDR, TxE, BTF)
+* Interrupt Mode
+    1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
+    2. write DR 前，若 TxE bit 為 0 且不是 addressing phase，則違反
+    3. Precondition: Size > 0
+        set STOP bit 前，若 BTF bit 為 0，則違反
+    Symbolic Variables:
+        SR2 (TRA)
+        SR1 (SB, ADD10, ADDR, TxE, BTF)
 * DMA Mode
     1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
-    2. set STOP bit 前，若 BTF bit 為 0，則違反
+        > 考慮: I2C_Master_ADDR()
+        > 忽略: I2C_Slave_ADDR() (slave mode)
+    2. Precondition: Size > 0
+        set STOP bit 前，若 BTF bit 為 0，則違反
+        > 考慮: I2C_MasterTransmit_BTF()
+        > 忽略: I2C_Master_ADDR() (receiver mode 才有 set STOP), I2C_MasterTransmit_TXE() (Size == 0 才有 set STOP), I2C_MemoryTransmit_TXE_BTF() (memory mode), I2C_MasterReceive_BTF() (receiver mode)
+    Symbolic Variables:
+        SR2 (TRA)
+        SR1 (SB, ADD10, ADDR, TxE, BTF)
 """
 
 import avatar2
