@@ -2,6 +2,7 @@ import re
 import warnings
 import logging
 import archinfo
+import claripy
 from project import config
 
 
@@ -14,6 +15,56 @@ def init_logging():
 
 def get_default_symbolic_mask(name_dict, offset, symbolic_mask):
     return symbolic_mask.get(name_dict[offset // 4], 0)
+
+
+def load(state, addr, size=config.ANGR_ARCH.bytes):
+    return state.memory.load(
+        addr,
+        size,
+        endness=state.arch.memory_endness,
+        disable_actions=True,
+        inspect=False,
+    )
+
+
+def store(state, addr, value, size=config.ANGR_ARCH.bytes):
+    state.memory.store(
+        addr,
+        value,
+        size=size,
+        endness=state.arch.memory_endness,
+        disable_actions=True,
+        inspect=False,
+    )
+
+
+def set_bits(state, addr, mask):
+    prev_val = load(state, addr)
+
+    store(state, addr, prev_val | mask)
+
+
+def clear_bits(state, addr, mask):
+    prev_val = load(state, addr)
+
+    store(state, addr, prev_val & ~mask)
+
+
+def set_symbolic(state, addr, mask, symbolic_name_prefix):
+    prev_val = load(state, addr)
+
+    new_val = (prev_val & ~mask) | (
+        claripy.BVS(
+            f"{symbolic_name_prefix}_sym_{state.globals.get('sym_cnt', 0)}",
+            32,
+        )
+        & mask
+    )
+    state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
+
+    store(state, addr, new_val)
+
+    return new_val
 
 
 def normalize_code_addr(proj, addr, target=None, is_executing_pc=False):
@@ -82,6 +133,39 @@ def read_MMIO_renode(avatar_target, base_addr, size):
             warnings.warn(f"Failed to read reg at {target_addr:#x}: {e}")
 
     return bytes(data)
+
+
+def get_constraint_info(state, constraint):
+    def get_bit_extract_info(constraint):
+        if constraint.op == "Extract":
+            high_bit = constraint.args[0]
+            low_bit = constraint.args[1]
+            source_ast = constraint.args[2]
+            return (high_bit, low_bit, source_ast)
+
+        for arg in constraint.args:
+            if hasattr(arg, "op"):
+                result = get_bit_extract_info(arg)
+                if result:
+                    return result
+
+        return None
+
+    def find_variable_origin(state, target_ast):
+        for action in reversed(list(state.history.actions)):
+            if action.type == "mem" and action.action == "read":
+                if target_ast.variables & action.data.variables:
+                    addr = action.addr.ast
+                    if not addr.symbolic:
+                        return state.solver.eval(addr)
+                    return addr
+
+        return None
+
+    result = get_bit_extract_info(constraint)
+    if result:
+        high, low, source = result
+        return find_variable_origin(state, source), (high, low)
 
 
 def step_explore(simgr, proj, monitor_exploration=None):

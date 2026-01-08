@@ -3,15 +3,16 @@ I2C Master Clock Stretching Spec
 
 * Blocking Mode
     1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
-    2. write DR 前，若 TxE bit 為 0 且不是 addressing phase，則違反
-    3. set STOP bit 前，若 BTF bit 為 0 且回傳 HAL_OK，則違反
+    2. write DR 前，若 TxE bit 為 0 且 BTF bit 為 0 且不是 addressing phase，則違反
+    3. Precondition: Size > 0
+        set STOP bit 前，若 BTF bit 為 0 且回傳 HAL_OK，則違反
     Symbolic Variables:
         SR2 (BUSY)
         uwTick
         SR1 (SB, ADD10, AF, ADDR, TxE, BTF)
 * Interrupt Mode
     1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
-    2. write DR 前，若 TxE bit 為 0 且不是 addressing phase，則違反
+    2. write DR 前，若 TxE bit 為 0 且 BTF bit 為 0 且不是 addressing phase，則違反
     3. Precondition: Size > 0
         set STOP bit 前，若 BTF bit 為 0，則違反
     Symbolic Variables:
@@ -38,14 +39,7 @@ from angr.sim_type import SimTypeInt
 from functools import partial
 from project.SymbolicPolicy import SymbolicPolicy
 from project import config, constants
-from project.utils import (
-    init_logging,
-    get_default_symbolic_mask,
-    normalize_code_addr,
-    get_symbol_addr,
-    read_MMIO_renode,
-    step_explore,
-)
+import project.utils as utils
 from project.types import MemoryRegion
 
 
@@ -66,9 +60,12 @@ class I2C(MemoryRegion):
 
     SR1_AF_MASK = 1 << 10
     SR1_TXE_MASK = 1 << 7
+    SR1_ADD10_MASK = 1 << 3
     SR1_BTF_MASK = 1 << 2
     SR1_ADDR_MASK = 1 << 1
     SR1_SB_MASK = 1 << 0
+
+    SR2_BUSY_MASK = 1 << 1
 
     def read(self, state, offset):
         match offset:
@@ -79,13 +76,7 @@ class I2C(MemoryRegion):
                 if state.globals.get("I2C1_SR1_read", False):
                     state.globals["I2C1_SR1_read"] = False
 
-                    sr1 = state.memory.load(
-                        self.start + self.SR1_OFFSET,
-                        4,
-                        endness=state.arch.memory_endness,
-                        disable_actions=True,
-                        inspect=False,
-                    )
+                    sr1 = utils.load(state, self.start + self.SR1_OFFSET)
 
                     # [Spec 1] MODIFY:
                     violation_condition = sr1[1] == 0
@@ -96,24 +87,17 @@ class I2C(MemoryRegion):
                         state.globals["violation"] = True
 
                     # (ADDR) This bit is cleared by software reading SR1 register followed reading SR2
-                    state.memory.store(
-                        self.start + self.SR1_OFFSET,
-                        sr1 & ~I2C.SR1_ADDR_MASK,
-                        endness=state.arch.memory_endness,
-                        disable_actions=True,
-                        inspect=False,
+                    utils.clear_bits(
+                        state, self.start + self.SR1_OFFSET, I2C.SR1_ADDR_MASK
                     )
 
-        symbolic_mask = get_default_symbolic_mask(
+            case self.DR_OFFSET:
+                # (BTF) Cleared by software by either a read or write in the DR register
+                utils.clear_bits(state, self.start + self.SR1_OFFSET, I2C.SR1_BTF_MASK)
+        symbolic_mask = utils.get_default_symbolic_mask(
             constants.I2C_NAME, offset, constants.SYMBOLIC_MASK
         )
-        prev_val = state.memory.load(
-            self.start + offset,
-            4,
-            endness=state.arch.memory_endness,
-            disable_actions=True,
-            inspect=False,
-        )
+        prev_val = utils.load(state, self.start + offset)
         for i in range(32):
             mask = symbolic_mask & (1 << i)
             # 如果值是 symbolic，且有被 constraint 過，就不再新增一個新的 symbolic variable
@@ -127,71 +111,118 @@ class I2C(MemoryRegion):
             ):
                 symbolic_mask &= ~(1 << i)
 
-        new_val = (prev_val & ~symbolic_mask) | (
-            claripy.BVS(
-                f"I2C1_sym_{state.globals.get('sym_cnt', 0)}",
-                32,
-            )
-            & symbolic_mask
+        return utils.set_symbolic(
+            state, self.start + offset, symbolic_mask, f"I2C1_{offset:#x}"
         )
-        state.memory.store(
-            self.start + offset,
-            new_val,
-            endness=state.arch.memory_endness,
-            disable_actions=True,
-            inspect=False,
-        )
-        state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
-
-        return new_val
 
     def write(self, state, offset, val):
         match offset:
             case self.CR1_OFFSET:
-                sr1 = state.memory.load(
-                    self.start + self.SR1_OFFSET,
-                    4,
-                    endness=state.arch.memory_endness,
-                    disable_actions=True,
-                    inspect=False,
-                )
-
-                # set START bit 時進入 address phase
-                if state.solver.satisfiable(extra_constraints=[val[8] == 1]):
-                    state.globals["is_address_phase"] = True
+                sr1 = utils.load(state, self.start + self.SR1_OFFSET)
 
                 # [Spec 3 (Part 1)] MODIFY:
                 if not state.solver.satisfiable(
-                    extra_constraints=[val[9] != 1]
+                    extra_constraints=[val[9] == 0]
                 ) and state.solver.satisfiable(extra_constraints=[sr1[2] == 0]):
                     state.globals["spec3_violation_pending"] = True
 
+                # set START bit 時進入 address phase
+                if not state.solver.satisfiable(extra_constraints=[val[8] == 0]):
+                    state.globals["is_address_phase"] = True
+
+                # set START bit
+                if not state.solver.satisfiable(extra_constraints=[val[8] == 0]):
+                    # (SB) Set when a Start condition generated
+                    # (TxE) Cleared ... or by hardware after a start or a stop condition
+                    # (BTF) Cleared ... or by hardware after a start or a stop condition in transmission
+                    utils.set_symbolic(
+                        state,
+                        self.start + self.SR1_OFFSET,
+                        I2C.SR1_SB_MASK | I2C.SR1_TXE_MASK | I2C.SR1_BTF_MASK,
+                        f"I2C1_{self.SR1_OFFSET:#x}_SB/TxE/BTF",
+                    )
+
+                    # (BUSY) Set by hardware on detection of SDA or SCL low
+                    utils.set_symbolic(
+                        state,
+                        self.start + self.SR2_OFFSET,
+                        I2C.SR2_BUSY_MASK,
+                        f"I2C1_{self.SR2_OFFSET:#x}_BUSY",
+                    )
+
+                # set STOP bit
+                if not state.solver.satisfiable(extra_constraints=[val[9] == 0]):
+                    # (TxE) Cleared ... or by hardware after a start or a stop condition
+                    # (BTF) Cleared ... or by hardware after a start or a stop condition in transmission
+                    utils.set_symbolic(
+                        state,
+                        self.start + self.SR1_OFFSET,
+                        I2C.SR1_TXE_MASK | I2C.SR1_BTF_MASK,
+                        f"I2C1_{self.SR1_OFFSET:#x}_TxE/BTF",
+                    )
+
+                    # (BUSY) cleared by hardware on detection of a Stop condition
+                    utils.set_symbolic(
+                        state,
+                        self.start + self.SR2_OFFSET,
+                        I2C.SR2_BUSY_MASK,
+                        f"I2C1_{self.SR2_OFFSET:#x}_BUSY",
+                    )
+
             case self.DR_OFFSET:
-                sr1 = state.memory.load(
-                    self.start + self.SR1_OFFSET,
-                    4,
-                    endness=state.arch.memory_endness,
-                    disable_actions=True,
-                    inspect=False,
-                )
+                sr1 = utils.load(state, self.start + self.SR1_OFFSET)
 
                 # reference manual p870: TxE is not set during address phase。所以在 address phase 不能檢查 Spec 2
                 if state.globals.get("is_address_phase", False):
                     # 10-bit addressing 的 addressing phase 會 write 兩次 DR。第一次 write (header) 時是 11110xxx
-                    if state.solver.satisfiable(
-                        extra_constraints=[(val & 0xF8) == 0xF0]
+                    if not state.solver.satisfiable(
+                        extra_constraints=[(val & 0xF8) != 0xF0]
                     ):
-                        pass
+                        state.globals["is_10bit"] = True
                     else:
                         state.globals["is_address_phase"] = False
                 else:
                     # [Spec 2] MODIFY:
-                    violation_condition = sr1[7] == 0
                     if state.solver.satisfiable(
-                        extra_constraints=[violation_condition]
+                        extra_constraints=[sr1[7] == 0, sr1[2] == 0]
                     ):
                         print("Found a violation path")
                         state.globals["violation"] = True
+
+                # (TxE) Cleared by software writing to the DR register
+                # (BTF) Cleared by software by either a read or write in the DR register
+                utils.clear_bits(
+                    state,
+                    self.start + self.SR1_OFFSET,
+                    I2C.SR1_TXE_MASK | I2C.SR1_BTF_MASK,
+                )
+
+                if state.globals.get("I2C1_SR1_read", False):
+                    state.globals["I2C1_SR1_read"] = False
+
+                    # (SB) Cleared by software by reading the SR1 register followed by writing the DR register
+                    utils.clear_bits(
+                        state, self.start + self.SR1_OFFSET, I2C.SR1_SB_MASK
+                    )
+
+                    if state.globals.get("is_10bit", False) and not state.globals.get(
+                        "is_address_phase", False
+                    ):
+                        # (ADD10) Cleared by software reading the SR1 register followed by a write in the DR register of the second address byte
+                        utils.clear_bits(
+                            state, self.start + self.SR1_OFFSET, I2C.SR1_ADD10_MASK
+                        )
+
+                if state.globals.get("is_10bit", False) and state.globals.get(
+                    "is_address_phase", False
+                ):
+                    # (ADD10) Set by hardware when the master has sent the first byte in 10-bit address mode
+                    utils.set_symbolic(
+                        state,
+                        self.start + self.SR1_OFFSET,
+                        I2C.SR1_ADD10_MASK,
+                        f"I2C1_{self.SR1_OFFSET:#x}_ADD10",
+                    )
 
     @property
     def CR1(self):
@@ -263,27 +294,15 @@ def write_in_I2C1(state, I2C1):
 
 def on_read_SysTick(state):
     addr = state.solver.eval(state.inspect.mem_read_address)
-    origin_value = state.memory.load(
-        addr,
-        4,
-        endness=state.arch.memory_endness,
-        disable_actions=True,
-        inspect=False,
-    )
+    origin_val = utils.load(state, addr)
 
     delta = claripy.BVS(f"SysTick_sym_{state.globals.get('sym_cnt', 0)}", 32)
     state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
     state.add_constraints(delta >= 0)
-    new_value = origin_value + delta
+    new_val = origin_val + delta
 
-    state.memory.store(
-        addr,
-        new_value,
-        endness=state.arch.memory_endness,
-        disable_actions=True,
-        inspect=False,
-    )
-    state.inspect.mem_read_expr = new_value
+    utils.store(state, addr, new_val)
+    state.inspect.mem_read_expr = new_val
 
 
 def read_in_SysTick(state, SYSTICK_VARIABLE_ADDR):
@@ -426,7 +445,7 @@ def monitor_exploration(simgr):
 
 
 def main():
-    init_logging()
+    utils.init_logging()
 
     RAM = MemoryRegion(start=0x20000000, size=0x30000)
     CCMRAM = MemoryRegion(start=0x10000000, size=0x10000)
@@ -444,15 +463,15 @@ def main():
         arch=config.ANGR_ARCH,
     )
 
-    BEGIN_ADDR = get_symbol_addr(proj, config.BEGIN_SYMBOL, is_variable=False)
+    BEGIN_ADDR = utils.get_symbol_addr(proj, config.BEGIN_SYMBOL, is_variable=False)
     # MODIFY:
-    END_ADDRS = [get_symbol_addr(proj, config.END_SYMBOL, is_variable=False)]
+    END_ADDRS = [utils.get_symbol_addr(proj, config.END_SYMBOL, is_variable=False)]
     # END_ADDRS = [
     #     0xFFFFFFE1,
     #     0xFFFFFFF9,
     #     0xFFFFFFFD,
     # ]  # ARMv7-M Architecture Reference Manual §B1.5.8 Exception return behavior
-    SYSTICK_VARIABLE_ADDR = get_symbol_addr(
+    SYSTICK_VARIABLE_ADDR = utils.get_symbol_addr(
         proj, config.SYSTICK_VARIABLE_SYMBOL, is_variable=True
     )
 
@@ -509,7 +528,7 @@ def main():
         "pc": stm32.read_register("pc"),
         # "xpsr": stm32.read_register("xpsr"),  # avatar2 沒有加入這個 register，但實際上有
     }
-    regs["pc"] = normalize_code_addr(
+    regs["pc"] = utils.normalize_code_addr(
         proj, regs["pc"], target=stm32, is_executing_pc=True
     )
     sram_dump = stm32.read_memory(RAM.start, size=4, num_words=RAM.size // 4, raw=True)
@@ -524,8 +543,8 @@ def main():
         FLASH.start, size=4, num_words=VECTOR_TABLE.size // 4, raw=True
     )
     if config.USE_RENODE:
-        i2c1_dump = read_MMIO_renode(stm32, I2C1.start, I2C1.size)
-        dma1_dump = read_MMIO_renode(stm32, DMA1.start, DMA1.size)
+        i2c1_dump = utils.read_MMIO_renode(stm32, I2C1.start, I2C1.size)
+        dma1_dump = utils.read_MMIO_renode(stm32, DMA1.start, DMA1.size)
     else:
         i2c1_dump = stm32.read_memory(
             I2C1.start, size=4, num_words=I2C1.size // 4, raw=True
@@ -543,11 +562,8 @@ def main():
 
     state = proj.factory.blank_state(
         addr=regs["pc"],
-        add_options={
-            # ZERO_FILL_UNCONSTRAINED_MEMORY 及 ZERO_FILL_UNCONSTRAINED_REGISTERS 為指定當 Angr 讀取 Angr 未初始化的記憶體位置時，回傳 0 而不是 symbolic value
-            # angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
-            # angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
-        },
+        add_options=angr.options.refs,
+        #  | {angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY, angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS}  # ZERO_FILL_UNCONSTRAINED_MEMORY 及 ZERO_FILL_UNCONSTRAINED_REGISTERS 為指定當 Angr 讀取 Angr 未初始化的記憶體位置時，回傳 0 而不是 symbolic value
     )
 
     for reg_name, value in regs.items():
@@ -583,7 +599,7 @@ def main():
     )  # MODIFY:
     # state.inspect.b(
     #     "instruction",
-    #     instruction=get_symbol_addr("SYMBOL_FUNCTION", False),
+    #     instruction=utils.get_symbol_addr("SYMBOL_FUNCTION", False),
     #     action=stop_and_debug,
     # )
 
@@ -600,7 +616,7 @@ def main():
         num_find=float("inf"),
         step_func=monitor_exploration,
     )
-    # step_explore(simgr, proj, monitor_exploration=monitor_exploration)
+    # utils.step_explore(simgr, proj, monitor_exploration=monitor_exploration)
 
     if len(simgr.errored) > 0:
         print(f"Errors Detected: {len(simgr.errored)} states died")
