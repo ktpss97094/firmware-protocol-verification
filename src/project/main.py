@@ -3,7 +3,7 @@ I2C Master Clock Stretching Spec
 
 * Blocking Mode
     1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
-    2. write DR 前，若 TxE bit 為 0 且 BTF bit 為 0 且 SB bit 非必為 1 且 ADD10 非必為 1 且不是 addressing phase，則違反
+    2. write DR 前，若 TxE bit 為 0 且 BTF bit 為 0 且 SB bit 非必為 1 且 ADD10 非必為 1，則違反
     3. Precondition: Size > 0
         set STOP bit 前，若 BTF bit 為 0 且回傳 HAL_OK，則違反
     Symbolic Variables:
@@ -12,7 +12,7 @@ I2C Master Clock Stretching Spec
         SR1 (SB, ADD10, AF, ADDR, TxE, BTF)
 * Interrupt Mode
     1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
-    2. write DR 前，若 TxE bit 為 0 且 BTF bit 為 0 且 SB bit 非必為 1 且 ADD10 非必為 1 且不是 addressing phase，則違反
+    2. write DR 前，若 TxE bit 為 0 且 BTF bit 為 0 且 SB bit 非必為 1 且 ADD10 非必為 1，則違反
     3. Precondition: Size > 0
         set STOP bit 前，若 BTF bit 為 0，則違反
     Symbolic Variables:
@@ -29,6 +29,13 @@ I2C Master Clock Stretching Spec
     Symbolic Variables:
         SR2 (TRA)
         SR1 (SB, ADD10, ADDR, TxE, BTF)
+
+Stethogram AT Command Escape Sequence Spec
+
+1. send_escape_sequence() 執行時:
+    (1) 此次發送距離上一次 UART 傳輸結束的時間間隔必須 >= 1 秒
+    (2) 發送內容須為 +++
+    (3) 發送結束後，距離下一次 UART 傳輸開始的時間間隔必須 >= 1 秒
 """
 
 import avatar2
