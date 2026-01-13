@@ -3,6 +3,7 @@ import warnings
 import logging
 import archinfo
 import claripy
+from angr.sim_type import SimTypeInt, SimTypeFunction
 from project import config
 
 
@@ -65,6 +66,31 @@ def set_symbolic(state, addr, mask, symbolic_name_prefix):
     store(state, addr, new_val)
 
     return new_val
+
+
+def set_func_args_symbolic(proj, state, arg_num, constraints: dict):
+    """
+    :param arg_num: function 參數總數
+    :param constraints: dict[function 參數 index] = (constraint low, constraint high)
+    """
+
+    cc = proj.factory.cc()
+    prototype = SimTypeFunction([SimTypeInt()] * arg_num, SimTypeInt())
+    arg_locs = cc.arg_locs(prototype)
+
+    for index, (lo, hi) in constraints.items():
+        if index < 0 or index >= arg_num:
+            raise ValueError(f"Arg index {index} out of range for arg_num={arg_num}")
+
+        new_val = claripy.BVS(
+            f"FuncArgs[{index}]_sym_{state.globals.get('sym_cnt', 0)}",
+            config.ANGR_ARCH.bits,
+        )
+        state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
+
+        state.add_constraints(new_val >= lo, new_val <= hi)
+
+        arg_locs[index].set_value(state, new_val)
 
 
 def normalize_code_addr(proj, addr, target=None, is_executing_pc=False):
@@ -199,3 +225,7 @@ def step_explore(simgr, proj, monitor_exploration=None):
 
         if monitor_exploration:
             monitor_exploration(simgr)
+
+
+def stop_and_debug(state):
+    state.globals["DEBUG"] = True
