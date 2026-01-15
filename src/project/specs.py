@@ -41,6 +41,7 @@ Stethogram AT Command Escape Sequence Spec
 import angr
 import claripy
 from angr.sim_type import SimTypeInt
+from enum import IntEnum
 from project.types import MemoryRegion, MMIOMemoryRegion, VariableMemoryRegion
 from project import utils, constants
 
@@ -66,6 +67,9 @@ class I2C(MMIOMemoryRegion):
 
     SR2_TRA_MASK = 1 << 2
     SR2_BUSY_MASK = 1 << 1
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     def read(self, state):
         addr = state.solver.eval(state.inspect.mem_read_address)
@@ -267,6 +271,9 @@ class I2C(MMIOMemoryRegion):
 
 
 class SysTickVariable(VariableMemoryRegion):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     def read(self, state):
         addr = state.solver.eval(state.inspect.mem_read_address)
         origin_val = utils.load(state, addr)
@@ -281,7 +288,15 @@ class SysTickVariable(VariableMemoryRegion):
 
 
 class Specs:
+    class HAL_StatusTypeDef(IntEnum):
+        HAL_OK = 0x00
+        HAL_ERROR = 0x01
+        HAL_BUSY = 0x02
+        HAL_TIMEOUT = 0x03
+
     def __init__(self, proj):
+        super().__init__()
+
         self.MEMORY_REGIONS = {
             "RAM": MemoryRegion(start=0x20000000, size=0x30000, name="RAM"),
             "CCMRAM": MemoryRegion(start=0x10000000, size=0x10000, name="CCMRAM"),
@@ -355,7 +370,7 @@ class Specs:
         #         proj.factory.cc().return_val(SimTypeInt()).get_value(state)
         #     )
 
-        #     if return_val == constants.HAL_StatusTypeDef.HAL_OK and state.globals.get(
+        #     if return_val == self.HAL_StatusTypeDef.HAL_OK and state.globals.get(
         #         "spec3_violation_pending", False
         #     ):
         #         print("Found a violation path")

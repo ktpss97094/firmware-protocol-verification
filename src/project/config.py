@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 Path
 """
 FIRMWARE_PATH = str(
-    PROJECT_ROOT / "firmwares/STM32/I2C/Interrupt_Mode/build/clockstretching.elf"
+    PROJECT_ROOT / "firmwares/STM32/I2C/Interrupt_Mode/HAL/build/clockstretching.elf"
 )
 AVATAR_LOG_PATH = "/tmp/avatar"
 OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"

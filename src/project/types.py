@@ -6,6 +6,8 @@ class MemoryRegion:
         map_addr: int | None = None,
         name: str = "",
     ):
+        super().__init__()
+
         self.start = start
         self.size = size
         self.map_addr = map_addr if map_addr is not None else start
@@ -27,8 +29,10 @@ class MemoryRegion:
 
 
 class MMIOMemoryRegion(MemoryRegion):
-    pass
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 
 class VariableMemoryRegion(MemoryRegion):
-    pass
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
