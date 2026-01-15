@@ -42,8 +42,13 @@ import angr
 import claripy
 from angr.sim_type import SimTypeInt
 from enum import IntEnum
-from project.types import MemoryRegion, MMIOMemoryRegion, VariableMemoryRegion
-from project import utils, constants
+from project.types import (
+    MemoryRegion,
+    MMIOMemoryRegion,
+    VariableMemoryRegion,
+    BaseSpecs,
+)
+from project import utils
 
 
 class I2C(MMIOMemoryRegion):
@@ -67,9 +72,6 @@ class I2C(MMIOMemoryRegion):
 
     SR2_TRA_MASK = 1 << 2
     SR2_BUSY_MASK = 1 << 1
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
 
     def read(self, state):
         addr = state.solver.eval(state.inspect.mem_read_address)
@@ -101,9 +103,7 @@ class I2C(MMIOMemoryRegion):
                 # (BTF) Cleared by software by either a read or write in the DR register
                 utils.clear_bits(state, self.start + self.SR1_OFFSET, I2C.SR1_BTF_MASK)
 
-        symbolic_mask = utils.get_default_symbolic_mask(
-            constants.I2C_NAME, offset, constants.SYMBOLIC_MASK
-        )
+        symbolic_mask = self.symbolic_masks.get(self.start + offset, 0)
         prev_val = utils.load(state, self.start + offset)
         for i in range(32):
             mask = symbolic_mask & (1 << i)
@@ -271,9 +271,6 @@ class I2C(MMIOMemoryRegion):
 
 
 class SysTickVariable(VariableMemoryRegion):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
     def read(self, state):
         addr = state.solver.eval(state.inspect.mem_read_address)
         origin_val = utils.load(state, addr)
@@ -287,15 +284,24 @@ class SysTickVariable(VariableMemoryRegion):
         state.inspect.mem_read_expr = new_val
 
 
-class Specs:
+class Specs(BaseSpecs):
     class HAL_StatusTypeDef(IntEnum):
         HAL_OK = 0x00
         HAL_ERROR = 0x01
         HAL_BUSY = 0x02
         HAL_TIMEOUT = 0x03
 
-    def __init__(self, proj):
-        super().__init__()
+    def _define_specs(self):
+        # TODO: 自動生成
+        # self.SYMBOLIC_MASKS = {
+        #     0x40005414: 0b00000000000000000000010010001111,
+        #     0x40005418: 0b00000000000000000000000000000010,
+        #     self.MEMORY_REGIONS["SysTickVariable"].start: 0b11111111111111111111111111111111,
+        # }
+        self.SYMBOLIC_MASKS = {
+            0x40005414: 0b00000000000000000000000000001011,
+            0x40005418: 0b00000000000000000000000000000100,
+        }
 
         self.MEMORY_REGIONS = {
             "RAM": MemoryRegion(start=0x20000000, size=0x30000, name="RAM"),
@@ -314,7 +320,9 @@ class Specs:
         }
 
         self.BEGIN_ADDR = utils.get_symbol_addr(
-            proj, "HAL_I2C_EV_IRQHandler", is_variable=False
+            self.proj,
+            "HAL_I2C_EV_IRQHandler",  # FIXME: 應該改成 I2C1_EV_IRQHandler 比較正確
+            is_variable=False,
         )
         # self.END_ADDRS = [utils.get_symbol_addr(proj, "END_SYMBOLIC_EXECUTION", is_variable=False)]
         self.END_ADDRS = [
