@@ -3,14 +3,16 @@ class MemoryRegion:
         self,
         start: int,
         size: int,
-        map_addr: int | None = None,
+        physical_addr: int | None = None,
+        transfer: bool = True,
         name: str = "",
     ):
         super().__init__()
 
         self.start = start
         self.size = size
-        self.map_addr = map_addr if map_addr is not None else start
+        self.physical_addr = physical_addr if physical_addr is not None else start
+        self.transfer = transfer
         self.name = name
         self.symbolic_masks = {}
 

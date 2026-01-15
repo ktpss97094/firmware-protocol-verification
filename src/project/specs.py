@@ -306,12 +306,17 @@ class Specs(BaseSpecs):
         self.MEMORY_REGIONS = {
             "RAM": MemoryRegion(start=0x20000000, size=0x30000, name="RAM"),
             "CCMRAM": MemoryRegion(start=0x10000000, size=0x10000, name="CCMRAM"),
-            "FLASH": MemoryRegion(start=0x08000000, size=0x200000, name="FLASH"),
+            "FLASH": MemoryRegion(
+                start=0x08000000, size=0x200000, name="FLASH", transfer=False
+            ),
+            "VECTOR_TABLE_ALIAS": MemoryRegion(
+                start=0x00000000,
+                size=0x400,
+                name="VECTOR_TABLE_ALIAS",
+                physical_addr=0x08000000,
+            ),
             "I2C1": I2C(start=0x40005400, size=0x400, name="I2C1"),
             "DMA1": MemoryRegion(start=0x40026000, size=0x400, name="DMA1"),
-            "VECTOR_TABLE": MemoryRegion(
-                start=0x00000000, size=0x400, name="VECTOR_TABLE", map_addr=0x08000000
-            ),
             # "SysTickVariable": SysTickVariable(
             #     start=utils.get_symbol_addr(proj, "uwTick", is_variable=True),
             #     size=0x4,

@@ -46,6 +46,9 @@ def main():
     map_memory_regions = {}
     for memory_region_name, memory_region in specs.MEMORY_REGIONS.items():
         if isinstance(memory_region, VariableMemoryRegion):
+            logger.info(
+                f"Skip transfer memory region {memory_region_name}: belongs to class {memory_region.__class__.__name__}"
+            )
             continue
 
         map_memory_regions[memory_region_name] = memory_region
@@ -123,16 +126,22 @@ def main():
 
         dumps = {}
         for memory_region_name, memory_region in map_memory_regions.items():
+            if memory_region.transfer is False:
+                logger.info(
+                    f"Skip transfer memory region {memory_region_name}: transfer argument is set to False"
+                )
+                continue
+
             try:
                 if config.USE_RENODE and isinstance(memory_region, MMIOMemoryRegion):
                     dumps[memory_region_name] = utils.read_MMIO_renode(
                         avatar_target,
-                        memory_region.map_addr,
+                        memory_region.physical_addr,
                         memory_region.size,
                     )
                 else:
                     dumps[memory_region_name] = avatar_target.read_memory(
-                        memory_region.map_addr,
+                        memory_region.physical_addr,
                         size=config.ANGR_ARCH.bytes,
                         num_words=memory_region.size // config.ANGR_ARCH.bytes,
                         raw=True,
@@ -176,7 +185,7 @@ def main():
                 )
             except Exception as e:
                 logger.warning(
-                    f"Failed to map {memory_region_name} at {map_memory_regions[memory_region_name].start:#x} to angr: {e}"
+                    f"Failed to transfer {memory_region_name} at {map_memory_regions[memory_region_name].start:#x} to angr: {e}"
                 )
 
         specs.init_inspect(state)
