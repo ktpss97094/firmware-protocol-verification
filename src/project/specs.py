@@ -316,7 +316,7 @@ class Specs(BaseSpecs):
                 physical_addr=0x08000000,
             ),
             "I2C1": I2C(start=0x40005400, size=0x400, name="I2C1"),
-            "DMA1": MemoryRegion(start=0x40026000, size=0x400, name="DMA1"),
+            "DMA1": MMIOMemoryRegion(start=0x40026000, size=0x400, name="DMA1"),
             # "SysTickVariable": SysTickVariable(
             #     start=utils.get_symbol_addr(proj, "uwTick", is_variable=True),
             #     size=0x4,
@@ -326,7 +326,7 @@ class Specs(BaseSpecs):
 
         self.BEGIN_ADDR = utils.get_symbol_addr(
             self.proj,
-            "HAL_I2C_EV_IRQHandler",  # FIXME: 應該改成 I2C1_EV_IRQHandler 比較正確
+            "I2C1_EV_IRQHandler",
             is_variable=False,
         )
         # self.END_ADDRS = [utils.get_symbol_addr(proj, "END_SYMBOLIC_EXECUTION", is_variable=False)]
