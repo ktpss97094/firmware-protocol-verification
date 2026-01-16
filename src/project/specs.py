@@ -48,7 +48,7 @@ from project.types import (
     VariableMemoryRegion,
     BaseSpecs,
 )
-from project import utils
+from project import utils, config
 
 
 class I2C(MMIOMemoryRegion):
@@ -105,7 +105,7 @@ class I2C(MMIOMemoryRegion):
 
         symbolic_mask = self.symbolic_masks.get(self.start + offset, 0)
         prev_val = utils.load(state, self.start + offset)
-        for i in range(32):
+        for i in range(config.ANGR_ARCH.bits):
             mask = symbolic_mask & (1 << i)
             # 如果值是 symbolic，且有被 constraint 過，就不再新增一個新的 symbolic variable
             if (
@@ -275,8 +275,9 @@ class SysTickVariable(VariableMemoryRegion):
         addr = state.solver.eval(state.inspect.mem_read_address)
         origin_val = utils.load(state, addr)
 
-        delta = claripy.BVS(f"{self.name}_sym_{state.globals.get('sym_cnt', 0)}", 32)
-        state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
+        delta = utils.generate_symbolic(
+            state, self.symbolic_masks.get(addr, 0), self.name
+        )
         state.add_constraints(delta >= 0)
         new_val = origin_val + delta
 

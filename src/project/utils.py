@@ -51,17 +51,25 @@ def clear_bits(state, addr, mask):
     store(state, addr, prev_val & ~mask)
 
 
-def set_symbolic(state, addr, mask, symbolic_name_prefix):
-    prev_val = load(state, addr)
-
-    new_val = (prev_val & ~mask) | (
+def generate_symbolic(state, mask, symbolic_name_prefix):
+    output = (
         claripy.BVS(
             f"{symbolic_name_prefix}_sym_{state.globals.get('sym_cnt', 0)}",
-            32,
+            config.ANGR_ARCH.bits,
         )
         & mask
     )
     state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
+
+    return output
+
+
+def set_symbolic(state, addr, mask, symbolic_name_prefix):
+    prev_val = load(state, addr)
+
+    new_val = (prev_val & ~mask) | (
+        generate_symbolic(state, mask, symbolic_name_prefix)
+    )
 
     store(state, addr, new_val)
 
@@ -82,12 +90,7 @@ def set_func_args_symbolic(proj, state, arg_num, constraints: dict):
         if index < 0 or index >= arg_num:
             raise ValueError(f"Arg index {index} out of range for arg_num={arg_num}")
 
-        new_val = claripy.BVS(
-            f"FuncArgs[{index}]_sym_{state.globals.get('sym_cnt', 0)}",
-            config.ANGR_ARCH.bits,
-        )
-        state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
-
+        new_val = generate_symbolic(state, 0xFFFFFFFF, f"FuncArgs[{index}]")
         state.add_constraints(new_val >= lo, new_val <= hi)
 
         arg_locs[index].set_value(state, new_val)
