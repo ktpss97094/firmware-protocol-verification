@@ -33,12 +33,12 @@ def main():
     utils.init_logging()
 
     avatar = avatar2.Avatar(
-        arch=config.AVATAR_ARCH, output_directory=config.AVATAR_LOG_PATH
+        arch=Specs.AVATAR_ARCH, output_directory=config.AVATAR_LOG_PATH
     )
     proj = angr.Project(
-        config.FIRMWARE_PATH,
+        Specs.FIRMWARE_PATH,
         auto_load_libs=False,
-        arch=config.ANGR_ARCH,
+        arch=Specs.ANGR_ARCH,
     )
     specs = Specs(proj)
 
@@ -57,19 +57,19 @@ def main():
     avatar2 部分
     """
     avatar_target: avatar2.Target | None = None
-    if config.USE_RENODE:
+    if Specs.USE_RENODE:
         avatar_target = avatar.add_target(
             avatar2.GDBTarget,
             gdb_port=config.RENODE_GDB_PORT,
             gdb_serial_device="127.0.0.1",
             serial=False,
-            gdb_additional_args=[config.FIRMWARE_PATH],
+            gdb_additional_args=[Specs.FIRMWARE_PATH],
         )
     else:
         avatar_target = avatar.add_target(
             avatar2.OpenOCDTarget,
-            openocd_script=config.OPENOCD_INTERFACE_SCRIPT_PATH,
-            additional_args=["-f", config.OPENOCD_TARGET_SCRIPT_PATH],
+            openocd_script=Specs.OPENOCD_INTERFACE_SCRIPT_PATH,
+            additional_args=["-f", Specs.OPENOCD_TARGET_SCRIPT_PATH],
         )
 
     for memory_region in map_memory_regions.values():
@@ -84,7 +84,7 @@ def main():
 
     avatar_target.set_breakpoint(specs.BEGIN_ADDR)
 
-    if config.USE_RENODE:
+    if Specs.USE_RENODE:
         avatar_target.protocols.execution.console_command("monitor start")
     while True:
         avatar_target.cont()
@@ -133,7 +133,7 @@ def main():
                 continue
 
             try:
-                if config.USE_RENODE and isinstance(memory_region, MMIOMemoryRegion):
+                if Specs.USE_RENODE and isinstance(memory_region, MMIOMemoryRegion):
                     dumps[memory_region_name] = utils.read_MMIO_renode(
                         avatar_target,
                         memory_region.physical_addr,
@@ -142,8 +142,8 @@ def main():
                 else:
                     dumps[memory_region_name] = avatar_target.read_memory(
                         memory_region.physical_addr,
-                        size=config.ANGR_ARCH.bytes,
-                        num_words=memory_region.size // config.ANGR_ARCH.bytes,
+                        size=proj.arch.bytes,
+                        num_words=memory_region.size // proj.arch.bytes,
                         raw=True,
                     )
             except Exception as e:

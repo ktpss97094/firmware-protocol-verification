@@ -39,7 +39,8 @@ Stethogram AT Command Escape Sequence Spec
 """
 
 import angr
-import claripy
+import avatar2
+import archinfo
 from angr.sim_type import SimTypeInt
 from enum import IntEnum
 from project.types import (
@@ -73,26 +74,27 @@ class I2C(MMIOMemoryRegion):
     SR2_TRA_MASK = 1 << 2
     SR2_BUSY_MASK = 1 << 1
 
-    def read(self, state):
-        addr = state.solver.eval(state.inspect.mem_read_address)
-        offset = addr - self.start
-
+    def read(self, state, offset):
         match offset:
             case self.SR1_OFFSET:
+                # --- Side-Effects ---
                 state.globals[f"{self.name}_SR1_read"] = True
 
             case self.SR2_OFFSET:
+                # --- Spec 1 ---
+                if state.globals.get(
+                    f"{self.name}_SR1_read", False
+                ) and state.solver.satisfiable(
+                    extra_constraints=[
+                        utils.load(state, self.start + self.SR1_OFFSET)[1] == 0
+                    ]
+                ):
+                    print("Found a violation path")
+                    state.globals["violation"] = True
+
+                # --- Side-Effects ---
                 if state.globals.get(f"{self.name}_SR1_read", False):
                     state.globals[f"{self.name}_SR1_read"] = False
-                    sr1 = utils.load(state, self.start + self.SR1_OFFSET)
-
-                    # [Spec 1] MODIFY:
-                    violation_condition = sr1[1] == 0
-                    if state.solver.satisfiable(
-                        extra_constraints=[violation_condition]
-                    ):
-                        print("Found a violation path")
-                        state.globals["violation"] = True
 
                     # (ADDR) This bit is cleared by software reading SR1 register followed reading SR2
                     utils.clear_bits(
@@ -100,50 +102,27 @@ class I2C(MMIOMemoryRegion):
                     )
 
             case self.DR_OFFSET:
+                # --- Side-Effects ---
                 # (BTF) Cleared by software by either a read or write in the DR register
                 utils.clear_bits(state, self.start + self.SR1_OFFSET, I2C.SR1_BTF_MASK)
 
-        symbolic_mask = self.symbolic_masks.get(self.start + offset, 0)
-        prev_val = utils.load(state, self.start + offset)
-        for i in range(config.ANGR_ARCH.bits):
-            mask = symbolic_mask & (1 << i)
-            # 如果值是 symbolic，且有被 constraint 過，就不再新增一個新的 symbolic variable
-            if (
-                mask
-                and prev_val[i].symbolic
-                and not (
-                    state.solver.min(prev_val[i]) == 0
-                    and state.solver.max(prev_val[i]) == ((1 << prev_val[i].size()) - 1)
-                )
-            ):
-                symbolic_mask &= ~(1 << i)
-
-        state.inspect.mem_read_expr = utils.set_symbolic(
-            state, self.start + offset, symbolic_mask, f"{self.name}_{offset:#x}"
-        )
-
-    def write(self, state):
-        addr = state.solver.eval(state.inspect.mem_write_address)
-        val = state.inspect.mem_write_expr
-        offset = addr - self.start
+    def write(self, state, offset, value):
+        sr1 = utils.load(state, self.start + self.SR1_OFFSET)
 
         match offset:
             case self.CR1_OFFSET:
-                sr1 = utils.load(state, self.start + self.SR1_OFFSET)
-
-                # [Spec 3 (Part 1)] MODIFY:
+                # --- Spec 3 (Part 1) ---
                 if not state.solver.satisfiable(
-                    extra_constraints=[val[9] == 0]
+                    extra_constraints=[value[9] == 0]
                 ) and state.solver.satisfiable(extra_constraints=[sr1[2] == 0]):
                     print("Found a violation path")
                     state.globals["violation"] = True
 
+                # --- Side-Effects ---
                 # set START bit 時進入 address phase
-                if not state.solver.satisfiable(extra_constraints=[val[8] == 0]):
+                if not state.solver.satisfiable(extra_constraints=[value[8] == 0]):
                     state.globals["is_address_phase"] = True
 
-                # set START bit
-                if not state.solver.satisfiable(extra_constraints=[val[8] == 0]):
                     # (SB) Set when a Start condition generated
                     # (TxE) Cleared ... or by hardware after a start or a stop condition
                     # (BTF) Cleared ... or by hardware after a start or a stop condition in transmission
@@ -170,7 +149,7 @@ class I2C(MMIOMemoryRegion):
                     )
 
                 # set STOP bit
-                if not state.solver.satisfiable(extra_constraints=[val[9] == 0]):
+                if not state.solver.satisfiable(extra_constraints=[value[9] == 0]):
                     # (TxE) Cleared ... or by hardware after a start or a stop condition
                     # (BTF) Cleared ... or by hardware after a start or a stop condition in transmission
                     utils.set_symbolic(
@@ -196,33 +175,7 @@ class I2C(MMIOMemoryRegion):
                     )
 
             case self.DR_OFFSET:
-                sr1 = utils.load(state, self.start + self.SR1_OFFSET)
-
-                # reference manual p870: TxE is not set during address phase。所以在 address phase 不能檢查 Spec 2
-                if state.globals.get("is_address_phase", False):
-                    # 10-bit addressing 的 addressing phase 會 write 兩次 DR。第一次 write (header) 時是 11110xxx
-                    if not state.solver.satisfiable(
-                        extra_constraints=[(val & 0xF8) != 0xF0]
-                    ):
-                        state.globals["is_10bit"] = True
-                    else:
-                        state.globals["is_address_phase"] = False
-
-                        # (TRA) This bit is set depending on the R/W bit of the address byte, at the end of total address phase
-                        if not state.solver.satisfiable(
-                            extra_constraints=[(val & 1) != 0]
-                        ):
-                            utils.set_bits(
-                                state, self.start + self.SR2_OFFSET, I2C.SR2_TRA_MASK
-                            )
-                        elif not state.solver.satisfiable(
-                            extra_constraints=[(val & 1) != 1]
-                        ):
-                            utils.clear_bits(
-                                state, self.start + self.SR2_OFFSET, I2C.SR2_TRA_MASK
-                            )
-
-                # [Spec 2] MODIFY:
+                # --- Spec 2 ---
                 if state.solver.satisfiable(
                     extra_constraints=[
                         sr1[7] == 0,
@@ -233,6 +186,30 @@ class I2C(MMIOMemoryRegion):
                 ):
                     print("Found a violation path")
                     state.globals["violation"] = True
+
+                # --- Side-Effects ---
+                if state.globals.get("is_address_phase", False):
+                    # 10-bit addressing 的 addressing phase 會 write 兩次 DR。第一次 write (header) 時是 11110xxx
+                    if not state.solver.satisfiable(
+                        extra_constraints=[(value & 0xF8) != 0xF0]
+                    ):
+                        state.globals["is_10bit"] = True
+                    else:
+                        state.globals["is_address_phase"] = False
+
+                        # (TRA) This bit is set depending on the R/W bit of the address byte, at the end of total address phase
+                        if not state.solver.satisfiable(
+                            extra_constraints=[(value & 1) != 0]
+                        ):
+                            utils.set_bits(
+                                state, self.start + self.SR2_OFFSET, I2C.SR2_TRA_MASK
+                            )
+                        elif not state.solver.satisfiable(
+                            extra_constraints=[(value & 1) != 1]
+                        ):
+                            utils.clear_bits(
+                                state, self.start + self.SR2_OFFSET, I2C.SR2_TRA_MASK
+                            )
 
                 # (TxE) Cleared by software writing to the DR register
                 # (BTF) Cleared by software by either a read or write in the DR register
@@ -271,21 +248,37 @@ class I2C(MMIOMemoryRegion):
 
 
 class SysTickVariable(VariableMemoryRegion):
-    def read(self, state):
-        addr = state.solver.eval(state.inspect.mem_read_address)
-        origin_val = utils.load(state, addr)
+    def read(self, state, offset):
+        origin_val = utils.load(state, self.start + offset)
 
         delta = utils.generate_symbolic(
-            state, self.symbolic_masks.get(addr, 0), self.name
+            state, self.symbolic_masks.get(self.start + offset, 0), self.name
         )
         state.add_constraints(delta >= 0)
+
         new_val = origin_val + delta
 
-        utils.store(state, addr, new_val)
+        utils.store(state, self.start + offset, new_val)
         state.inspect.mem_read_expr = new_val
 
 
 class Specs(BaseSpecs):
+    # --- Paths ---
+    FIRMWARE_PATH = str(
+        config.PROJECT_ROOT
+        / "firmwares/STM32/I2C/Interrupt_Mode/HAL/build/clockstretching.elf"
+    )
+    OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"
+    OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"
+
+    # --- Architecture ---
+    AVATAR_ARCH = avatar2.archs.arm.ARM_CORTEX_M3
+    ANGR_ARCH = archinfo.ArchARMCortexM(endness=archinfo.Endness.LE)
+
+    # --- Renode ---
+    USE_RENODE = True
+
+    # --- Constants ---
     class HAL_StatusTypeDef(IntEnum):
         HAL_OK = 0x00
         HAL_ERROR = 0x01
@@ -293,17 +286,6 @@ class Specs(BaseSpecs):
         HAL_TIMEOUT = 0x03
 
     def _define_specs(self):
-        # TODO: 自動生成
-        # self.SYMBOLIC_MASKS = {
-        #     0x40005414: 0b00000000000000000000010010001111,
-        #     0x40005418: 0b00000000000000000000000000000010,
-        #     self.MEMORY_REGIONS["SysTickVariable"].start: 0b11111111111111111111111111111111,
-        # }
-        self.SYMBOLIC_MASKS = {
-            0x40005414: 0b00000000000000000000000000001011,
-            0x40005418: 0b00000000000000000000000000000100,
-        }
-
         self.MEMORY_REGIONS = {
             "RAM": MemoryRegion(start=0x20000000, size=0x30000, name="RAM"),
             "CCMRAM": MemoryRegion(start=0x10000000, size=0x10000, name="CCMRAM"),
@@ -323,6 +305,17 @@ class Specs(BaseSpecs):
             #     size=0x4,
             #     name="SysTickVariable",
             # ),
+        }
+
+        # TODO: 自動生成
+        # self.SYMBOLIC_MASKS = {
+        #     0x40005414: 0b00000000000000000000010010001111,
+        #     0x40005418: 0b00000000000000000000000000000010,
+        #     self.MEMORY_REGIONS["SysTickVariable"].start: 0b11111111111111111111111111111111,
+        # }
+        self.SYMBOLIC_MASKS = {
+            0x40005414: 0b00000000000000000000000000001011,
+            0x40005418: 0b00000000000000000000000000000100,
         }
 
         self.BEGIN_ADDR = utils.get_symbol_addr(

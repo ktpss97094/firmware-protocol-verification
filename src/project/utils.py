@@ -18,21 +18,21 @@ def get_default_symbolic_mask(name_dict, offset, symbolic_mask):
     return symbolic_mask.get(name_dict[offset // 4], 0)
 
 
-def load(state, addr, size=config.ANGR_ARCH.bytes):
+def load(state, addr, size=None):
     return state.memory.load(
         addr,
-        size,
+        size if size is not None else state.arch.bytes,
         endness=state.arch.memory_endness,
         disable_actions=True,
         inspect=False,
     )
 
 
-def store(state, addr, value, size=config.ANGR_ARCH.bytes):
+def store(state, addr, value, size=None):
     state.memory.store(
         addr,
         value,
-        size=size,
+        size=size if size is not None else state.arch.bytes,
         endness=state.arch.memory_endness,
         disable_actions=True,
         inspect=False,
@@ -51,11 +51,11 @@ def clear_bits(state, addr, mask):
     store(state, addr, prev_val & ~mask)
 
 
-def generate_symbolic(state, mask, symbolic_name_prefix):
+def generate_symbolic(state, mask, symbolic_name_prefix, size=None):
     output = (
         claripy.BVS(
             f"{symbolic_name_prefix}_sym_{state.globals.get('sym_cnt', 0)}",
-            config.ANGR_ARCH.bits,
+            size if size is not None else state.arch.bits,
         )
         & mask
     )
@@ -206,7 +206,6 @@ def step_explore(simgr, proj, monitor_exploration=None):
             val = state.memory.load(addr, size, endness=state.arch.memory_endness)
             return val
 
-        pass
         simgr.step()
         for state in simgr.active:
             pc_addr = state.solver.eval(state.regs.pc) & ~1
@@ -217,14 +216,6 @@ def step_explore(simgr, proj, monitor_exploration=None):
                 print(f"Address: {hex(pc_addr)} maps to: {source_info}")
             else:
                 print(f"No debug info found for address {hex(pc_addr)}")
-        pass
-
-        def check_find_condition(state):
-            return state.addr in [0xFFFFFFE1, 0xFFFFFFF9, 0xFFFFFFFD]
-
-        simgr.move(
-            from_stash="active", to_stash="found", filter_func=check_find_condition
-        )
 
         if monitor_exploration:
             monitor_exploration(simgr)
