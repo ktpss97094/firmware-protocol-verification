@@ -3,6 +3,12 @@ import warnings
 import logging
 import archinfo
 import claripy
+import hashlib
+import importlib
+import importlib.util
+from pathlib import Path
+from types import ModuleType
+from typing import Type, Any
 from angr.sim_type import SimTypeInt, SimTypeFunction
 from project import config
 
@@ -12,6 +18,32 @@ logger = logging.getLogger(__name__)
 
 def init_logging():
     logging.config.dictConfig(config.LOGGING_CONFIG)
+
+
+def load_specs_class(spec_arg: str | None) -> Type[Any]:
+    def load_module_from_file(path: Path) -> ModuleType:
+        unique_name = (
+            "user_specs_" + hashlib.sha256(str(path).encode()).hexdigest()[:16]
+        )
+        spec = importlib.util.spec_from_file_location(unique_name, str(path))
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Unable to create module spec from file: {path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    if spec_arg.endswith(".py"):
+        path = Path(spec_arg).expanduser().resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"Spec file doesn't exist: {path}")
+        mod = load_module_from_file(path)
+    else:
+        mod = importlib.import_module(spec_arg)
+
+    if not hasattr(mod, "Specs"):
+        raise AttributeError(f"Spec file doesn't provide 'Specs' class: {spec_arg}")
+
+    return getattr(mod, "Specs")
 
 
 def get_default_symbolic_mask(name_dict, offset, symbolic_mask):

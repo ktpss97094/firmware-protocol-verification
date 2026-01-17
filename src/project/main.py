@@ -1,9 +1,9 @@
 import avatar2
 import angr
 import logging
+import argparse
 from project import config
 import project.utils as utils
-from project.specs import Specs
 from project.types import MMIOMemoryRegion, VariableMemoryRegion
 
 
@@ -29,7 +29,16 @@ def monitor_exploration(simgr):
     return simgr
 
 
-def main():
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(prog="verify")
+    parser.add_argument(
+        "spec",
+        nargs="?",
+        help="Spec file path",
+    )
+    args = parser.parse_args(argv)
+    Specs = utils.load_specs_class(args.spec)
+
     utils.init_logging()
 
     avatar = avatar2.Avatar(
@@ -47,7 +56,7 @@ def main():
     for memory_region_name, memory_region in specs.MEMORY_REGIONS.items():
         if isinstance(memory_region, VariableMemoryRegion):
             logger.info(
-                f"Skip transfer memory region {memory_region_name}: belongs to class {memory_region.__class__.__name__}"
+                f"Skip transfer memory region {memory_region_name}: belongs to class VariableMemoryRegion"
             )
             continue
 
@@ -190,7 +199,7 @@ def main():
 
         specs.init_inspect(state)
 
-        if specs.precondition(proj, state):
+        if specs.precondition(state):
             logger.info("Precondition met")
             break
         else:
@@ -242,7 +251,7 @@ def main():
 
             print("-" * 30)
     elif len(simgr.found) > 0:
-        specs.postcondition(proj, simgr)
+        specs.postcondition(simgr)
 
         if len(simgr.stashes["violated"]) > 0:
             print(
