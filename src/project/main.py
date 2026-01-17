@@ -96,13 +96,13 @@ def main():
             {idx: name for name, idx in avatar_target._arch.registers.items()}.values()
         )
         # avatar2 將一般 register (registers) 與 special register (special_registers) 分開
-        for special_register_name in avatar_target._arch.special_registers:
-            reg_names.append(special_register_name)
+        # for special_register_name in avatar_target._arch.special_registers:
+        #     reg_names.append(special_register_name)
         # Cortex-M 是用 xpsr 不是 cpsr
-        if avatar_target._arch.cpu_model.startswith("cortex-m"):
-            if "cpsr" in reg_names:
-                reg_names.remove("cpsr")
-                logger.info("Removing cpsr from register list for Arm Cortex-M")
+        # if avatar_target._arch.cpu_model.startswith("cortex-m"):
+        #     if "cpsr" in reg_names:
+        #         reg_names.remove("cpsr")
+        #         logger.info("Removing cpsr from register list for Arm Cortex-M")
 
         regs = {}
         for name in reg_names:
