@@ -282,9 +282,3 @@ class Specs(BaseSpecs):
         #     instruction=self.DEBUG_FUNC_ADDR,
         #     action=utils.stop_and_debug,
         # )
-
-    def precondition(self, proj, state):
-        return True
-
-    def postcondition(self, proj, simgr):
-        pass

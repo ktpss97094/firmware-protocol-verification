@@ -132,3 +132,9 @@ class BaseSpecs:
     def _apply_symbolic_masks(self):
         for memory_region in self.MEMORY_REGIONS.values():
             memory_region.set_symbolic_mask(self.SYMBOLIC_MASKS)
+
+    def precondition(self, state):
+        return True
+
+    def postcondition(self, simgr):
+        pass
