@@ -220,6 +220,7 @@ def main(argv: list[str] | None = None):
     )
     # utils.step_explore(simgr, proj, monitor_exploration=monitor_exploration)
 
+    print(simgr)
     if len(simgr.errored) > 0:
         print(f"Errors Detected: {len(simgr.errored)} states died")
         for err in simgr.errored:
