@@ -210,7 +210,7 @@ def main(argv: list[str] | None = None):
     simgr = proj.factory.simgr(state)
     simgr.use_technique(
         angr.exploration_techniques.LoopSeer(
-            cfg=proj.analyses.CFGFast(normalize=True), bound=10
+            cfg=proj.analyses.CFGFast(normalize=True), bound=3
         )
     )  # 設定 loop 執行上限次數
     simgr.explore(

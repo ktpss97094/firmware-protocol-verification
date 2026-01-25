@@ -31,8 +31,8 @@ class MemoryRegion:
             addr = state.solver.eval(state.inspect.mem_read_address)
             offset = addr - self.start
             orig_read(self, state, offset)
-            if isinstance(self, MMIOMemoryRegion):
-                self._apply_symbolic(state, offset)
+            # if isinstance(self, MMIOMemoryRegion):
+            #     self._apply_symbolic(state, offset)
 
         cls.read = wrapped_read
         cls._read_is_wrapped = True
