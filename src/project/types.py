@@ -1,4 +1,28 @@
+from angr.engines import SimEngineFailure, SimEngineSyscall, HooksMixin
+from angr.engines.vex import (
+    HeavyResilienceMixin,
+    HeavyVEXMixin,
+    SimInspectMixin,
+    SuperFastpathMixin,
+    TrackActionsMixin,
+)
 from project import utils
+
+
+class CustomEngine(
+    SimEngineFailure,
+    SimEngineSyscall,
+    HooksMixin,
+    SuperFastpathMixin,
+    TrackActionsMixin,
+    SimInspectMixin,
+    HeavyResilienceMixin,
+    # SootMixin,
+    # AILMixin,
+    # SimEngineUnicorn,
+    HeavyVEXMixin,
+):
+    pass
 
 
 class MemoryRegion:

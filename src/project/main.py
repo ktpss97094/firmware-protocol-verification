@@ -2,9 +2,10 @@ import avatar2
 import angr
 import logging
 import argparse
+import pickle
 from project import config
 import project.utils as utils
-from project.types import MMIOMemoryRegion, VariableMemoryRegion
+from project.types import CustomEngine, MMIOMemoryRegion, VariableMemoryRegion
 
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,9 @@ def monitor_exploration(simgr):
     )
 
     print(f"Step: Active={len(simgr.active)}, Found={len(simgr.found)}")
+
+    # for state in simgr.active:
+    #     state.history.trim()
 
     # if n_active > 500:
     #     print("State explosion detected! Aborting exploration.")
@@ -48,7 +52,9 @@ def main(argv: list[str] | None = None):
         Specs.FIRMWARE_PATH,
         auto_load_libs=False,
         arch=Specs.ANGR_ARCH,
+        engine=CustomEngine,
     )
+
     specs = Specs(proj)
 
     # 過濾出需要處理的 memory regions
@@ -167,7 +173,7 @@ def main(argv: list[str] | None = None):
 
         state = proj.factory.blank_state(
             addr=regs[avatar_target._arch.pc_name],
-            add_options=angr.options.refs,
+            # add_options=angr.options.refs,
             #  | {angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY, angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS}  # ZERO_FILL_UNCONSTRAINED_MEMORY 及 ZERO_FILL_UNCONSTRAINED_REGISTERS 為指定當 Angr 讀取 Angr 未初始化的記憶體位置時，回傳 0 而不是 symbolic value
         )
 
@@ -207,12 +213,22 @@ def main(argv: list[str] | None = None):
 
     avatar.shutdown()
 
+    for opt in {
+        angr.options.TRACK_MEMORY_ACTIONS,
+        angr.options.TRACK_REGISTER_ACTIONS,
+        angr.options.TRACK_TMP_ACTIONS,
+        angr.options.TRACK_JMP_ACTIONS,
+        angr.options.TRACK_CONSTRAINT_ACTIONS,
+    }:
+        if opt in state.options:
+            state.options.remove(opt)
     simgr = proj.factory.simgr(state)
-    simgr.use_technique(
-        angr.exploration_techniques.LoopSeer(
-            cfg=proj.analyses.CFGFast(normalize=True), bound=3
-        )
-    )  # 設定 loop 執行上限次數
+    # simgr.use_technique(angr.exploration_techniques.Veritesting())
+    # simgr.use_technique(
+    #     angr.exploration_techniques.LoopSeer(
+    #         cfg=proj.analyses.CFGFast(normalize=True), bound=3
+    #     )
+    # )  # 設定 loop 執行上限次數
     simgr.explore(
         find=specs.END_ADDRS,
         num_find=float("inf"),

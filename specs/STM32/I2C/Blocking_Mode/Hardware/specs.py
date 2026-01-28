@@ -251,12 +251,21 @@ class I2C(MMIOMemoryRegion):
                         )
                 else:
                     # (TxE) Set when DR is empty in transmission. TxE is not set during address phase
-                    utils.set_symbolic(
+                    new_TxE = utils.set_symbolic(
                         state,
                         self.start + I2C.SR1_OFFSET,
                         I2C.SR1_TXE_MASK,
                         f"{self.name}_{I2C.SR1_OFFSET:#x}_TxE",
                     )
+
+                    # (BTF) Set ... In transmission when a new byte should be sent and DR has not been written yet (TxE=1)
+                    new_sr1 = sr1
+                    new_sr1 = (new_sr1 & ~I2C.SR1_BTF_MASK) | claripy.If(
+                        new_TxE == 1,
+                        I2C.SR1_BTF_MASK,
+                        claripy.BVV(0x00000000, state.arch.bits),
+                    )
+                    utils.store(state, self.start + I2C.SR1_OFFSET, new_sr1)
 
                 # (TxE) Cleared by software writing to the DR register
                 # (BTF) Cleared by software by either a read or write in the DR register
@@ -267,12 +276,11 @@ class I2C(MMIOMemoryRegion):
                 )
 
                 # (AF) Set by hardware when no acknowledge is returned
-                # (BTF) Set ... In transmission when a new byte should be sent and DR has not been written yet
                 utils.set_symbolic(
                     state,
                     self.start + I2C.SR1_OFFSET,
-                    I2C.SR1_AF_MASK | I2C.SR1_BTF_MASK,
-                    f"{self.name}_{I2C.SR1_OFFSET:#x}_AF/BTF",
+                    I2C.SR1_AF_MASK,
+                    f"{self.name}_{I2C.SR1_OFFSET:#x}_AF",
                 )
 
                 if state.globals.get(f"{self.name}_SR1_read", False):
@@ -282,8 +290,6 @@ class I2C(MMIOMemoryRegion):
                     utils.clear_bits(
                         state, self.start + I2C.SR1_OFFSET, I2C.SR1_SB_MASK
                     )
-
-                    a = utils.load(state, self.start + I2C.SR1_OFFSET)
 
                     if state.globals.get("is_10bit", False) and not state.globals.get(
                         "is_address_phase", False
@@ -309,10 +315,13 @@ class SysTickVariable(VariableMemoryRegion):
     def read(self, state, offset):
         origin_val = utils.load(state, self.start + offset)
 
-        delta = utils.generate_symbolic(
-            state, self.symbolic_masks.get(self.start + offset, 0), self.name
-        )
-        state.add_constraints(delta >= 0)
+        # new_val = utils.generate_symbolic(
+        #     state, self.symbolic_masks.get(self.start + offset, 0), self.name
+        # )
+        # state.add_constraints(
+        #     claripy.Or(new_val == origin_val, new_val == origin_val + 25 + 1)
+        # )
+        delta = 1
 
         new_val = origin_val + delta
 
@@ -399,12 +408,12 @@ class Specs(BaseSpecs):
             action=self.MEMORY_REGIONS["I2C1"].write,
         )
 
-        # state.inspect.b(
-        #     "mem_read",
-        #     when=angr.BP_AFTER,
-        #     condition=self.MEMORY_REGIONS["SysTickVariable"].in_region_read,
-        #     action=self.MEMORY_REGIONS["SysTickVariable"].read,
-        # )
+        state.inspect.b(
+            "mem_read",
+            when=angr.BP_AFTER,
+            condition=self.MEMORY_REGIONS["SysTickVariable"].in_region_read,
+            action=self.MEMORY_REGIONS["SysTickVariable"].read,
+        )
 
         # state.inspect.b(
         #     "instruction",
@@ -413,7 +422,7 @@ class Specs(BaseSpecs):
         # )
 
     def precondition(self, state):
-        # utils.set_func_args_symbolic(self.proj, state, 5, {3: (1, 3)})
+        # utils.set_func_args_symbolic(self.proj, state, 5, {3: (0, 3)})
 
         return True
 
