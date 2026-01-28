@@ -2,9 +2,12 @@
 I2C Master Clock Stretching Spec
 
 1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
-2. write DR 前，若 TxE bit 為 0 且 BTF bit 為 0 且 SB bit 非必為 1 且 ADD10 非必為 1，則違反
+2. write DR 前，若 TxE bit 為 0 且 SB bit 非必為 1 且 ADD10 非必為 1，則違反
+    * SB bit 必為 1 或 ADD10 必為 1 時表示 address phase，TxE 不會 set
 3. Precondition: Size > 0
     set STOP bit 前，若 BTF bit 為 0 且回傳 HAL_OK，則違反
+        * Size == 0 時只會送 address，BTF 不會 set
+        * HAL_OK: 不考慮 acknowledge failure、timeout 等造成的 set STOP bit
 
 Symbolic Variables:
     SR2 (BUSY)
@@ -224,7 +227,6 @@ class I2C(MMIOMemoryRegion):
                 if state.solver.satisfiable(
                     extra_constraints=[
                         sr1[7] == 0,
-                        sr1[2] == 0,
                         sr1[0] != 1,
                         sr1[3] != 1,
                     ]
@@ -233,6 +235,14 @@ class I2C(MMIOMemoryRegion):
                     state.globals["violation"] = True
 
                 # --- Side-Effects ---
+                # (TxE) Cleared by software writing to the DR register
+                # (BTF) Cleared by software by either a read or write in the DR register
+                utils.clear_bits(
+                    state,
+                    self.start + I2C.SR1_OFFSET,
+                    I2C.SR1_TXE_MASK | I2C.SR1_BTF_MASK,
+                )
+
                 if state.globals.get("is_address_phase", False):
                     # 10-bit addressing 的 addressing phase 會 write 兩次 DR。第一次 write (header) 時是 11110xxx
                     if not state.solver.satisfiable(
@@ -266,14 +276,6 @@ class I2C(MMIOMemoryRegion):
                         claripy.BVV(0x00000000, state.arch.bits),
                     )
                     utils.store(state, self.start + I2C.SR1_OFFSET, new_sr1)
-
-                # (TxE) Cleared by software writing to the DR register
-                # (BTF) Cleared by software by either a read or write in the DR register
-                utils.clear_bits(
-                    state,
-                    self.start + I2C.SR1_OFFSET,
-                    I2C.SR1_TXE_MASK | I2C.SR1_BTF_MASK,
-                )
 
                 # (AF) Set by hardware when no acknowledge is returned
                 utils.set_symbolic(
@@ -433,8 +435,10 @@ class Specs(BaseSpecs):
                 self.proj.factory.cc().return_val(SimTypeInt()).get_value(state)
             )
 
-            if return_val == self.HAL_StatusTypeDef.HAL_OK and state.globals.get(
-                "spec3_violation_pending", False
+            if (
+                state.globals.get("spec3_violation_pending", False)
+                and return_val == Specs.HAL_StatusTypeDef.HAL_OK
+                and state.solver.is_true(utils.get_API_arg(self.proj, state, 5, 3) > 0)
             ):
                 print("Found a violation path")
                 simgr.stashes["violated"].append(state)

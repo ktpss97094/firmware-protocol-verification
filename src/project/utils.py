@@ -108,7 +108,15 @@ def set_symbolic(state, addr, mask, symbolic_name_prefix):
     return new_val
 
 
-def set_func_args_symbolic(proj, state, arg_num, constraints: dict):
+def get_API_arg(proj, state, arg_num, index):
+    cc = proj.factory.cc()
+    prototype = SimTypeFunction([SimTypeInt()] * arg_num, SimTypeInt())
+    arg_locs = cc.arg_locs(prototype)
+
+    return arg_locs[index].get_value(state)
+
+
+def set_API_args_symbolic(proj, state, arg_num, constraints: dict):
     """
     :param arg_num: function 參數總數
     :param constraints: dict[function 參數 index] = (constraint low, constraint high)
