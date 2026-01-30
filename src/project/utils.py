@@ -1,17 +1,17 @@
-import re
-import warnings
-import logging
-import archinfo
-import claripy
 import hashlib
 import importlib
 import importlib.util
+import logging
+import re
+import warnings
 from pathlib import Path
 from types import ModuleType
-from typing import Type, Any
-from angr.sim_type import SimTypeInt, SimTypeFunction
-from project import config
+from typing import Any, Type
 
+import archinfo
+import claripy
+
+from project import config
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +46,6 @@ def load_specs_class(spec_arg: str | None) -> Type[Any]:
     return getattr(mod, "Specs")
 
 
-def get_default_symbolic_mask(name_dict, offset, symbolic_mask):
-    return symbolic_mask.get(name_dict[offset // 4], 0)
-
-
 def load(state, addr, size=None):
     return state.memory.load(
         addr,
@@ -71,66 +67,81 @@ def store(state, addr, value, size=None):
     )
 
 
-def set_bits(state, addr, mask):
-    prev_val = load(state, addr)
+def generate_symbolic(state, name, mask=None, size=None):
+    size = size if size is not None else state.arch.bits
+    mask = mask if mask is not None else claripy.BVV(-1, size)
 
-    store(state, addr, prev_val | mask)
-
-
-def clear_bits(state, addr, mask):
-    prev_val = load(state, addr)
-
-    store(state, addr, prev_val & ~mask)
+    return claripy.BVS(name, size) & mask
 
 
-def generate_symbolic(state, mask, symbolic_name_prefix, size=None):
-    output = (
-        claripy.BVS(
-            f"{symbolic_name_prefix}_sym_{state.globals.get('sym_cnt', 0)}",
-            size if size is not None else state.arch.bits,
-        )
-        & mask
-    )
-    state.globals["sym_cnt"] = state.globals.get("sym_cnt", 0) + 1
+def replace_bit(bv, index, value):
+    size = bv.length
 
-    return output
+    if isinstance(value, int):
+        value = claripy.BVV(value, 1)
 
-
-def set_symbolic(state, addr, mask, symbolic_name_prefix):
-    prev_val = load(state, addr)
-
-    new_val = (prev_val & ~mask) | (
-        generate_symbolic(state, mask, symbolic_name_prefix)
-    )
-
-    store(state, addr, new_val)
-
-    return new_val
+    if index == size - 1:
+        return claripy.Concat(value, bv[size - 2 : 0])
+    elif index == 0:
+        return claripy.Concat(bv[size - 1 : 1], value)
+    else:
+        return claripy.Concat(bv[size - 1 : index + 1], value, bv[index - 1 : 0])
 
 
-def get_API_arg(proj, state, arg_num, index):
-    cc = proj.factory.cc()
-    prototype = SimTypeFunction([SimTypeInt()] * arg_num, SimTypeInt())
-    arg_locs = cc.arg_locs(prototype)
+def set_bits(bv, indices: int | list[int]):
+    if isinstance(indices, list):
+        for index in indices:
+            bv = replace_bit(bv, index, 1)
+        return bv
+    return replace_bit(bv, indices, 1)
 
-    return arg_locs[index].get_value(state)
+
+def clear_bits(bv, indices: int | list[int]):
+    if isinstance(indices, list):
+        for index in indices:
+            bv = replace_bit(bv, index, 0)
+        return bv
+    return replace_bit(bv, indices, 0)
 
 
-def set_API_args_symbolic(proj, state, arg_num, constraints: dict):
+def symbolic_bit(state, bv, index, name):
+    return replace_bit(bv, index, generate_symbolic(state, name, size=1))
+
+
+def get_func_arg(state, prototype, index):
     """
-    :param arg_num: function 參數總數
+    一定要在 function 進入當下呼叫，否則值可能會被覆寫
+
+    TODO: 改寫成繼承 angr.SimProcedure 的方法，可完全避免覆寫問題
+    """
+
+    return state.project.factory.cc().arg_locs(prototype)[index].get_value(state)
+
+
+def get_func_ret(state, prototype):
+    """
+    一定要在 function return 之後的下一行呼叫，否則值可能會被覆寫
+
+    TODO: 改寫成繼承 angr.SimProcedure 的方法，可完全避免覆寫問題
+    """
+
+    return state.project.factory.cc().return_val(prototype.returnty).get_value(state)
+
+
+def set_func_args_symbolic(state, prototype, constraints: dict):
+    """
     :param constraints: dict[function 參數 index] = (constraint low, constraint high)
     """
 
-    cc = proj.factory.cc()
-    prototype = SimTypeFunction([SimTypeInt()] * arg_num, SimTypeInt())
-    arg_locs = cc.arg_locs(prototype)
+    arg_locs = state.project.factory.cc().arg_locs(prototype)
 
     for index, (lo, hi) in constraints.items():
-        if index < 0 or index >= arg_num:
-            raise ValueError(f"Arg index {index} out of range for arg_num={arg_num}")
+        if index < 0 or index >= len(arg_locs):
+            raise ValueError(
+                f"Arg index {index} out of range for arg_num={len(arg_locs)}"
+            )
 
-        new_val = generate_symbolic(state, 0xFFFFFFFF, f"FuncArgs[{index}]")
+        new_val = generate_symbolic(state, f"FuncArgs[{index}]")
         state.add_constraints(new_val >= lo, new_val <= hi)
 
         arg_locs[index].set_value(state, new_val)

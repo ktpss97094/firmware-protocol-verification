@@ -1,19 +1,17 @@
-import avatar2
-import angr
-import logging
 import argparse
-import pickle
-from project import config
-import project.utils as utils
-from project.types import CustomEngine, MMIOMemoryRegion, VariableMemoryRegion
+import logging
 
+import angr
+import avatar2
+
+import project.utils as utils
+from project import config
+from project.types import CustomEngine, MMIOMemoryRegion, VariableMemoryRegion
 
 logger = logging.getLogger(__name__)
 
 
 def monitor_exploration(simgr):
-    if "violated" not in simgr.stashes:
-        simgr.stashes["violated"] = []
     simgr.move(
         from_stash="active",
         to_stash="violated",
@@ -35,11 +33,7 @@ def monitor_exploration(simgr):
 
 def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(prog="verify")
-    parser.add_argument(
-        "spec",
-        nargs="?",
-        help="Spec file path",
-    )
+    parser.add_argument("spec", nargs="?", help="Spec file path")
     args = parser.parse_args(argv)
     Specs = utils.load_specs_class(args.spec)
 
@@ -150,9 +144,7 @@ def main(argv: list[str] | None = None):
             try:
                 if Specs.USE_RENODE and isinstance(memory_region, MMIOMemoryRegion):
                     dumps[memory_region_name] = utils.read_MMIO_renode(
-                        avatar_target,
-                        memory_region.physical_addr,
-                        memory_region.size,
+                        avatar_target, memory_region.physical_addr, memory_region.size
                     )
                 else:
                     dumps[memory_region_name] = avatar_target.read_memory(
@@ -172,7 +164,7 @@ def main(argv: list[str] | None = None):
         logger.info("Setting up angr state")
 
         state = proj.factory.blank_state(
-            addr=regs[avatar_target._arch.pc_name],
+            addr=regs[avatar_target._arch.pc_name]
             # add_options=angr.options.refs,
             #  | {angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY, angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS}  # ZERO_FILL_UNCONSTRAINED_MEMORY 及 ZERO_FILL_UNCONSTRAINED_REGISTERS 為指定當 Angr 讀取 Angr 未初始化的記憶體位置時，回傳 0 而不是 symbolic value
         )
@@ -203,6 +195,10 @@ def main(argv: list[str] | None = None):
                     f"Failed to transfer {memory_region_name} at {map_memory_regions[memory_region_name].start:#x} to angr: {e}"
                 )
 
+        # 計算 API 參數
+        for index in range(len(specs.API_PROTOTYPE.args)):
+            specs.API_ARGS.append(utils.get_func_arg(state, specs.API_PROTOTYPE, index))
+
         specs.init_inspect(state)
 
         if specs.precondition(state):
@@ -222,17 +218,20 @@ def main(argv: list[str] | None = None):
     }:
         if opt in state.options:
             state.options.remove(opt)
+
     simgr = proj.factory.simgr(state)
+    simgr.stashes["violated"] = []
+
     # simgr.use_technique(angr.exploration_techniques.Veritesting())
     # simgr.use_technique(
     #     angr.exploration_techniques.LoopSeer(
     #         cfg=proj.analyses.CFGFast(normalize=True), bound=3
     #     )
     # )  # 設定 loop 執行上限次數
+    simgr.use_technique(angr.exploration_techniques.DFS())
+
     simgr.explore(
-        find=specs.END_ADDRS,
-        num_find=float("inf"),
-        step_func=monitor_exploration,
+        find=specs.END_ADDRS, num_find=float("inf"), step_func=monitor_exploration
     )
     # utils.step_explore(simgr, proj, monitor_exploration=monitor_exploration)
 

@@ -16,140 +16,174 @@ Symbolic Variables:
     CR1 STOP
 """
 
-import angr
-import claripy
-import avatar2
-import archinfo
-from angr.sim_type import SimTypeInt
 from enum import IntEnum
+
+import angr
+import archinfo
+import avatar2
+import claripy
+from angr.sim_type import (
+    SimStruct,
+    SimTypeChar,
+    SimTypeFunction,
+    SimTypeInt,
+    SimTypePointer,
+    SimTypeShort,
+)
+
+from project import config, utils
 from project.types import (
+    BaseSpecs,
     MemoryRegion,
     MMIOMemoryRegion,
     VariableMemoryRegion,
-    BaseSpecs,
 )
-from project import utils, config
 
 
 class I2C(MMIOMemoryRegion):
-    CR1_OFFSET = 0x00
-    CR2_OFFSET = 0x04
-    DR_OFFSET = 0x10
-    SR1_OFFSET = 0x14
-    SR2_OFFSET = 0x18
+    class CR1:
+        OFFSET = 0x00
 
-    CR1_STOP_MASK = 1 << 9
-    CR1_START_MASK = 1 << 8
+        STOP = 9
+        START = 8
 
-    CR2_ITEVTEN_MASK = 1 << 9
+    class CR2:
+        OFFSET = 0x04
 
-    SR1_AF_MASK = 1 << 10
-    SR1_TXE_MASK = 1 << 7
-    SR1_ADD10_MASK = 1 << 3
-    SR1_BTF_MASK = 1 << 2
-    SR1_ADDR_MASK = 1 << 1
-    SR1_SB_MASK = 1 << 0
+        ITEVTEN = 9
 
-    SR2_TRA_MASK = 1 << 2
-    SR2_BUSY_MASK = 1 << 1
+    class DR:
+        OFFSET = 0x10
+
+    class SR1:
+        OFFSET = 0x14
+
+        AF = 10
+        TXE = 7
+        ADD10 = 3
+        BTF = 2
+        ADDR = 1
+        SB = 0
+
+    class SR2:
+        OFFSET = 0x18
+
+        TRA = 2
+        BUSY = 1
 
     def read(self, state, offset):
-        sr1 = utils.load(state, self.start + I2C.SR1_OFFSET)
-        sr2 = utils.load(state, self.start + I2C.SR2_OFFSET)
+        sr1 = utils.load(state, self.start + I2C.SR1.OFFSET)
+        sr2 = utils.load(state, self.start + I2C.SR2.OFFSET)
+        new_sr1 = sr1
+        new_sr2 = sr2
 
         match offset:
-            case I2C.SR1_OFFSET:
+            case I2C.SR1.OFFSET:
                 # --- Side-Effects ---
                 state.globals[f"{self.name}_SR1_read"] = True
 
-                new_sr1 = sr1
-                new_sr2 = sr2
-                if sr1[1].symbolic:
+                if sr1[I2C.SR1.ADDR].symbolic:
                     """
                     當 ADDR 變成 symbolic (表示可能是 0/1) 後，將新的 ADDR 記憶體值設定成:
                         * 舊值是 0 => 新值是 symbolic variable
-                        * 舊值是 1 => 新值是 concrete 1
+                        * 舊值是 1 => 新值不變
                     """
-                    new_sym = utils.generate_symbolic(
-                        state,
-                        I2C.SR1_ADDR_MASK,
-                        f"{self.name}_{I2C.SR1_OFFSET:#x}_ADDR",
+                    new_sr1 = utils.replace_bit(
+                        new_sr1,
+                        I2C.SR1.ADDR,
+                        claripy.If(
+                            sr1[I2C.SR1.ADDR] == 0,
+                            utils.generate_symbolic(
+                                state, f"{self.name}_{I2C.SR1.OFFSET:#x}_ADDR", size=1
+                            ),
+                            sr1[I2C.SR1.ADDR],
+                        ),
                     )
-                    new_sr1 = (new_sr1 & ~I2C.SR1_ADDR_MASK) | claripy.If(
-                        sr1[1] == 0, new_sym, I2C.SR1_ADDR_MASK
+                if sr1[I2C.SR1.SB].symbolic:
+                    new_sr1 = utils.replace_bit(
+                        new_sr1,
+                        I2C.SR1.SB,
+                        claripy.If(
+                            sr1[I2C.SR1.SB] == 0,
+                            utils.generate_symbolic(
+                                state, f"{self.name}_{I2C.SR1.OFFSET:#x}_SB", size=1
+                            ),
+                            sr1[I2C.SR1.SB],
+                        ),
                     )
-                if sr1[0].symbolic:
-                    new_sym = utils.generate_symbolic(
-                        state,
-                        I2C.SR1_SB_MASK,
-                        f"{self.name}_{I2C.SR1_OFFSET:#x}_SB",
-                    )
-                    new_sr1 = (new_sr1 & ~I2C.SR1_SB_MASK) | claripy.If(
-                        sr1[0] == 0, new_sym, I2C.SR1_SB_MASK
-                    )
+
                     # (BUSY) Set by hardware on detection of SDA or SCL low
-                    new_sr2 = (new_sr2 & ~I2C.SR2_BUSY_MASK) | claripy.If(
-                        new_sr1[0] == 1,
-                        I2C.SR2_BUSY_MASK,
-                        sr2 & I2C.SR2_BUSY_MASK,
+                    new_sr2 = utils.replace_bit(
+                        new_sr2,
+                        I2C.SR2.BUSY,
+                        claripy.If(new_sr1[I2C.SR1.SB] == 1, 1, sr2[I2C.SR2.BUSY]),
                     )
                     # (TxE) Cleared ... or by hardware after a start or a stop condition
+                    new_sr1 = utils.replace_bit(
+                        new_sr1,
+                        I2C.SR1.TXE,
+                        claripy.If(new_sr1[I2C.SR1.SB] == 1, 0, sr1[I2C.SR1.TXE]),
+                    )
                     # (BTF) Cleared ... or by hardware after a start or a stop condition in transmission
-                    new_sr1 = (
-                        new_sr1 & ~(I2C.SR1_TXE_MASK | I2C.SR1_BTF_MASK)
-                    ) & claripy.If(
-                        new_sr1[0] == 1,
-                        ~(I2C.SR1_TXE_MASK | I2C.SR1_BTF_MASK),
-                        claripy.BVV(0xFFFFFFFF, state.arch.bits),
+                    new_sr1 = utils.replace_bit(
+                        new_sr1,
+                        I2C.SR1.BTF,
+                        claripy.If(new_sr1[I2C.SR1.SB] == 1, 0, sr1[I2C.SR1.BTF]),
                     )
-                if sr1[3].symbolic:
-                    new_sym = utils.generate_symbolic(
-                        state,
-                        I2C.SR1_ADD10_MASK,
-                        f"{self.name}_{I2C.SR1_OFFSET:#x}_ADD10",
+                if sr1[I2C.SR1.ADD10].symbolic:
+                    new_sr1 = utils.replace_bit(
+                        new_sr1,
+                        I2C.SR1.ADD10,
+                        claripy.If(
+                            sr1[I2C.SR1.ADD10] == 0,
+                            utils.generate_symbolic(
+                                state, f"{self.name}_{I2C.SR1.OFFSET:#x}_ADD10", size=1
+                            ),
+                            sr1[I2C.SR1.ADD10],
+                        ),
                     )
-                    new_sr1 = (new_sr1 & ~I2C.SR1_ADD10_MASK) | claripy.If(
-                        sr1[3] == 0, new_sym, I2C.SR1_ADD10_MASK
+                if sr1[I2C.SR1.AF].symbolic:
+                    new_sr1 = utils.replace_bit(
+                        new_sr1,
+                        I2C.SR1.AF,
+                        claripy.If(
+                            sr1[I2C.SR1.AF] == 0,
+                            utils.generate_symbolic(
+                                state, f"{self.name}_{I2C.SR1.OFFSET:#x}_AF", size=1
+                            ),
+                            sr1[I2C.SR1.AF],
+                        ),
                     )
-                if sr1[10].symbolic:
-                    new_sym = utils.generate_symbolic(
-                        state,
-                        I2C.SR1_AF_MASK,
-                        f"{self.name}_{I2C.SR1_OFFSET:#x}_AF",
+                if sr1[I2C.SR1.TXE].symbolic:
+                    new_sr1 = utils.replace_bit(
+                        new_sr1,
+                        I2C.SR1.TXE,
+                        claripy.If(
+                            sr1[I2C.SR1.TXE] == 0,
+                            utils.generate_symbolic(
+                                state, f"{self.name}_{I2C.SR1.OFFSET:#x}_TxE", size=1
+                            ),
+                            sr1[I2C.SR1.TXE],
+                        ),
                     )
-                    new_sr1 = (new_sr1 & ~I2C.SR1_AF_MASK) | claripy.If(
-                        sr1[10] == 0, new_sym, I2C.SR1_AF_MASK
+                if sr1[I2C.SR1.BTF].symbolic:
+                    new_sr1 = utils.replace_bit(
+                        new_sr1,
+                        I2C.SR1.BTF,
+                        claripy.If(
+                            sr1[I2C.SR1.BTF] == 0,
+                            utils.generate_symbolic(
+                                state, f"{self.name}_{I2C.SR1.OFFSET:#x}_BTF", size=1
+                            ),
+                            sr1[I2C.SR1.BTF],
+                        ),
                     )
-                if sr1[7].symbolic:
-                    new_sym = utils.generate_symbolic(
-                        state,
-                        I2C.SR1_TXE_MASK,
-                        f"{self.name}_{I2C.SR1_OFFSET:#x}_TxE",
-                    )
-                    new_sr1 = (new_sr1 & ~I2C.SR1_TXE_MASK) | claripy.If(
-                        sr1[7] == 0, new_sym, I2C.SR1_TXE_MASK
-                    )
-                if sr1[2].symbolic:
-                    new_sym = utils.generate_symbolic(
-                        state,
-                        I2C.SR1_BTF_MASK,
-                        f"{self.name}_{I2C.SR1_OFFSET:#x}_BTF",
-                    )
-                    new_sr1 = (new_sr1 & ~I2C.SR1_BTF_MASK) | claripy.If(
-                        sr1[2] == 0, new_sym, I2C.SR1_BTF_MASK
-                    )
-                utils.store(state, self.start + I2C.SR1_OFFSET, new_sr1)
-                utils.store(state, self.start + I2C.SR2_OFFSET, new_sr2)
 
-            case I2C.SR2_OFFSET:
+            case I2C.SR2.OFFSET:
                 # --- Spec 1 ---
                 if state.globals.get(
                     f"{self.name}_SR1_read", False
-                ) and state.solver.satisfiable(
-                    extra_constraints=[
-                        utils.load(state, self.start + I2C.SR1_OFFSET)[1] == 0
-                    ]
-                ):
+                ) and state.solver.satisfiable(extra_constraints=[sr1[1] == 0]):
                     print("Found a violation path")
                     state.globals["violation"] = True
 
@@ -158,21 +192,34 @@ class I2C(MMIOMemoryRegion):
                     state.globals[f"{self.name}_SR1_read"] = False
 
                     # (ADDR) This bit is cleared by software reading SR1 register followed reading SR2
-                    utils.clear_bits(
-                        state, self.start + I2C.SR1_OFFSET, I2C.SR1_ADDR_MASK
+                    new_sr1 = utils.clear_bits(new_sr1, I2C.SR1.ADDR)
+
+                if sr2[I2C.SR2.BUSY].symbolic:
+                    new_sr2 = utils.symbolic_bit(
+                        state,
+                        new_sr2,
+                        I2C.SR2.BUSY,
+                        f"{self.name}_{I2C.SR2.OFFSET:#x}_BUSY",
                     )
 
-            case I2C.DR_OFFSET:
+            case I2C.DR.OFFSET:
                 # --- Side-Effects ---
                 # (BTF) Cleared by software by either a read or write in the DR register
-                utils.clear_bits(state, self.start + I2C.SR1_OFFSET, I2C.SR1_BTF_MASK)
+                new_sr1 = utils.clear_bits(new_sr1, I2C.SR1.BTF)
+
+        utils.store(state, self.start + I2C.SR1.OFFSET, new_sr1)
+        utils.store(state, self.start + I2C.SR2.OFFSET, new_sr2)
 
     def write(self, state, offset, value):
-        sr1 = utils.load(state, self.start + I2C.SR1_OFFSET)
-        sr2 = utils.load(state, self.start + I2C.SR2_OFFSET)
+        cr1 = utils.load(state, self.start + I2C.CR1.OFFSET)
+        sr1 = utils.load(state, self.start + I2C.SR1.OFFSET)
+        sr2 = utils.load(state, self.start + I2C.SR2.OFFSET)
+        new_cr1 = cr1
+        new_sr1 = sr1
+        new_sr2 = sr2
 
         match offset:
-            case I2C.CR1_OFFSET:
+            case I2C.CR1.OFFSET:
                 # --- Spec 3 (Part 1) ---
                 if not state.solver.satisfiable(
                     extra_constraints=[value[9] == 0]
@@ -185,51 +232,46 @@ class I2C(MMIOMemoryRegion):
                     state.globals["is_address_phase"] = True
 
                     # (SB) Set when a Start condition generated
-                    utils.set_symbolic(
+                    new_sr1 = utils.symbolic_bit(
                         state,
-                        self.start + I2C.SR1_OFFSET,
-                        I2C.SR1_SB_MASK,
-                        f"{self.name}_{I2C.SR1_OFFSET:#x}_SB",
+                        new_sr1,
+                        I2C.SR1.SB,
+                        f"{self.name}_{I2C.SR1.OFFSET:#x}_SB",
                     )
 
                 # set STOP bit
                 if not state.solver.satisfiable(extra_constraints=[value[9] == 0]):
                     # (STOP) cleared by hardware when a Stop condition is detected
-                    utils.set_symbolic(
+                    new_cr1 = utils.symbolic_bit(
                         state,
-                        self.start + I2C.CR1_OFFSET,
-                        I2C.CR1_STOP_MASK,
-                        f"{self.name}_{I2C.CR1_OFFSET:#x}_STOP",
+                        new_cr1,
+                        I2C.CR1.STOP,
+                        f"{self.name}_{I2C.CR1.OFFSET:#x}_STOP",
                     )
-                    new_cr1 = utils.load(state, self.start + I2C.CR1_OFFSET)
-                    new_sr1 = sr1
-                    new_sr2 = sr2
+
                     # (TxE) Cleared ... or by hardware after a start or a stop condition
+                    new_sr1 = utils.replace_bit(
+                        new_sr1,
+                        I2C.SR1.TXE,
+                        claripy.If(new_cr1[I2C.CR1.STOP] == 0, 0, sr1[I2C.SR1.TXE]),
+                    )
                     # (BTF) Cleared ... or by hardware after a start or a stop condition in transmission
-                    new_sr1 = (
-                        new_sr1 & ~(I2C.SR1_TXE_MASK | I2C.SR1_BTF_MASK)
-                    ) & claripy.If(
-                        new_cr1[9] == 0,
-                        ~(I2C.SR1_TXE_MASK | I2C.SR1_BTF_MASK),
-                        claripy.BVV(0xFFFFFFFF, state.arch.bits),
+                    new_sr1 = utils.replace_bit(
+                        new_sr1,
+                        I2C.SR1.BTF,
+                        claripy.If(new_cr1[I2C.CR1.STOP] == 0, 0, sr1[I2C.SR1.BTF]),
                     )
                     # (BUSY) cleared by hardware on detection of a Stop condition
-                    new_sr2 = (new_sr2 & ~I2C.SR2_BUSY_MASK) & claripy.If(
-                        new_cr1[9] == 0,
-                        ~I2C.SR2_BUSY_MASK,
-                        claripy.BVV(0xFFFFFFFF, state.arch.bits),
+                    new_sr2 = utils.replace_bit(
+                        new_sr2,
+                        I2C.SR2.BUSY,
+                        claripy.If(new_cr1[I2C.CR1.STOP] == 0, 0, sr2[I2C.SR2.BUSY]),
                     )
-                    utils.store(state, self.start + I2C.SR1_OFFSET, new_sr1)
-                    utils.store(state, self.start + I2C.SR2_OFFSET, new_sr2)
 
-            case I2C.DR_OFFSET:
+            case I2C.DR.OFFSET:
                 # --- Spec 2 ---
                 if state.solver.satisfiable(
-                    extra_constraints=[
-                        sr1[7] == 0,
-                        sr1[0] != 1,
-                        sr1[3] != 1,
-                    ]
+                    extra_constraints=[sr1[7] == 0, sr1[0] != 1, sr1[3] != 1]
                 ):
                     print("Found a violation path")
                     state.globals["violation"] = True
@@ -237,10 +279,17 @@ class I2C(MMIOMemoryRegion):
                 # --- Side-Effects ---
                 # (TxE) Cleared by software writing to the DR register
                 # (BTF) Cleared by software by either a read or write in the DR register
-                utils.clear_bits(
-                    state,
-                    self.start + I2C.SR1_OFFSET,
-                    I2C.SR1_TXE_MASK | I2C.SR1_BTF_MASK,
+                new_sr1 = utils.clear_bits(new_sr1, [I2C.SR1.TXE, I2C.SR1.BTF])
+
+                if state.globals.get(f"{self.name}_SR1_read", False):
+                    state.globals[f"{self.name}_SR1_read"] = False
+
+                    # (SB) Cleared by software by reading the SR1 register followed by writing the DR register
+                    new_sr1 = utils.clear_bits(new_sr1, I2C.SR1.SB)
+
+                # (AF) Set by hardware when no acknowledge is returned
+                new_sr1 = utils.symbolic_bit(
+                    state, new_sr1, I2C.SR1.AF, f"{self.name}_{I2C.SR1.OFFSET:#x}_AF"
                 )
 
                 if state.globals.get("is_address_phase", False):
@@ -249,68 +298,57 @@ class I2C(MMIOMemoryRegion):
                         extra_constraints=[(value & 0xF8) != 0xF0]
                     ):
                         state.globals["is_10bit"] = True
+
+                        # (ADD10) Set by hardware when the master has sent the first byte in 10-bit address mode
+                        new_sr1 = utils.symbolic_bit(
+                            state,
+                            new_sr1,
+                            I2C.SR1.ADD10,
+                            f"{self.name}_{I2C.SR1.OFFSET:#x}_ADD10",
+                        )
                     else:
                         state.globals["is_address_phase"] = False
 
+                        if state.globals.get("is_10bit", False) and state.globals.get(
+                            f"{self.name}_SR1_read", False
+                        ):
+                            state.globals[f"{self.name}_SR1_read"] = False
+
+                            # (ADD10) Cleared by software reading the SR1 register followed by a write in the DR register of the second address byte
+                            new_sr1 = utils.clear_bits(new_sr1, I2C.SR1.ADD10)
+
                         # (ADDR) For 10-bit addressing, the bit is set after the ACK of the 2nd byte. For 7-bit addressing, the bit is set after the ACK of the byte
-                        utils.set_symbolic(
+                        new_sr1 = utils.symbolic_bit(
                             state,
-                            self.start + I2C.SR1_OFFSET,
-                            I2C.SR1_ADDR_MASK,
-                            f"{self.name}_{I2C.SR1_OFFSET:#x}_ADDR",
+                            new_sr1,
+                            I2C.SR1.ADDR,
+                            f"{self.name}_{I2C.SR1.OFFSET:#x}_ADDR",
                         )
                 else:
                     # (TxE) Set when DR is empty in transmission. TxE is not set during address phase
-                    new_TxE = utils.set_symbolic(
+                    new_sr1 = utils.symbolic_bit(
                         state,
-                        self.start + I2C.SR1_OFFSET,
-                        I2C.SR1_TXE_MASK,
-                        f"{self.name}_{I2C.SR1_OFFSET:#x}_TxE",
+                        new_sr1,
+                        I2C.SR1.TXE,
+                        f"{self.name}_{I2C.SR1.OFFSET:#x}_TxE",
                     )
 
                     # (BTF) Set ... In transmission when a new byte should be sent and DR has not been written yet (TxE=1)
-                    new_sr1 = sr1
-                    new_sr1 = (new_sr1 & ~I2C.SR1_BTF_MASK) | claripy.If(
-                        new_TxE == 1,
-                        I2C.SR1_BTF_MASK,
-                        claripy.BVV(0x00000000, state.arch.bits),
-                    )
-                    utils.store(state, self.start + I2C.SR1_OFFSET, new_sr1)
-
-                # (AF) Set by hardware when no acknowledge is returned
-                utils.set_symbolic(
-                    state,
-                    self.start + I2C.SR1_OFFSET,
-                    I2C.SR1_AF_MASK,
-                    f"{self.name}_{I2C.SR1_OFFSET:#x}_AF",
-                )
-
-                if state.globals.get(f"{self.name}_SR1_read", False):
-                    state.globals[f"{self.name}_SR1_read"] = False
-
-                    # (SB) Cleared by software by reading the SR1 register followed by writing the DR register
-                    utils.clear_bits(
-                        state, self.start + I2C.SR1_OFFSET, I2C.SR1_SB_MASK
+                    new_sr1 = utils.replace_bit(
+                        new_sr1,
+                        I2C.SR1.BTF,
+                        claripy.If(
+                            new_sr1[I2C.SR1.TXE] == 1,
+                            utils.generate_symbolic(
+                                state, f"{self.name}_{I2C.SR1.OFFSET:#x}_BTF", size=1
+                            ),
+                            sr1[I2C.SR1.BTF],
+                        ),
                     )
 
-                    if state.globals.get("is_10bit", False) and not state.globals.get(
-                        "is_address_phase", False
-                    ):
-                        # (ADD10) Cleared by software reading the SR1 register followed by a write in the DR register of the second address byte
-                        utils.clear_bits(
-                            state, self.start + I2C.SR1_OFFSET, I2C.SR1_ADD10_MASK
-                        )
-
-                if state.globals.get("is_10bit", False) and state.globals.get(
-                    "is_address_phase", False
-                ):
-                    # (ADD10) Set by hardware when the master has sent the first byte in 10-bit address mode
-                    utils.set_symbolic(
-                        state,
-                        self.start + I2C.SR1_OFFSET,
-                        I2C.SR1_ADD10_MASK,
-                        f"{self.name}_{I2C.SR1_OFFSET:#x}_ADD10",
-                    )
+        utils.store(state, self.start + I2C.CR1.OFFSET, new_cr1)
+        utils.store(state, self.start + I2C.SR1.OFFSET, new_sr1)
+        utils.store(state, self.start + I2C.SR2.OFFSET, new_sr2)
 
 
 class SysTickVariable(VariableMemoryRegion):
@@ -318,17 +356,14 @@ class SysTickVariable(VariableMemoryRegion):
         origin_val = utils.load(state, self.start + offset)
 
         # new_val = utils.generate_symbolic(
-        #     state, self.symbolic_masks.get(self.start + offset, 0), self.name
+        #     state, self.name, mask=self.symbolic_masks.get(self.start + offset, 0)
         # )
-        # state.add_constraints(
-        #     claripy.Or(new_val == origin_val, new_val == origin_val + 25 + 1)
-        # )
+        # state.add_constraints(new_val > origin_val)
         delta = 1
 
         new_val = origin_val + delta
 
         utils.store(state, self.start + offset, new_val)
-        state.inspect.mem_read_expr = new_val
 
 
 class Specs(BaseSpecs):
@@ -384,9 +419,7 @@ class Specs(BaseSpecs):
         }
 
         self.BEGIN_ADDR = utils.get_symbol_addr(
-            self.proj,
-            "HAL_I2C_Master_Transmit",
-            is_variable=False,
+            self.proj, "HAL_I2C_Master_Transmit", is_variable=False
         )
         self.END_ADDRS = [
             utils.get_symbol_addr(
@@ -395,24 +428,35 @@ class Specs(BaseSpecs):
         ]
         # self.DEBUG_FUNC_ADDR = utils.get_symbol_addr(self.proj, "SYMBOL_FUNCTION", is_variable=False)
 
+        self.API_PROTOTYPE = SimTypeFunction(
+            args=[
+                SimTypePointer(SimStruct({}, name="I2C_HandleTypeDef")),
+                SimTypeShort(signed=False),
+                SimTypePointer(SimTypeChar(signed=False)),
+                SimTypeShort(signed=False),
+                SimTypeInt(signed=False),
+            ],
+            returnty=SimTypeInt(signed=False),
+        )
+
     def init_inspect(self, state):
         state.inspect.b(
             "mem_read",
-            when=angr.BP_AFTER,
+            when=angr.BP_BEFORE,
             condition=self.MEMORY_REGIONS["I2C1"].in_region_read,
             action=self.MEMORY_REGIONS["I2C1"].read,
         )
 
         state.inspect.b(
             "mem_write",
-            when=angr.BP_AFTER,
+            when=angr.BP_BEFORE,
             condition=self.MEMORY_REGIONS["I2C1"].in_region_write,
             action=self.MEMORY_REGIONS["I2C1"].write,
         )
 
         state.inspect.b(
             "mem_read",
-            when=angr.BP_AFTER,
+            when=angr.BP_BEFORE,
             condition=self.MEMORY_REGIONS["SysTickVariable"].in_region_read,
             action=self.MEMORY_REGIONS["SysTickVariable"].read,
         )
@@ -424,21 +468,29 @@ class Specs(BaseSpecs):
         # )
 
     def precondition(self, state):
-        # utils.set_func_args_symbolic(self.proj, state, 5, {3: (0, 3)})
+        # utils.set_func_args_symbolic(state, self.API_PROTOTYPE, {3: (0, 3)})
+
+        utils.store(
+            state,
+            self.MEMORY_REGIONS["I2C1"].start + I2C.SR2.OFFSET,
+            utils.symbolic_bit(
+                state,
+                utils.load(state, self.MEMORY_REGIONS["I2C1"].start + I2C.SR2.OFFSET),
+                I2C.SR2.BUSY,
+                f"I2C1_{I2C.SR2.OFFSET:#x}_BUSY",
+            ),
+        )
 
         return True
 
     def postcondition(self, simgr):
         # [Spec 3 (Part 2)]
         for state in simgr.found:
-            return_val = state.solver.eval(
-                self.proj.factory.cc().return_val(SimTypeInt()).get_value(state)
-            )
-
             if (
                 state.globals.get("spec3_violation_pending", False)
-                and return_val == Specs.HAL_StatusTypeDef.HAL_OK
-                and state.solver.is_true(utils.get_API_arg(self.proj, state, 5, 3) > 0)
+                and utils.get_func_ret(state, self.API_PROTOTYPE)
+                == Specs.HAL_StatusTypeDef.HAL_OK
+                and state.solver.is_true(self.API_ARGS[3] > 0)
             ):
                 print("Found a violation path")
                 simgr.stashes["violated"].append(state)

@@ -1,4 +1,4 @@
-from angr.engines import SimEngineFailure, SimEngineSyscall, HooksMixin
+from angr.engines import HooksMixin, SimEngineFailure, SimEngineSyscall
 from angr.engines.vex import (
     HeavyResilienceMixin,
     HeavyVEXMixin,
@@ -6,6 +6,7 @@ from angr.engines.vex import (
     SuperFastpathMixin,
     TrackActionsMixin,
 )
+
 from project import utils
 
 
@@ -145,6 +146,8 @@ class BaseSpecs:
         self.MEMORY_REGIONS = {}
         self.BEGIN_ADDR = None
         self.END_ADDRS = []
+        self.API_PROTOTYPE = None
+        self.API_ARGS = []
 
         self._define_specs()
 
