@@ -19,6 +19,8 @@ def monitor_exploration(simgr):
     )
 
     print(f"Step: Active={len(simgr.active)}, Found={len(simgr.found)}")
+    # for state in simgr.active:
+    #     print(f"  - PC: {state.regs.pc}")
 
     # for state in simgr.active:
     #     state.history.trim()
@@ -195,6 +197,10 @@ def main(argv: list[str] | None = None):
                     f"Failed to transfer {memory_region_name} at {map_memory_regions[memory_region_name].start:#x} to angr: {e}"
                 )
 
+        # with open("specs/STM32/I2C/Blocking_Mode/Hardware/state.pkl", "wb") as f:
+        #     pickle.dump(state, f)
+        #     exit(0)
+
         # 計算 API 參數
         for index in range(len(specs.API_PROTOTYPE.args)):
             specs.API_ARGS.append(utils.get_func_arg(state, specs.API_PROTOTYPE, index))
@@ -228,7 +234,7 @@ def main(argv: list[str] | None = None):
     #         cfg=proj.analyses.CFGFast(normalize=True), bound=3
     #     )
     # )  # 設定 loop 執行上限次數
-    simgr.use_technique(angr.exploration_techniques.DFS())
+    # simgr.use_technique(angr.exploration_techniques.DFS())
 
     simgr.explore(
         find=specs.END_ADDRS, num_find=float("inf"), step_func=monitor_exploration
