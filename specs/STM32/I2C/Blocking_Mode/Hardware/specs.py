@@ -10,9 +10,8 @@ I2C Master Clock Stretching Spec
         * HAL_OK: 不考慮 acknowledge failure、timeout 等造成的 set STOP bit
 
 Symbolic Variables:
-    SR2 (BUSY)
     uwTick
-    SR1 (SB, ADD10, AF, ADDR, TxE, BTF)
+    SR1 (SB, ADD10 (10-bit 時), AF, ADDR, TxE, BTF)
     CR1 STOP
 """
 
