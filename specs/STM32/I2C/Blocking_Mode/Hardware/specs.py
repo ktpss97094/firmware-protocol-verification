@@ -289,11 +289,6 @@ class I2C(MMIOMemoryRegion):
                     # (SB) Cleared by software by reading the SR1 register followed by writing the DR register
                     new_sr1 = utils.clear_bits(new_sr1, I2C.SR1.SB)
 
-                # (AF) Set by hardware when no acknowledge is returned
-                new_sr1 = utils.symbolic_bit(
-                    state, new_sr1, I2C.SR1.AF, f"{self.name}_{I2C.SR1.OFFSET:#x}_AF"
-                )
-
                 if state.globals.get("is_address_phase", False):
                     # 10-bit addressing 的 addressing phase 會 write 兩次 DR。第一次 write (header) 時是 11110xxx
                     if not state.solver.satisfiable(
@@ -346,6 +341,21 @@ class I2C(MMIOMemoryRegion):
                             ),
                         ),
                     )
+
+                # (AF) Set by hardware when no acknowledge is returned
+                new_sr1 = utils.replace_bit(
+                    new_sr1,
+                    I2C.SR1.AF,
+                    claripy.If(
+                        claripy.Or(
+                            new_sr1[I2C.SR1.BTF] == 1, new_sr1[I2C.SR1.ADDR] == 1
+                        ),
+                        0,
+                        utils.generate_symbolic(
+                            state, f"{self.name}_{I2C.SR1.OFFSET:#x}_AF", size=1
+                        ),
+                    ),
+                )
 
         utils.store(state, self.start + I2C.CR1.OFFSET, new_cr1)
         utils.store(state, self.start + I2C.SR1.OFFSET, new_sr1)
