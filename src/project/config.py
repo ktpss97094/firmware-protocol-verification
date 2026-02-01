@@ -22,24 +22,18 @@ LOGGING_CONFIG = {
         "standard": {
             "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
             "datefmt": "%H:%M:%S",
-        },
+        }
     },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "standard",
             "level": "INFO",
-        },
+        }
     },
     "loggers": {
-        "": {
-            "handlers": ["console"],
-            "level": "WARNING",
-        },
-        __package__: {
-            "handlers": ["console"],
-            "level": "INFO",
-            "propagate": False,
-        },
+        "": {"handlers": ["console"], "level": "WARNING"},
+        __package__: {"handlers": ["console"], "level": "INFO", "propagate": False},
+        "__main__": {"handlers": ["console"], "level": "INFO", "propagate": False},
     },
 }
