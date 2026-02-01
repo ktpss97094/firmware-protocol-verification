@@ -109,12 +109,6 @@ class I2C(MMIOMemoryRegion):
                         ),
                     )
 
-                    # (BUSY) Set by hardware on detection of SDA or SCL low
-                    # new_sr2 = utils.replace_bit(
-                    #     new_sr2,
-                    #     I2C.SR2.BUSY,
-                    #     claripy.If(new_sr1[I2C.SR1.SB] == 1, 1, sr2[I2C.SR2.BUSY]),
-                    # )
                     # (TxE) Cleared ... or by hardware after a start or a stop condition
                     new_sr1 = utils.replace_bit(
                         new_sr1,
@@ -196,14 +190,6 @@ class I2C(MMIOMemoryRegion):
                     # (TxE) Set when DR is empty in transmission. TxE is not set during address phase
                     new_sr1 = utils.set_bits(new_sr1, I2C.SR1.TXE)
 
-                # if sr2[I2C.SR2.BUSY].symbolic:
-                #     new_sr2 = utils.symbolic_bit(
-                #         state,
-                #         new_sr2,
-                #         I2C.SR2.BUSY,
-                #         f"{self.name}_{I2C.SR2.OFFSET:#x}_BUSY",
-                #     )
-
             case I2C.DR.OFFSET:
                 # --- Side-Effects ---
                 # (BTF) Cleared by software by either a read or write in the DR register
@@ -263,12 +249,6 @@ class I2C(MMIOMemoryRegion):
                         I2C.SR1.BTF,
                         claripy.If(new_cr1[I2C.CR1.STOP] == 0, 0, sr1[I2C.SR1.BTF]),
                     )
-                    # (BUSY) cleared by hardware on detection of a Stop condition
-                    # new_sr2 = utils.replace_bit(
-                    #     new_sr2,
-                    #     I2C.SR2.BUSY,
-                    #     claripy.If(new_cr1[I2C.CR1.STOP] == 0, 0, sr2[I2C.SR2.BUSY]),
-                    # )
 
             case I2C.DR.OFFSET:
                 # --- Spec 2 ---
@@ -366,9 +346,7 @@ class SysTickVariable(VariableMemoryRegion):
     def read(self, state, offset):
         origin_val = utils.load(state, self.start + offset)
 
-        # new_val = utils.generate_symbolic(
-        #     state, self.name, mask=self.symbolic_masks.get(self.start + offset, 0)
-        # )
+        # new_val = utils.generate_symbolic(state, self.name)
         # state.add_constraints(new_val > origin_val)
         delta = 1
 
@@ -396,7 +374,7 @@ class Specs(BaseSpecs):
     # --- Constants ---
     class HAL_StatusTypeDef:
         """
-        .. warning::
+        Warning:
             不要繼承 IntEnum，因為 claripy 可能因為還沒支援 Bit Vector 與 IntEnum 的值比較，故會與 integer 行為有差異
         """
 
@@ -424,14 +402,6 @@ class Specs(BaseSpecs):
                 size=0x4,
                 name="SysTickVariable",
             ),
-        }
-
-        self.SYMBOLIC_MASKS = {
-            0x40005414: 0b00000000000000000000010010001111,
-            0x40005418: 0b00000000000000000000000000000010,
-            self.MEMORY_REGIONS[
-                "SysTickVariable"
-            ].start: 0b11111111111111111111111111111111,
         }
 
         self.BEGIN_ADDR = utils.get_symbol_addr(
@@ -485,17 +455,6 @@ class Specs(BaseSpecs):
 
     def precondition(self, state):
         # utils.set_func_args_symbolic(state, self.API_PROTOTYPE, {3: (0, 3)})
-
-        # utils.store(
-        #     state,
-        #     self.MEMORY_REGIONS["I2C1"].start + I2C.SR2.OFFSET,
-        #     utils.symbolic_bit(
-        #         state,
-        #         utils.load(state, self.MEMORY_REGIONS["I2C1"].start + I2C.SR2.OFFSET),
-        #         I2C.SR2.BUSY,
-        #         f"I2C1_{I2C.SR2.OFFSET:#x}_BUSY",
-        #     ),
-        # )
 
         return True
 

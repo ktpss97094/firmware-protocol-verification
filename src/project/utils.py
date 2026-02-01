@@ -130,7 +130,8 @@ def get_func_ret(state, prototype):
 
 def set_func_args_symbolic(state, prototype, constraints: dict):
     """
-    :param constraints: dict[function 參數 index] = (constraint low, constraint high)
+    Args:
+        constraints: dict[function 參數 index] = (constraint low, constraint high)
     """
 
     arg_locs = state.project.factory.cc().arg_locs(prototype)
@@ -151,7 +152,8 @@ def normalize_code_addr(proj, addr, target=None, is_executing_pc=False):
     """
     處理 Thumb Mode 等情況
 
-    :param is_executing_pc: 是否為當前正在執行的 pc 值
+    Args:
+        is_executing_pc: 是否為當前正在執行的 pc 值
     """
 
     # Arm Cortex-M 僅支援 Thumb 指令集
