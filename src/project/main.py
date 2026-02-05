@@ -202,8 +202,11 @@ def main(argv: list[str] | None = None):
         #     exit(0)
 
         # 計算 API 參數
-        for index in range(len(specs.API_PROTOTYPE.args)):
-            specs.API_ARGS.append(utils.get_func_arg(state, specs.API_PROTOTYPE, index))
+        if specs.API_PROTOTYPE is not None:
+            for index in range(len(specs.API_PROTOTYPE.args)):
+                specs.API_ARGS.append(
+                    utils.get_func_arg(state, specs.API_PROTOTYPE, index)
+                )
 
         specs.init_inspect(state)
 

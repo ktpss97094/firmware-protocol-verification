@@ -372,12 +372,12 @@ class Specs(BaseSpecs):
     USE_RENODE = False
 
     # --- Constants ---
-    class HAL_StatusTypeDef:
-        """
-        Warning:
-            不要繼承 IntEnum，因為 claripy 可能因為還沒支援 Bit Vector 與 IntEnum 的值比較，故會與 integer 行為有差異
-        """
+    """
+    Warning:
+        不要繼承 IntEnum，因為 claripy 可能因為還沒支援 Bit Vector 與 IntEnum 的值比較，故會與 integer 行為有差異
+    """
 
+    class HAL_StatusTypeDef:
         HAL_OK = 0x00
         HAL_ERROR = 0x01
         HAL_BUSY = 0x02
