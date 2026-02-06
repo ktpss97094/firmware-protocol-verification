@@ -1,15 +1,15 @@
 """
 Stethogram AT Command Escape Sequence Spec
 
-1. send_escape_sequence() 執行時:
-    (1) 此次發送距離上一次 UART 傳輸結束的時間間隔必須 >= 1 秒
-    (2) 發送內容須為 +++
-    (3) 發送結束後，距離下一次 UART 傳輸開始的時間間隔必須 >= 1 秒
+1. 此次發送距離上一次 UART 傳輸結束的時間間隔必須 >= 1 秒
+2. 發送內容須為 +++
+3. 發送結束後，距離下一次 UART 傳輸開始的時間間隔必須 >= 1 秒
 """
 
 import angr
 import archinfo
 import avatar2
+import claripy
 
 from project import config, utils
 from project.types import (
@@ -18,6 +18,58 @@ from project.types import (
     MMIOMemoryRegion,
     VariableMemoryRegion,
 )
+
+
+class USART(MMIOMemoryRegion):
+    class USARTn_STATUS:
+        OFFSET = 0x010
+
+        TXBL = 6  # 1 為 TX buffer empty
+
+    class USARTn_TXDATA:
+        OFFSET = 0x034
+
+    def read(self, state, offset):
+        usartn_status = utils.load(state, self.start + USART.USARTn_STATUS.OFFSET)
+        new_usartn_status = usartn_status
+
+        match offset:
+            case self.USARTn_STATUS.OFFSET:
+                # 不需要先判斷 TXBL 是不是 symbolic，這跟 STM32 I2C ADDR 等狀況不同，ADDR 是在設為 symbolic 後才有這個 replace_bit 規則，但 TXBL 是任何時候這個規則都成立
+                new_usartn_status = utils.replace_bit(
+                    new_usartn_status,
+                    USART.USARTn_STATUS.TXBL,
+                    claripy.If(
+                        new_usartn_status[USART.USARTn_STATUS.TXBL] == 1,
+                        new_usartn_status[USART.USARTn_STATUS.TXBL],
+                        utils.generate_symbolic(
+                            state,
+                            f"{self.name}_{USART.USARTn_STATUS.OFFSET:#x}_TXBL",
+                            size=1,
+                        ),
+                    ),
+                )
+
+        utils.store(state, self.start + USART.USARTn_STATUS.OFFSET, new_usartn_status)
+
+    def write(self, state, offset, value):
+        usartn_status = utils.load(state, self.start + USART.USARTn_STATUS.OFFSET)
+        new_usartn_status = usartn_status
+
+        match offset:
+            case self.USARTn_TXDATA.OFFSET:
+                state.globals["TX"] = state.globals.get("TX", "") + chr(
+                    state.solver.eval(value)
+                )
+
+                new_usartn_status = utils.symbolic_bit(
+                    state,
+                    new_usartn_status,
+                    USART.USARTn_STATUS.TXBL,
+                    f"{self.name}_{USART.USARTn_STATUS.OFFSET:#x}_TXBL",
+                )
+
+        utils.store(state, self.start + USART.USARTn_STATUS.OFFSET, new_usartn_status)
 
 
 class SysTickVariable(VariableMemoryRegion):
@@ -56,7 +108,7 @@ class Specs(BaseSpecs):
             "FLASH": MemoryRegion(
                 start=0x00000000, size=0x200000, name="FLASH", transfer=False
             ),
-            "USART0": MMIOMemoryRegion(start=0x40010000, size=0x400, name="USART0"),
+            "USART0": USART(start=0x40010000, size=0x400, name="USART0"),
             "SysTickVariable": SysTickVariable(
                 start=utils.get_symbol_addr(self.proj, "msTicks", is_variable=True),
                 size=0x4,
@@ -65,7 +117,7 @@ class Specs(BaseSpecs):
         }
 
         self.BEGIN_ADDR = utils.get_symbol_addr(
-            self.proj, "BEGIN_SYMBOLIC_EXECUTION", is_variable=False
+            self.proj, "LTE_Send_Escape_Sequence", is_variable=False
         )
         self.END_ADDRS = [
             utils.get_symbol_addr(
@@ -75,6 +127,20 @@ class Specs(BaseSpecs):
         # self.DEBUG_FUNC_ADDR = utils.get_symbol_addr(self.proj, "SYMBOL_FUNCTION", is_variable=False)
 
     def init_inspect(self, state):
+        state.inspect.b(
+            "mem_read",
+            when=angr.BP_AFTER,
+            condition=self.MEMORY_REGIONS["USART0"].in_region_read,
+            action=self.MEMORY_REGIONS["USART0"].read,
+        )
+
+        state.inspect.b(
+            "mem_write",
+            when=angr.BP_AFTER,
+            condition=self.MEMORY_REGIONS["USART0"].in_region_write,
+            action=self.MEMORY_REGIONS["USART0"].write,
+        )
+
         state.inspect.b(
             "mem_read",
             when=angr.BP_BEFORE,
@@ -87,3 +153,25 @@ class Specs(BaseSpecs):
         #     instruction=self.DEBUG_FUNC_ADDR,
         #     action=utils.stop_and_debug,
         # )
+
+    def precondition(self, state):
+        usartn_status = utils.load(
+            state, self.MEMORY_REGIONS["USART0"].start + USART.USARTn_STATUS.OFFSET
+        )
+        new_usartn_status = utils.symbolic_bit(
+            state,
+            usartn_status,
+            USART.USARTn_STATUS.TXBL,
+            f"{__name__}_{USART.USARTn_STATUS.OFFSET:#x}_TXBL",
+        )
+        utils.store(
+            state,
+            self.MEMORY_REGIONS["USART0"].start + USART.USARTn_STATUS.OFFSET,
+            new_usartn_status,
+        )
+
+        return True
+
+    def postcondition(self, simgr):
+        for state in simgr.found:
+            print(repr(state.globals.get("TX", "")))

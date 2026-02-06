@@ -6,7 +6,12 @@ import avatar2
 
 import project.utils as utils
 from project import config
-from project.types import CustomEngine, MMIOMemoryRegion, VariableMemoryRegion
+from project.types import (
+    CustomEngine,
+    CustomLoopLimiter,
+    MMIOMemoryRegion,
+    VariableMemoryRegion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -231,13 +236,16 @@ def main(argv: list[str] | None = None):
     simgr = proj.factory.simgr(state)
     simgr.stashes["violated"] = []
 
-    # simgr.use_technique(angr.exploration_techniques.Veritesting())
     # simgr.use_technique(
     #     angr.exploration_techniques.LoopSeer(
     #         cfg=proj.analyses.CFGFast(normalize=True), bound=3
     #     )
     # )  # 設定 loop 執行上限次數
-    # simgr.use_technique(angr.exploration_techniques.DFS())
+    simgr.use_technique(angr.exploration_techniques.DFS())
+    simgr.use_technique(CustomLoopLimiter(limit=10, max_concrete_limit=50000))
+    simgr.use_technique(
+        angr.exploration_techniques.LengthLimiter(max_length=100000, drop=False)
+    )
 
     simgr.explore(
         find=specs.END_ADDRS, num_find=float("inf"), step_func=monitor_exploration
