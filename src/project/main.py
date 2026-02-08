@@ -283,7 +283,7 @@ def main(argv: list[str] | None = None):
                 print(f"  Could not extract debug info: {e}")
 
             print("-" * 30)
-    elif len(simgr.found) > 0:
+    elif len(simgr.found) > 0 or len(simgr.stashes["violated"]) > 0:
         specs.postcondition(simgr)
 
         if len(simgr.stashes["violated"]) > 0:
@@ -292,10 +292,10 @@ def main(argv: list[str] | None = None):
             )
         else:
             print(
-                f"Verification SUCCESS! Found {len(simgr.found)} states that reached the end"
+                f"Verification SUCCESS! Found {len(simgr.found)} state(s) that reached the end"
             )
     else:
-        print("No state reached the end")
+        raise AssertionError("No valid paths found or no violations detected")
 
 
 if __name__ == "__main__":

@@ -10,14 +10,10 @@ import angr
 import archinfo
 import avatar2
 import claripy
+from angr import SimProcedure
 
 from project import config, utils
-from project.types import (
-    BaseSpecs,
-    MemoryRegion,
-    MMIOMemoryRegion,
-    VariableMemoryRegion,
-)
+from project.types import BaseSpecs, MemoryRegion, MMIOMemoryRegion
 
 
 class USART(MMIOMemoryRegion):
@@ -55,12 +51,31 @@ class USART(MMIOMemoryRegion):
     def write(self, state, offset, value):
         usartn_status = utils.load(state, self.start + USART.USARTn_STATUS.OFFSET)
         new_usartn_status = usartn_status
+        char = chr(state.solver.eval(value))
+        delta_time = state.globals.get("delay", 0) - state.globals.get(
+            "last_tx_time", 0
+        )
 
         match offset:
             case self.USARTn_TXDATA.OFFSET:
-                state.globals["TX"] = state.globals.get("TX", "") + chr(
-                    state.solver.eval(value)
-                )
+                # [Spec (Part 1)]
+                if char != "+":
+                    print(f"Spec violation (pc: {state.regs.pc})")
+                    state.globals["violation"] = True
+                elif state.globals.get("plus_cnt", 0) == 0:
+                    if delta_time < 1000:
+                        print(f"Spec violation (pc: {state.regs.pc})")
+                        state.globals["violation"] = True
+                elif state.globals.get("plus_cnt", 0) < 3:
+                    if delta_time >= 1000:
+                        print(f"Spec violation (pc: {state.regs.pc})")
+                        state.globals["violation"] = True
+                else:
+                    print(f"Spec violation (pc: {state.regs.pc})")
+                    state.globals["violation"] = True
+
+                state.globals["plus_cnt"] = state.globals.get("plus_cnt", 0) + 1
+                state.globals["last_tx_time"] = state.globals.get("delay", 0)
 
                 new_usartn_status = utils.symbolic_bit(
                     state,
@@ -72,17 +87,11 @@ class USART(MMIOMemoryRegion):
         utils.store(state, self.start + USART.USARTn_STATUS.OFFSET, new_usartn_status)
 
 
-class SysTickVariable(VariableMemoryRegion):
-    def read(self, state, offset):
-        origin_val = utils.load(state, self.start + offset)
-
-        # new_val = utils.generate_symbolic(state, self.name)
-        # state.add_constraints(new_val > origin_val)
-        delta = 1
-
-        new_val = origin_val + delta
-
-        utils.store(state, self.start + offset, new_val)
+class Delay(SimProcedure):
+    def run(self, dlyTicks):
+        self.state.globals["delay"] = self.state.globals.get(
+            "delay", 0
+        ) + self.state.solver.eval(dlyTicks)
 
 
 class Specs(BaseSpecs):
@@ -109,15 +118,10 @@ class Specs(BaseSpecs):
                 start=0x00000000, size=0x200000, name="FLASH", transfer=False
             ),
             "USART0": USART(start=0x40010000, size=0x400, name="USART0"),
-            "SysTickVariable": SysTickVariable(
-                start=utils.get_symbol_addr(self.proj, "msTicks", is_variable=True),
-                size=0x4,
-                name="SysTickVariable",
-            ),
         }
 
         self.BEGIN_ADDR = utils.get_symbol_addr(
-            self.proj, "LTE_Send_Escape_Sequence", is_variable=False
+            self.proj, "LTE_SwitchToCmdMode", is_variable=False
         )
         self.END_ADDRS = [
             utils.get_symbol_addr(
@@ -141,12 +145,7 @@ class Specs(BaseSpecs):
             action=self.MEMORY_REGIONS["USART0"].write,
         )
 
-        state.inspect.b(
-            "mem_read",
-            when=angr.BP_BEFORE,
-            condition=self.MEMORY_REGIONS["SysTickVariable"].in_region_read,
-            action=self.MEMORY_REGIONS["SysTickVariable"].read,
-        )
+        self.proj.hook_symbol("Delay", Delay())
 
         # state.inspect.b(
         #     "instruction",
@@ -173,5 +172,12 @@ class Specs(BaseSpecs):
         return True
 
     def postcondition(self, simgr):
+        # [Spec (Part 2)]
         for state in simgr.found:
-            print(repr(state.globals.get("TX", "")))
+            delta_time = state.globals.get("delay", 0) - state.globals.get(
+                "last_tx_time", 0
+            )
+
+            if delta_time < 1000:
+                print("Spec violation")
+                simgr.stashes["violated"].append(state)
