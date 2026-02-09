@@ -1,22 +1,107 @@
 import argparse
+import hashlib
+import importlib
+import importlib.util
 import logging
+import re
+import warnings
+from pathlib import Path
+from types import ModuleType
+from typing import Any, Type
 
 import angr
 import avatar2
 
 import project.utils as utils
 from project import config
-from project.types import (
-    CustomEngine,
-    CustomLoopLimiter,
-    MMIOMemoryRegion,
-    VariableMemoryRegion,
-)
+from project.types import CustomEngine, MMIOMemoryRegion, VariableMemoryRegion
 
 logger = logging.getLogger(__name__)
 
 
-def monitor_exploration(simgr):
+def init_logging():
+    logging.config.dictConfig(config.LOGGING_CONFIG)
+
+
+def load_specs_class(spec_arg: str | None) -> Type[Any]:
+    def load_module_from_file(path: Path) -> ModuleType:
+        unique_name = (
+            "user_specs_" + hashlib.sha256(str(path).encode()).hexdigest()[:16]
+        )
+        spec = importlib.util.spec_from_file_location(unique_name, str(path))
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Unable to create module spec from file: {path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    if spec_arg.endswith(".py"):
+        path = Path(spec_arg).expanduser().resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"Spec file doesn't exist: {path}")
+        mod = load_module_from_file(path)
+    else:
+        mod = importlib.import_module(spec_arg)
+
+    if not hasattr(mod, "Specs"):
+        raise AttributeError(f"Spec file doesn't provide 'Specs' class: {spec_arg}")
+
+    return getattr(mod, "Specs")
+
+
+def read_MMIO_renode(avatar_target, base_addr, size):
+    """
+    避免 Renode peripheral 的 ReadByte() 實作可能有問題，導致 avatar2 read_memory() 失敗
+    """
+
+    data = bytearray(size)
+    for offset in range(0, size, 4):
+        target_addr = base_addr + offset
+
+        try:
+            ok, output = avatar_target.protocols.execution.console_command(
+                f"monitor sysbus ReadDoubleWord {target_addr:#x}"
+            )
+            if not ok or not output:
+                continue
+
+            matches = re.findall(r"0x[0-9a-fA-F]+", output)
+            if not matches:
+                continue
+
+            val = int(matches[-1], 16)
+            data[offset : offset + 4] = val.to_bytes(4, "little")
+        except Exception as e:
+            warnings.warn(f"Failed to read reg at {target_addr:#x}: {e}")
+
+    return bytes(data)
+
+
+def step_explore(simgr, proj, monitor_exploration=None):
+    while simgr.active:
+
+        def get_local_var(state, frame_reg_name="r7", offset=-20, size=4):
+            fp = getattr(state.regs, frame_reg_name)
+            addr = fp + offset
+            val = state.memory.load(addr, size, endness=state.arch.memory_endness)
+            return val
+
+        simgr.step()
+        for state in simgr.active:
+            pc_addr = state.solver.eval(state.regs.pc) & ~1
+            addr_map = proj.loader.main_object.addr_to_line
+
+            if pc_addr in addr_map:
+                source_info = addr_map[pc_addr]
+                print(f"Address: {hex(pc_addr)} maps to: {source_info}")
+            else:
+                print(f"No debug info found for address {hex(pc_addr)}")
+
+        if monitor_exploration:
+            monitor_exploration(simgr)
+
+
+def explore_step_func(simgr):
     simgr.move(
         from_stash="active",
         to_stash="violated",
@@ -38,13 +123,38 @@ def monitor_exploration(simgr):
     return simgr
 
 
+def LoopSeer_bound_reached_handler(seer, state):
+    if not state.loop_data.current_loop:
+        logger.warning(
+            f"LoopSeer_handler: State {state} at address {hex(state.addr)} has no loop data. Cut this state"
+        )
+        seer.cut_succs.append(state)
+        return
+
+    loop = state.loop_data.current_loop[-1][0]
+    header_addr = loop.entry.addr
+    loop_condition = state.history.jump_guard
+
+    logger.info(f"Spinning State Detected (addr: {hex(state.addr)})")
+    logger.info(f"    - Loop Entry Address: {hex(header_addr)}")
+
+    if loop_condition is not None:
+        variables = list(loop_condition.variables)
+        logger.info(f"    - Loop Condition: {loop_condition}")
+        logger.info(f"    - Related Symbolic Variables: {variables}")
+    else:
+        logger.warning("LoopSeer_handler: Cannot retrieve loop condition")
+
+    seer.cut_succs.append(state)
+
+
 def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(prog="verify")
     parser.add_argument("spec", nargs="?", help="Spec file path")
     args = parser.parse_args(argv)
-    Specs = utils.load_specs_class(args.spec)
+    Specs = load_specs_class(args.spec)
 
-    utils.init_logging()
+    init_logging()
 
     avatar = avatar2.Avatar(
         arch=Specs.AVATAR_ARCH, output_directory=config.AVATAR_LOG_PATH
@@ -150,7 +260,7 @@ def main(argv: list[str] | None = None):
 
             try:
                 if Specs.USE_RENODE and isinstance(memory_region, MMIOMemoryRegion):
-                    dumps[memory_region_name] = utils.read_MMIO_renode(
+                    dumps[memory_region_name] = read_MMIO_renode(
                         avatar_target, memory_region.physical_addr, memory_region.size
                     )
                 else:
@@ -236,21 +346,24 @@ def main(argv: list[str] | None = None):
     simgr = proj.factory.simgr(state)
     simgr.stashes["violated"] = []
 
-    # simgr.use_technique(
-    #     angr.exploration_techniques.LoopSeer(
-    #         cfg=proj.analyses.CFGFast(normalize=True), bound=3
-    #     )
-    # )  # 設定 loop 執行上限次數
     simgr.use_technique(angr.exploration_techniques.DFS())
-    simgr.use_technique(CustomLoopLimiter(limit=10, max_concrete_limit=50000))
     simgr.use_technique(
-        angr.exploration_techniques.LengthLimiter(max_length=100000, drop=False)
+        angr.exploration_techniques.LoopSeer(
+            cfg=proj.analyses.CFGFast(normalize=True),
+            bound=15,
+            limit_concrete_loops=False,
+            bound_reached=LoopSeer_bound_reached_handler,
+        )
     )
+    # simgr.use_technique(CustomLoopLimiter(limit=10, max_concrete_limit=50000))
+    # simgr.use_technique(
+    #     angr.exploration_techniques.LengthLimiter(max_length=100000, drop=False)
+    # )
 
     simgr.explore(
-        find=specs.END_ADDRS, num_find=float("inf"), step_func=monitor_exploration
+        find=specs.END_ADDRS, num_find=float("inf"), step_func=explore_step_func
     )
-    # utils.step_explore(simgr, proj, monitor_exploration=monitor_exploration)
+    # step_explore(simgr, proj, monitor_exploration=explore_step_func)
 
     print(simgr)
     if len(simgr.errored) > 0:

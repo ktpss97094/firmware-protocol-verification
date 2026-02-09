@@ -1,49 +1,9 @@
-import hashlib
-import importlib
-import importlib.util
 import logging
-import re
-import warnings
-from pathlib import Path
-from types import ModuleType
-from typing import Any, Type
 
 import archinfo
 import claripy
 
-from project import config
-
 logger = logging.getLogger(__name__)
-
-
-def init_logging():
-    logging.config.dictConfig(config.LOGGING_CONFIG)
-
-
-def load_specs_class(spec_arg: str | None) -> Type[Any]:
-    def load_module_from_file(path: Path) -> ModuleType:
-        unique_name = (
-            "user_specs_" + hashlib.sha256(str(path).encode()).hexdigest()[:16]
-        )
-        spec = importlib.util.spec_from_file_location(unique_name, str(path))
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Unable to create module spec from file: {path}")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
-
-    if spec_arg.endswith(".py"):
-        path = Path(spec_arg).expanduser().resolve()
-        if not path.exists():
-            raise FileNotFoundError(f"Spec file doesn't exist: {path}")
-        mod = load_module_from_file(path)
-    else:
-        mod = importlib.import_module(spec_arg)
-
-    if not hasattr(mod, "Specs"):
-        raise AttributeError(f"Spec file doesn't provide 'Specs' class: {spec_arg}")
-
-    return getattr(mod, "Specs")
 
 
 def load(state, addr, size=None):
@@ -189,34 +149,6 @@ def get_symbol_addr(proj, symbol_name, is_variable):
     return normalize_code_addr(proj, addr)
 
 
-def read_MMIO_renode(avatar_target, base_addr, size):
-    """
-    避免 Renode peripheral 的 ReadByte() 實作可能有問題，導致 avatar2 read_memory() 失敗
-    """
-
-    data = bytearray(size)
-    for offset in range(0, size, 4):
-        target_addr = base_addr + offset
-
-        try:
-            ok, output = avatar_target.protocols.execution.console_command(
-                f"monitor sysbus ReadDoubleWord {target_addr:#x}"
-            )
-            if not ok or not output:
-                continue
-
-            matches = re.findall(r"0x[0-9a-fA-F]+", output)
-            if not matches:
-                continue
-
-            val = int(matches[-1], 16)
-            data[offset : offset + 4] = val.to_bytes(4, "little")
-        except Exception as e:
-            warnings.warn(f"Failed to read reg at {target_addr:#x}: {e}")
-
-    return bytes(data)
-
-
 def get_constraint_info(state, constraint):
     def get_bit_extract_info(constraint):
         if constraint.op == "Extract":
@@ -248,30 +180,6 @@ def get_constraint_info(state, constraint):
     if result:
         high, low, source = result
         return find_variable_origin(state, source), (high, low)
-
-
-def step_explore(simgr, proj, monitor_exploration=None):
-    while simgr.active:
-
-        def get_local_var(state, frame_reg_name="r7", offset=-20, size=4):
-            fp = getattr(state.regs, frame_reg_name)
-            addr = fp + offset
-            val = state.memory.load(addr, size, endness=state.arch.memory_endness)
-            return val
-
-        simgr.step()
-        for state in simgr.active:
-            pc_addr = state.solver.eval(state.regs.pc) & ~1
-            addr_map = proj.loader.main_object.addr_to_line
-
-            if pc_addr in addr_map:
-                source_info = addr_map[pc_addr]
-                print(f"Address: {hex(pc_addr)} maps to: {source_info}")
-            else:
-                print(f"No debug info found for address {hex(pc_addr)}")
-
-        if monitor_exploration:
-            monitor_exploration(simgr)
 
 
 def stop_and_debug(state):
