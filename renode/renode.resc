@@ -5,7 +5,7 @@ machine LoadPlatformDescriptionFromString "dummy: Mocks.DummyI2CSlave @ i2c1 0x6
 
 # include @renode.py
 
-sysbus LoadELF @../firmwares/STM32/I2C/Blocking_Mode/Hardware/HAL/build/clockstretching.elf
+sysbus LoadELF @../firmwares/STM32F429/protocols/I2C/master/Blocking_Mode/Hardware/stm32f4xx-hal-driver/build/clockstretching.elf
 
 # 啟動 GDB Server
 machine StartGdbServer 3333 false

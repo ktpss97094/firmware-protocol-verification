@@ -1,0 +1,12 @@
+Objects/
+Listings/
+COPD/**/*
+
+*.uvguix.*
+
+.vscode/
+
+# Keep firmware file
+!COPD/Debug/
+!COPD/Debug/exe/
+!COPD/Debug/exe/*.out

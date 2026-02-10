@@ -1,3 +1,3 @@
-[submodule "firmwares/Stethogram"]
-	path = firmwares/Stethogram
+[submodule "firmwares/EFM32GG11/protocols/AT_Command/Stethogram"]
+	path = firmwares/EFM32GG11/protocols/AT_Command/Stethogram
 	url = https://git.epl.tw/DavidPeng/Stethogram.git
