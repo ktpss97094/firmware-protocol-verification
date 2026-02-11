@@ -359,7 +359,7 @@ class Specs(BaseSpecs):
     # --- Paths ---
     FIRMWARE_PATH = str(
         config.PROJECT_ROOT
-        / "firmwares/STM32F429/protocols/I2C/master/Blocking_Mode/Hardware/stm32f4xx-hal-driver/build/clockstretching.elf"
+        / "firmwares/STM32F429/build/protocols/I2C/master/Blocking_Mode/Hardware/stm32f4xx-hal-driver/firmware.elf"
     )
     OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"
     OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"

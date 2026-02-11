@@ -1,11 +1,3 @@
-# cmake
-build/*
-
-# Makefile 目前為 STM32CubeMX 自動產生
+# STM32CubeMX
 Makefile
-
-# CBMC 輸出
-results.txt
-
-# Keep firmware file
-!build/*.elf
+startup_*.s
