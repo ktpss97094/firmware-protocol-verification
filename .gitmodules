@@ -1,15 +1,15 @@
-[submodule "firmwares/EFM32GG11/protocols/AT_Command/Stethogram"]
-	path = firmwares/EFM32GG11/protocols/AT_Command/Stethogram
+[submodule "firmwares/efm32gg11/protocols/AT_Command/Stethogram"]
+	path = firmwares/efm32gg11/protocols/AT_Command/Stethogram
 	url = https://git.epl.tw/DavidPeng/Stethogram.git
-[submodule "firmwares/STM32F429/lib/stm32f4xx-hal-driver"]
-	path = firmwares/STM32F429/lib/stm32f4xx-hal-driver
+[submodule "firmwares/stm32f429/lib/stm32f4xx-hal-driver"]
+	path = firmwares/stm32f429/lib/stm32f4xx-hal-driver
 	url = https://github.com/STMicroelectronics/stm32f4xx-hal-driver.git
-[submodule "firmwares/STM32F429/lib/CMSIS_5"]
-	path = firmwares/STM32F429/lib/CMSIS_5
+[submodule "firmwares/stm32f429/lib/CMSIS_5"]
+	path = firmwares/stm32f429/lib/CMSIS_5
 	url = https://github.com/ARM-software/CMSIS_5.git
-[submodule "firmwares/STM32F429/lib/cmsis-device-f4"]
-	path = firmwares/STM32F429/lib/cmsis-device-f4
+[submodule "firmwares/stm32f429/lib/cmsis-device-f4"]
+	path = firmwares/stm32f429/lib/cmsis-device-f4
 	url = https://github.com/STMicroelectronics/cmsis-device-f4.git
-[submodule "firmwares/STM32F429/lib/stm32_bitbang_i2c"]
-	path = firmwares/STM32F429/lib/stm32_bitbang_i2c
+[submodule "firmwares/stm32f429/lib/stm32_bitbang_i2c"]
+	path = firmwares/stm32f429/lib/stm32_bitbang_i2c
 	url = https://github.com/ktpss97094/stm32_bitbang_i2c.git
