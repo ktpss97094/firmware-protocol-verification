@@ -4,6 +4,6 @@ set(CMAKE_SYSTEM_PROCESSOR cortex-m4)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
 find_program(CMAKE_C_COMPILER arm-none-eabi-gcc REQUIRED)
-find_program(CMAKE_CXX_COMPILER arm-none-eabi-g++ REQUIRED)
 find_program(CMAKE_ASM_COMPILER arm-none-eabi-gcc REQUIRED)
 find_program(CMAKE_OBJCOPY arm-none-eabi-objcopy REQUIRED)
+find_program(FLASH_TOOL st-flash)

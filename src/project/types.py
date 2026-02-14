@@ -102,37 +102,37 @@ class MemoryRegion:
         self.name = name
         self.symbolic_masks = {}
 
-    def __init_subclass__(cls, *args, **kwargs):
-        super().__init_subclass__(*args, **kwargs)
+    # def __init_subclass__(cls, *args, **kwargs):
+    #     super().__init_subclass__(*args, **kwargs)
 
-        # --- read() wrapper ---
-        if getattr(cls, "_read_is_wrapped", False) or "read" not in cls.__dict__:
-            return
-        orig_read = cls.__dict__["read"]
+    #     # --- read() wrapper ---
+    #     if getattr(cls, "_read_is_wrapped", False) or "read" not in cls.__dict__:
+    #         return
+    #     orig_read = cls.__dict__["read"]
 
-        def wrapped_read(self, state):
-            addr = state.solver.eval(state.inspect.mem_read_address)
-            offset = addr - self.start
-            orig_read(self, state, offset)
-            # if isinstance(self, MMIOMemoryRegion):
-            #     self._apply_symbolic(state, offset)
+    #     def wrapped_read(self, state):
+    #         addr = state.solver.eval(state.inspect.mem_read_address)
+    #         offset = addr - self.start
+    #         orig_read(self, state, offset)
+    #         # if isinstance(self, MMIOMemoryRegion):
+    #         #     self._apply_symbolic(state, offset)
 
-        cls.read = wrapped_read
-        cls._read_is_wrapped = True
+    #     cls.read = wrapped_read
+    #     cls._read_is_wrapped = True
 
-        # --- write() wrapper ---
-        if getattr(cls, "_write_is_wrapped", False) or "write" not in cls.__dict__:
-            return
-        orig_write = cls.__dict__["write"]
+    #     # --- write() wrapper ---
+    #     if getattr(cls, "_write_is_wrapped", False) or "write" not in cls.__dict__:
+    #         return
+    #     orig_write = cls.__dict__["write"]
 
-        def wrapped_write(self, state):
-            addr = state.solver.eval(state.inspect.mem_write_address)
-            offset = addr - self.start
-            value = state.inspect.mem_write_expr
-            orig_write(self, state, offset, value)
+    #     def wrapped_write(self, state):
+    #         addr = state.solver.eval(state.inspect.mem_write_address)
+    #         offset = addr - self.start
+    #         value = state.inspect.mem_write_expr
+    #         orig_write(self, state, offset, value)
 
-        cls.write = wrapped_write
-        cls._write_is_wrapped = True
+    #     cls.write = wrapped_write
+    #     cls._write_is_wrapped = True
 
     def _apply_symbolic(self, state, offset):
         symbolic_mask = self.symbolic_masks.get(self.start + offset, 0)
@@ -157,10 +157,16 @@ class MemoryRegion:
             state, self.start + offset, symbolic_mask, f"{self.name}_{offset:#x}"
         )
 
-    def read(self, state, offset):
+    def pre_read(self, state, offset):
+        pass
+
+    def pre_write(self, state, offset, value):
+        pass
+
+    def read(self, state):
         raise NotImplementedError("Call abstract method")
 
-    def write(self, state, offset, value):
+    def write(self, state):
         raise NotImplementedError("Call abstract method")
 
     def in_region_read(self, state):
