@@ -58,7 +58,9 @@ class Specs(BaseSpecs):
         config.PROJECT_ROOT
         / "firmwares/efm32gg11/protocols/AT_Command/Stethogram/copd-master/COPD/Debug/exe/COPD.out"
     )
-    OPENOCD_INTERFACE_SCRIPT_PATH = "openocd/scripts/interface/jlink.cfg"
+    OPENOCD_INTERFACE_SCRIPT_PATH = str(
+        config.PROJECT_ROOT / "openocd/scripts/interface/jlink.cfg"
+    )
     OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/efm32.cfg"
 
     # --- Architecture ---

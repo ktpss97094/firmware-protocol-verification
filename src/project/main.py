@@ -210,8 +210,6 @@ def main(argv: list[str] | None = None):
 
     avatar_target.set_breakpoint(specs.BEGIN_ADDR)
 
-    if Specs.USE_RENODE:
-        avatar_target.protocols.execution.console_command("monitor start")
     while True:
         avatar_target.cont()
         avatar_target.wait()
@@ -346,7 +344,7 @@ def main(argv: list[str] | None = None):
     simgr = proj.factory.simgr(state)
     simgr.stashes["violated"] = []
 
-    simgr.use_technique(angr.exploration_techniques.DFS())
+    # simgr.use_technique(angr.exploration_techniques.DFS())
     simgr.use_technique(
         angr.exploration_techniques.LoopSeer(
             cfg=proj.analyses.CFGFast(normalize=True),
