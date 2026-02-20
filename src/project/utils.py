@@ -90,6 +90,8 @@ def get_func_ret(state, prototype):
 
 def set_func_args_symbolic(state, prototype, constraints: dict):
     """
+    處理純數值的參數。無法設定 struct 內的 member 或是 pointer 指向的值
+
     Args:
         constraints: dict[function 參數 index] = (constraint low, constraint high)
     """

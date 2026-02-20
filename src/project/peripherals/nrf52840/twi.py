@@ -58,8 +58,8 @@ class TWI(MMIOMemoryRegion):
                             ),
                         ),
                     )
-                    state.globals[f"{self.name}_EVENTS_TXD_SENT_set"] = claripy.Or(
-                        state.globals.get(f"{self.name}_EVENTS_TXD_SENT_set", False),
+                    state.globals[f"{self.name}_EVENTS_TXDSENT_set"] = claripy.Or(
+                        state.globals.get(f"{self.name}_EVENTS_TXDSENT_set", False),
                         new_events_txdsent[TWI.EVENTS_TXDSENT.EVENTS_TXDSENT] == 1,
                     )
 
@@ -125,9 +125,8 @@ class TWI(MMIOMemoryRegion):
                     TWI.EVENTS_TXDSENT.EVENTS_TXDSENT,
                     f"{self.name}_{TWI.EVENTS_TXDSENT.OFFSET:#x}_EVENTS_TXDSENT",
                 )
-                state.globals[f"{self.name}_EVENTS_TXD_SENT_set"] = claripy.Or(
-                    state.globals.get(f"{self.name}_EVENTS_TXD_SENT_set", False),
-                    new_events_txdsent[TWI.EVENTS_TXDSENT.EVENTS_TXDSENT] == 1,
+                state.globals[f"{self.name}_EVENTS_TXDSENT_set"] = (
+                    new_events_txdsent[TWI.EVENTS_TXDSENT.EVENTS_TXDSENT] == 1
                 )
                 state.globals[f"{self.name}_TXD_written"] = True
 
@@ -137,18 +136,18 @@ class TWI(MMIOMemoryRegion):
                     TWI.EVENTS_ERROR.EVENTS_ERROR,
                     f"{self.name}_{TWI.EVENTS_ERROR.OFFSET:#x}_EVENTS_ERROR",
                 )
-                state.globals[f"{self.name}_EVENTS_ERROR_set"] = claripy.Or(
-                    state.globals.get(f"{self.name}_EVENTS_ERROR_set", False),
-                    new_events_error[TWI.EVENTS_ERROR.EVENTS_ERROR] == 1,
+                state.globals[f"{self.name}_EVENTS_ERROR_set"] = (
+                    new_events_error[TWI.EVENTS_ERROR.EVENTS_ERROR] == 1
                 )
 
             case TWI.TASKS_STOP.OFFSET:
-                new_events_stopped = utils.symbolic_bit(
-                    state,
-                    events_stopped,
-                    TWI.EVENTS_STOPPED.EVENTS_STOPPED,
-                    f"{self.name}_{TWI.EVENTS_STOPPED.OFFSET:#x}_EVENTS_STOPPED",
-                )
+                if state.solver.is_true(value == 1):
+                    new_events_stopped = utils.symbolic_bit(
+                        state,
+                        events_stopped,
+                        TWI.EVENTS_STOPPED.EVENTS_STOPPED,
+                        f"{self.name}_{TWI.EVENTS_STOPPED.OFFSET:#x}_EVENTS_STOPPED",
+                    )
 
             case TWI.TASKS_STARTTX.OFFSET:
                 if state.solver.is_true(value == 1):
@@ -158,9 +157,8 @@ class TWI(MMIOMemoryRegion):
                         TWI.EVENTS_ERROR.EVENTS_ERROR,
                         f"{self.name}_{TWI.EVENTS_ERROR.OFFSET:#x}_EVENTS_ERROR",
                     )
-                    state.globals[f"{self.name}_EVENTS_ERROR_set"] = claripy.Or(
-                        state.globals.get(f"{self.name}_EVENTS_ERROR_set", False),
-                        new_events_error[TWI.EVENTS_ERROR.EVENTS_ERROR] == 1,
+                    state.globals[f"{self.name}_EVENTS_ERROR_set"] = (
+                        new_events_error[TWI.EVENTS_ERROR.EVENTS_ERROR] == 1
                     )
 
         utils.store(state, self.start + TWI.EVENTS_TXDSENT.OFFSET, new_events_txdsent)

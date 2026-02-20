@@ -344,7 +344,7 @@ def main(argv: list[str] | None = None):
     simgr = proj.factory.simgr(state)
     simgr.stashes["violated"] = []
 
-    # simgr.use_technique(angr.exploration_techniques.DFS())
+    simgr.use_technique(angr.exploration_techniques.DFS())
     simgr.use_technique(
         angr.exploration_techniques.LoopSeer(
             cfg=proj.analyses.CFGFast(normalize=True),
