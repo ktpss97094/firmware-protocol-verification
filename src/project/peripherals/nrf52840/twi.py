@@ -26,6 +26,16 @@ class TWI(MMIOMemoryRegion):
 
         EVENTS_ERROR = 0
 
+    class INTENSET:
+        OFFSET = 0x304
+
+        STOPPED = 1
+        RXDREADY = 2
+        TXDSENT = 7
+        ERROR = 9
+        BB = 14
+        SUSPENDED = 18
+
     class TXD:
         OFFSET = 0x51C
 

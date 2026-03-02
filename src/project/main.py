@@ -14,7 +14,13 @@ import avatar2
 
 import project.utils as utils
 from project import config
-from project.types import CustomEngine, MMIOMemoryRegion, VariableMemoryRegion
+from project.types import (
+    CustomEngine,
+    ExcpReturnProcedure,
+    InterruptInjector,
+    MMIOMemoryRegion,
+    VariableMemoryRegion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +327,14 @@ def main(argv: list[str] | None = None):
                     utils.get_func_arg(state, specs.API_PROTOTYPE, index)
                 )
 
+        # ARMv7-M Architecture Reference Manual B1.5.8 Exception return behavior
+        proj.hook(
+            0xFFFFFFF1, ExcpReturnProcedure()
+        )  # return to handler mode, main stack, basic frame type
+        proj.hook(
+            0xFFFFFFF9, ExcpReturnProcedure()
+        )  # return to thread mode, main stack, basic frame type
+        # TODO: return stack 為 process stack pointer (PSP) 時、frame type 為 extended 時
         specs.init_inspect(state)
 
         if specs.precondition(state):
@@ -343,8 +357,9 @@ def main(argv: list[str] | None = None):
 
     simgr = proj.factory.simgr(state)
     simgr.stashes["violated"] = []
+    simgr.use_technique(InterruptInjector(specs, 0x00000000))
 
-    simgr.use_technique(angr.exploration_techniques.DFS())
+    # simgr.use_technique(angr.exploration_techniques.DFS())
     simgr.use_technique(
         angr.exploration_techniques.LoopSeer(
             cfg=proj.analyses.CFGFast(normalize=True),
@@ -359,7 +374,10 @@ def main(argv: list[str] | None = None):
     # )
 
     simgr.explore(
-        find=specs.END_ADDRS, num_find=float("inf"), step_func=explore_step_func
+        find=specs.END_ADDRS,
+        num_find=float("inf"),
+        step_func=explore_step_func,
+        num_inst=1,
     )
     # step_explore(simgr, proj, monitor_exploration=explore_step_func)
 

@@ -252,7 +252,7 @@ class Specs(BaseSpecs):
             self.proj, "I2C1_EV_IRQHandler", is_variable=False
         )
         self.END_ADDRS = [
-            0xFFFFFFE1,
+            0xFFFFFFF1,
             0xFFFFFFF9,
             0xFFFFFFFD,
         ]  # ARMv7-M Architecture Reference Manual §B1.5.8 Exception return behavior
