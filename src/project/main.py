@@ -289,6 +289,7 @@ def main(argv: list[str] | None = None):
             # add_options=angr.options.refs,
             #  | {angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY, angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS}  # ZERO_FILL_UNCONSTRAINED_MEMORY 及 ZERO_FILL_UNCONSTRAINED_REGISTERS 為指定當 Angr 讀取 Angr 未初始化的記憶體位置時，回傳 0 而不是 symbolic value
         )
+        state.globals["IRQ"] = {}
 
         for reg_name, value in regs.items():
             if reg_name in state.arch.registers:
@@ -377,7 +378,7 @@ def main(argv: list[str] | None = None):
         find=specs.END_ADDRS,
         num_find=float("inf"),
         step_func=explore_step_func,
-        num_inst=1,
+        # num_inst=1,
     )
     # step_explore(simgr, proj, monitor_exploration=explore_step_func)
 

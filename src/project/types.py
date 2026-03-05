@@ -96,98 +96,107 @@ class InterruptInjector(angr.ExplorationTechnique):
     def step_state(self, simgr, state, **kwargs):
         from project.peripherals.nrf52840.twi import TWI as NRF52840_TWI
 
-        events_txdsent_bit = utils.load(
-            state,
-            self.specs.MEMORY_REGIONS["TWI0"].start
-            + NRF52840_TWI.EVENTS_TXDSENT.OFFSET,
-        )[NRF52840_TWI.EVENTS_TXDSENT.EVENTS_TXDSENT]
-        events_stopped_bit = utils.load(
-            state,
-            self.specs.MEMORY_REGIONS["TWI0"].start
-            + NRF52840_TWI.EVENTS_STOPPED.OFFSET,
-        )[NRF52840_TWI.EVENTS_STOPPED.EVENTS_STOPPED]
-        events_error_bit = utils.load(
-            state,
-            self.specs.MEMORY_REGIONS["TWI0"].start + NRF52840_TWI.EVENTS_ERROR.OFFSET,
-        )[NRF52840_TWI.EVENTS_ERROR.EVENTS_ERROR]
+        IRQ_triggers = {3: []}
+
+        # IRQ 3
+        if 3 not in state.globals["IRQ"]:
+            state.globals["IRQ"][3] = {"handled_hashes": frozenset()}
         intenset = utils.load(
             state,
             self.specs.MEMORY_REGIONS["TWI0"].start + NRF52840_TWI.INTENSET.OFFSET,
         )
 
-        if "IRQ" not in state.globals:
-            state.globals["IRQ"] = {}
-        if 3 not in state.globals["IRQ"]:
-            state.globals["IRQ"][3] = {"handled_vars": frozenset()}
-        runnable_irqs = []
-        current_priority = state.globals.get("current_priority", 256)
+        if state.solver.is_true(intenset[NRF52840_TWI.INTENSET.STOPPED] == 1):
+            events_stopped_bit = utils.load(
+                state,
+                self.specs.MEMORY_REGIONS["TWI0"].start
+                + NRF52840_TWI.EVENTS_STOPPED.OFFSET,
+            )[NRF52840_TWI.EVENTS_STOPPED.EVENTS_STOPPED]
 
-        irq3_handled = state.globals["IRQ"][3]["handled_vars"]
-        irq3_conds = []
+            trigger_cond = events_stopped_bit != 0
+            if hash(events_stopped_bit) not in state.globals["IRQ"][3][
+                "handled_hashes"
+            ] and state.solver.satisfiable(extra_constraints=[trigger_cond]):
+                IRQ_triggers[3].append((events_stopped_bit, trigger_cond))
+        if state.solver.is_true(intenset[NRF52840_TWI.INTENSET.TXDSENT] == 1):
+            events_txdsent_bit = utils.load(
+                state,
+                self.specs.MEMORY_REGIONS["TWI0"].start
+                + NRF52840_TWI.EVENTS_TXDSENT.OFFSET,
+            )[NRF52840_TWI.EVENTS_TXDSENT.EVENTS_TXDSENT]
 
-        if not events_stopped_bit.variables.issubset(irq3_handled):
-            if state.solver.solution(events_stopped_bit, 1) and state.solver.is_true(
-                intenset[NRF52840_TWI.INTENSET.STOPPED] == 1
-            ):
-                irq3_conds.append(events_stopped_bit == 1)
+            trigger_cond = events_txdsent_bit != 0
+            if hash(events_txdsent_bit) not in state.globals["IRQ"][3][
+                "handled_hashes"
+            ] and state.solver.satisfiable(extra_constraints=[trigger_cond]):
+                IRQ_triggers[3].append((events_txdsent_bit, trigger_cond))
+        if state.solver.is_true(intenset[NRF52840_TWI.INTENSET.ERROR] == 1):
+            events_error_bit = utils.load(
+                state,
+                self.specs.MEMORY_REGIONS["TWI0"].start
+                + NRF52840_TWI.EVENTS_ERROR.OFFSET,
+            )[NRF52840_TWI.EVENTS_ERROR.EVENTS_ERROR]
 
-        if not events_txdsent_bit.variables.issubset(irq3_handled):
-            if state.solver.solution(events_txdsent_bit, 1) and state.solver.is_true(
-                intenset[NRF52840_TWI.INTENSET.TXDSENT] == 1
-            ):
-                irq3_conds.append(events_txdsent_bit == 1)
+            trigger_cond = events_error_bit != 0
+            if hash(events_error_bit) not in state.globals["IRQ"][3][
+                "handled_hashes"
+            ] and state.solver.satisfiable(extra_constraints=[trigger_cond]):
+                IRQ_triggers[3].append((events_error_bit, trigger_cond))
 
-        if not events_error_bit.variables.issubset(irq3_handled):
-            if state.solver.solution(events_error_bit, 1) and state.solver.is_true(
-                intenset[NRF52840_TWI.INTENSET.ERROR] == 1
-            ):
-                irq3_conds.append(events_error_bit == 1)
+        # 其他 IRQ ...
 
-        if irq3_conds:
-            irq3_prio = self.get_irq_priority(state, 3)
-            if irq3_prio < current_priority:
-                runnable_irqs.append((irq3_prio, 3, irq3_conds))
+        if all(not v for v in IRQ_triggers.values()):  # 所有 element 都是空的
+            return simgr.step_state(state, **kwargs)
 
-        # ... 其他 IRQ
+        # 計算目前 priority 最大的 IRQ
+        best_IRQ = min(
+            IRQ_triggers.keys(), key=lambda k: (self.get_irq_priority(state, k), k)
+        )
+        if self.get_irq_priority(state, best_IRQ) >= state.globals.get(
+            "current_priority", 256
+        ):
+            return simgr.step_state(state, **kwargs)
 
-        if runnable_irqs:
-            # kwargs["num_inst"] = 1
-            # TODO: 可能把 IRSB 切斷?
+        merged_results = {}
+        negated_previous_conds = []
 
-            # 先比 priority (小到大)，再比 IRQ number (小到大)
-            runnable_irqs.sort(key=lambda x: (x[0], x[1]))
-            best_prio, best_irq_number, best_trigger_conds = runnable_irqs[0]
-
-            # 分支 1: 最高 priority 的 IRQ
+        # 分支 1
+        for trigger_var, trigger_cond in IRQ_triggers[best_IRQ]:
             isr_state = state.copy()
             isr_state.globals["IRQ"] = copy.deepcopy(state.globals["IRQ"])
 
-            isr_state.add_constraints(claripy.Or(*best_trigger_conds))
+            isr_state.add_constraints(trigger_cond)
+            for neg_cond in negated_previous_conds:
+                isr_state.add_constraints(neg_cond)
 
-            # 更新 handled_vars
-            new_handled = set(isr_state.globals["IRQ"][best_irq_number]["handled_vars"])
-            for cond in best_trigger_conds:
-                new_handled.update(cond.variables)
-            isr_state.globals["IRQ"][best_irq_number]["handled_vars"] = frozenset(
-                new_handled
-            )
+            if isr_state.satisfiable():
+                isr_handled_hashes = set(
+                    isr_state.globals["IRQ"][best_IRQ]["handled_hashes"]
+                )
+                isr_handled_hashes.add(hash(trigger_var))
+                isr_state.globals["IRQ"][best_IRQ]["handled_hashes"] = frozenset(
+                    isr_handled_hashes
+                )
 
-            self._excp_entry(isr_state, best_irq_number)
-            simgr_isr = simgr.step_state(isr_state, **kwargs)
+                self._excp_entry(isr_state, best_IRQ)
 
-            # 分支 2: 沒有觸發 IRQ
-            normal_state = state.copy()
+                print(
+                    f"IRQ Injection | pc: {state.regs.pc} -> Branching into IRQ {best_IRQ}"
+                )
 
-            simgr_normal = simgr.step_state(normal_state, **kwargs)
-
-            merged_results = {}
-            for res_dict in (simgr_isr, simgr_normal):
-                for stash_name, states in res_dict.items():
+                new_simgr = simgr.step_state(isr_state, **kwargs)
+                for stash_name, states in new_simgr.items():
                     merged_results.setdefault(stash_name, []).extend(states)
-            return merged_results
 
-        else:
-            return simgr.step_state(state, **kwargs)
+            negated_previous_conds.append(claripy.Not(trigger_cond))
+
+        # 分支 2: 不觸發 IRQ
+        normal_state = state.copy()
+        new_simgr_normal = simgr.step_state(normal_state, **kwargs)
+        for stash_name, states in new_simgr_normal.items():
+            merged_results.setdefault(stash_name, []).extend(states)
+
+        return merged_results
 
     def get_irq_priority(self, state, irq_number):
         return state.solver.eval(
@@ -228,8 +237,6 @@ class InterruptInjector(angr.ExplorationTechnique):
         s.regs.pc = isr_addr
         s.regs.lr = 0xFFFFFFF1 if self.is_in_handler_mode(s) else 0xFFFFFFF9
 
-        print(f"Done stacking IRQ {int_no}")
-
     def _push(self, s, reg):
         s.regs.sp -= 4
         utils.store(s, s.regs.sp, reg)
@@ -252,8 +259,6 @@ class ExcpReturnProcedure(angr.SimProcedure):
             self.state.globals["priority_stack"] = priority_stack
         except IndexError:
             raise Exception("Priority stack underflow")
-
-        print("Done unstacking IRQ")
 
     def _pop(self):
         reg = utils.load(self.state, self.state.regs.sp)
