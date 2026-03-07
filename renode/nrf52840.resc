@@ -4,7 +4,7 @@ machine LoadPlatformDescriptionFromString "dummy: Mocks.DummyI2CSlave @ twi0 0x6
 
 # include @renode.py
 
-sysbus LoadELF @../firmwares/nrf52840/build/protocols/TWI/master/Blocking_Mode/Hardware/nrfx/firmware.elf
+sysbus LoadELF @../firmwares/nrf52840/build/protocols/TWI/master/Non_DMA_Mode/nrfx/firmware.elf
 
 # 啟動 GDB Server
 machine StartGdbServer 3333 true
