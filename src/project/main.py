@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 def init_logging():
     logging.config.dictConfig(config.LOGGING_CONFIG)
 
+    # 關閉 pcode error
+    logging.getLogger("angr.engines.pcode.lifter").setLevel(logging.CRITICAL)
+
 
 def load_specs_class(spec_arg: str | None) -> Type[Any]:
     def load_module_from_file(path: Path) -> ModuleType:

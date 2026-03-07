@@ -94,6 +94,26 @@ class InterruptInjector(angr.ExplorationTechnique):
         self.vector_table_base = vector_table_base
 
     def step_state(self, simgr, state, **kwargs):
+        # 過濾掉不必要做 interrupt 注入的情況
+        try:
+            block = state.project.factory.block(state.addr)
+
+            if (
+                block.vex.jumpkind == "Ijk_Ret"  # function return
+                or (
+                    block.vex.jumpkind == "Ijk_Boring" and block.instructions == 1
+                )  # 單純跳轉
+                or block.vex.jumpkind == "Ijk_Call"  # function call
+                or block.vex.jumpkind.startswith("Ijk_Sys")  # system call
+                or (
+                    block.vex.jumpkind in ("Ijk_NoDecode", "Ijk_MapFail")
+                    or block.instructions == 0
+                )  # 無效或空的 block
+            ):
+                return simgr.step_state(state, **kwargs)
+        except Exception:
+            pass
+
         from project.peripherals.nrf52840.twi import TWI as NRF52840_TWI
 
         IRQ_triggers = {3: []}
@@ -243,6 +263,8 @@ class InterruptInjector(angr.ExplorationTechnique):
 
 
 class ExcpReturnProcedure(angr.SimProcedure):
+    NO_RET = True
+
     def run(self):
         self.state.regs.r0 = self._pop()
         self.state.regs.r1 = self._pop()
@@ -250,7 +272,7 @@ class ExcpReturnProcedure(angr.SimProcedure):
         self.state.regs.r3 = self._pop()
         self.state.regs.r12 = self._pop()
         self.state.regs.lr = self._pop()
-        self.state.regs.pc = self._pop()
+        pc = self._pop()
         self.state.regs.iepsr = self._pop()
 
         priority_stack = self.state.globals.get("priority_stack", []).copy()
@@ -259,6 +281,8 @@ class ExcpReturnProcedure(angr.SimProcedure):
             self.state.globals["priority_stack"] = priority_stack
         except IndexError:
             raise Exception("Priority stack underflow")
+
+        self.successors.add_successor(self.state, pc, claripy.true(), "Ijk_Boring")
 
     def _pop(self):
         reg = utils.load(self.state, self.state.regs.sp)
