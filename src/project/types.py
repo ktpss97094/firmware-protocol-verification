@@ -102,7 +102,7 @@ class InterruptInjector(angr.ExplorationTechnique):
                 block.vex.jumpkind == "Ijk_Ret"  # function return
                 or (
                     block.vex.jumpkind == "Ijk_Boring" and block.instructions == 1
-                )  # 單純跳轉
+                )  # normal jump
                 or block.vex.jumpkind == "Ijk_Call"  # function call
                 or block.vex.jumpkind.startswith("Ijk_Sys")  # system call
                 or (

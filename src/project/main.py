@@ -225,20 +225,12 @@ def main(argv: list[str] | None = None):
         logger.info("Hit the breakpoint. Extracting state")
 
         # e.g., Arm Cortex-M4: https://developer.arm.com/documentation/100166/0001/Programmers-Model/Processor-core-register-summary?lang=en
-        reg_names = list(
-            {idx: name for name, idx in avatar_target._arch.registers.items()}.values()
-        )
-        # avatar2 將一般 register (registers) 與 special register (special_registers) 分開
-        # for special_register_name in avatar_target._arch.special_registers:
-        #     reg_names.append(special_register_name)
-        # Cortex-M 是用 xpsr 不是 cpsr
-        # if avatar_target._arch.cpu_model.startswith("cortex-m"):
-        #     if "cpsr" in reg_names:
-        #         reg_names.remove("cpsr")
-        #         logger.info("Removing cpsr from register list for Arm Cortex-M")
-
         regs = {}
-        for name in reg_names:
+        seen_indices = set()
+        for name, idx in avatar_target._arch.registers.items():
+            if idx in seen_indices:
+                continue
+
             try:
                 val = avatar_target.read_register(name)
             except Exception as e:
@@ -250,6 +242,8 @@ def main(argv: list[str] | None = None):
                 regs[name] = val[0]
             except (TypeError, IndexError):
                 regs[name] = val
+
+            seen_indices.add(idx)
         regs[avatar_target._arch.pc_name] = utils.normalize_code_addr(
             proj,
             regs[avatar_target._arch.pc_name],
