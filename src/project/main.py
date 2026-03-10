@@ -15,6 +15,7 @@ import avatar2
 import project.utils as utils
 from project import config
 from project.types import (
+    BaseCustomGlobals,
     CustomEngine,
     ExcpReturnProcedure,
     InterruptInjector,
@@ -286,7 +287,6 @@ def main(argv: list[str] | None = None):
             # add_options=angr.options.refs,
             #  | {angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY, angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS}  # ZERO_FILL_UNCONSTRAINED_MEMORY 及 ZERO_FILL_UNCONSTRAINED_REGISTERS 為指定當 Angr 讀取 Angr 未初始化的記憶體位置時，回傳 0 而不是 symbolic value
         )
-        state.globals["IRQ"] = {}
 
         for reg_name, value in regs.items():
             if reg_name in state.arch.registers:
@@ -341,6 +341,9 @@ def main(argv: list[str] | None = None):
         else:
             logger.info("Precondition not met, resume avatar2 execution")
 
+        if not hasattr(state, "custom_globals"):
+            BaseCustomGlobals.register_default("custom_globals")
+
     avatar.shutdown()
 
     for opt in {
@@ -358,6 +361,15 @@ def main(argv: list[str] | None = None):
     simgr.use_technique(InterruptInjector(specs, 0x00000000))
 
     # simgr.use_technique(angr.exploration_techniques.DFS())
+    """
+    迴圈處理方式:
+    1. concrete value 的無窮迴圈 (e.g., while(1) 且沒有 break)
+        angr 無法測出來，也極少發生，故用 print 的方式提示
+    2. concrete value 大 loop bound 迴圈 (e.g., while(i < 1000000))
+        不限制 (limit_concrete_loops=False)，避免影響 firmware 實際功能
+    3. symbolic condition 造成的無窮迴圈 (e.g., polling loop，condition 為一等待 hardware set 的 flag)
+        限制在 bound 個迴圈內做 verification，超過就 truncate
+    """
     simgr.use_technique(
         angr.exploration_techniques.LoopSeer(
             cfg=proj.analyses.CFGFast(normalize=True),

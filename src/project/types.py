@@ -119,8 +119,8 @@ class InterruptInjector(angr.ExplorationTechnique):
         IRQ_triggers = {3: []}
 
         # IRQ 3
-        if 3 not in state.globals["IRQ"]:
-            state.globals["IRQ"][3] = {"handled_hashes": frozenset()}
+        if 3 not in state.custom_globals.irq:
+            state.custom_globals.irq[3] = {"handled_hashes": frozenset()}
         intenset = utils.load(
             state,
             self.specs.MEMORY_REGIONS["TWI0"].start + NRF52840_TWI.INTENSET.OFFSET,
@@ -134,7 +134,7 @@ class InterruptInjector(angr.ExplorationTechnique):
             )[NRF52840_TWI.EVENTS_STOPPED.EVENTS_STOPPED]
 
             trigger_cond = events_stopped_bit != 0
-            if hash(events_stopped_bit) not in state.globals["IRQ"][3][
+            if hash(events_stopped_bit) not in state.custom_globals.irq[3][
                 "handled_hashes"
             ] and state.solver.satisfiable(extra_constraints=[trigger_cond]):
                 IRQ_triggers[3].append((events_stopped_bit, trigger_cond))
@@ -146,7 +146,7 @@ class InterruptInjector(angr.ExplorationTechnique):
             )[NRF52840_TWI.EVENTS_RXDREADY.EVENTS_RXDREADY]
 
             trigger_cond = events_rxdready_bit != 0
-            if hash(events_rxdready_bit) not in state.globals["IRQ"][3][
+            if hash(events_rxdready_bit) not in state.custom_globals.irq[3][
                 "handled_hashes"
             ] and state.solver.satisfiable(extra_constraints=[trigger_cond]):
                 IRQ_triggers[3].append((events_rxdready_bit, trigger_cond))
@@ -158,7 +158,7 @@ class InterruptInjector(angr.ExplorationTechnique):
             )[NRF52840_TWI.EVENTS_TXDSENT.EVENTS_TXDSENT]
 
             trigger_cond = events_txdsent_bit != 0
-            if hash(events_txdsent_bit) not in state.globals["IRQ"][3][
+            if hash(events_txdsent_bit) not in state.custom_globals.irq[3][
                 "handled_hashes"
             ] and state.solver.satisfiable(extra_constraints=[trigger_cond]):
                 IRQ_triggers[3].append((events_txdsent_bit, trigger_cond))
@@ -170,7 +170,7 @@ class InterruptInjector(angr.ExplorationTechnique):
             )[NRF52840_TWI.EVENTS_ERROR.EVENTS_ERROR]
 
             trigger_cond = events_error_bit != 0
-            if hash(events_error_bit) not in state.globals["IRQ"][3][
+            if hash(events_error_bit) not in state.custom_globals.irq[3][
                 "handled_hashes"
             ] and state.solver.satisfiable(extra_constraints=[trigger_cond]):
                 IRQ_triggers[3].append((events_error_bit, trigger_cond))
@@ -195,7 +195,6 @@ class InterruptInjector(angr.ExplorationTechnique):
         # 分支 1
         for trigger_var, trigger_cond in IRQ_triggers[best_IRQ]:
             isr_state = state.copy()
-            isr_state.globals["IRQ"] = copy.deepcopy(state.globals["IRQ"])
 
             isr_state.add_constraints(trigger_cond)
             for neg_cond in negated_previous_conds:
@@ -203,10 +202,10 @@ class InterruptInjector(angr.ExplorationTechnique):
 
             if isr_state.satisfiable():
                 isr_handled_hashes = set(
-                    isr_state.globals["IRQ"][best_IRQ]["handled_hashes"]
+                    isr_state.custom_globals.irq[best_IRQ]["handled_hashes"]
                 )
                 isr_handled_hashes.add(hash(trigger_var))
-                isr_state.globals["IRQ"][best_IRQ]["handled_hashes"] = frozenset(
+                isr_state.custom_globals.irq[best_IRQ]["handled_hashes"] = frozenset(
                     isr_handled_hashes
                 )
 
@@ -447,3 +446,22 @@ class BaseSpecs:
 
     def postcondition(self, simgr):
         pass
+
+
+class BaseCustomGlobals(angr.SimStatePlugin):
+    """
+    angr 的 globals 不會自己做 deepcopy，如果有必須要 deepcopy 的 globals (e.g., mutable object) 就要放 custom_globals
+    """
+
+    def __init__(self, irq=None):
+        super().__init__()
+
+        self.irq = {} if irq is None else irq
+
+    @angr.SimStatePlugin.memo
+    def copy(self, memo):
+        new_plugin = super().copy(memo)
+
+        new_plugin.irq = copy.deepcopy(self.irq, memo)
+
+        return new_plugin
