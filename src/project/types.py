@@ -138,6 +138,18 @@ class InterruptInjector(angr.ExplorationTechnique):
                 "handled_hashes"
             ] and state.solver.satisfiable(extra_constraints=[trigger_cond]):
                 IRQ_triggers[3].append((events_stopped_bit, trigger_cond))
+        if state.solver.is_true(intenset[NRF52840_TWI.INTENSET.RXDREADY] == 1):
+            events_rxdready_bit = utils.load(
+                state,
+                self.specs.MEMORY_REGIONS["TWI0"].start
+                + NRF52840_TWI.EVENTS_RXDREADY.OFFSET,
+            )[NRF52840_TWI.EVENTS_RXDREADY.EVENTS_RXDREADY]
+
+            trigger_cond = events_rxdready_bit != 0
+            if hash(events_rxdready_bit) not in state.globals["IRQ"][3][
+                "handled_hashes"
+            ] and state.solver.satisfiable(extra_constraints=[trigger_cond]):
+                IRQ_triggers[3].append((events_rxdready_bit, trigger_cond))
         if state.solver.is_true(intenset[NRF52840_TWI.INTENSET.TXDSENT] == 1):
             events_txdsent_bit = utils.load(
                 state,
