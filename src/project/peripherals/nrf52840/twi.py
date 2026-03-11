@@ -5,6 +5,8 @@ from project.types import MMIOMemoryRegion
 
 
 class TWI(MMIOMemoryRegion):
+    IRQ_NUMBER = 3
+
     class TASKS_STARTRX:
         OFFSET = 0x000
 
@@ -265,3 +267,49 @@ class TWI(MMIOMemoryRegion):
         utils.store(state, self.start + TWI.EVENTS_RXDREADY.OFFSET, new_events_rxdready)
         utils.store(state, self.start + TWI.EVENTS_TXDSENT.OFFSET, new_events_txdsent)
         utils.store(state, self.start + TWI.EVENTS_ERROR.OFFSET, new_events_error)
+
+    def get_pending_irqs(self, state):
+        """
+        回傳此 peripheral 目前可能觸發的 IRQ
+        格式: {irq_number: [(trigger_var, trigger_cond), ...]}
+        """
+
+        if self.IRQ_NUMBER not in state.custom_globals.irq:
+            state.custom_globals.irq[self.IRQ_NUMBER] = {"handled_hashes": frozenset()}
+
+        triggers = []
+        intenset = utils.load(state, self.start + TWI.INTENSET.OFFSET)
+
+        event_checks = [
+            (
+                TWI.INTENSET.STOPPED,
+                TWI.EVENTS_STOPPED.OFFSET,
+                TWI.EVENTS_STOPPED.EVENTS_STOPPED,
+            ),
+            (
+                TWI.INTENSET.RXDREADY,
+                TWI.EVENTS_RXDREADY.OFFSET,
+                TWI.EVENTS_RXDREADY.EVENTS_RXDREADY,
+            ),
+            (
+                TWI.INTENSET.TXDSENT,
+                TWI.EVENTS_TXDSENT.OFFSET,
+                TWI.EVENTS_TXDSENT.EVENTS_TXDSENT,
+            ),
+            (
+                TWI.INTENSET.ERROR,
+                TWI.EVENTS_ERROR.OFFSET,
+                TWI.EVENTS_ERROR.EVENTS_ERROR,
+            ),
+        ]
+
+        for intenset_bit, event_offset, event_bit in event_checks:
+            if state.solver.is_true(intenset[intenset_bit] == 1):
+                event_val = utils.load(state, self.start + event_offset)[event_bit]
+                trigger_cond = event_val != 0
+                if hash(event_val) not in state.custom_globals.irq[self.IRQ_NUMBER][
+                    "handled_hashes"
+                ] and state.solver.satisfiable(extra_constraints=[trigger_cond]):
+                    triggers.append((event_val, trigger_cond))
+
+        return {self.IRQ_NUMBER: triggers} if triggers else {}

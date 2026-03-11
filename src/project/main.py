@@ -17,8 +17,6 @@ from project import config
 from project.types import (
     BaseCustomGlobals,
     CustomEngine,
-    ExcpReturnProcedure,
-    InterruptInjector,
     MMIOMemoryRegion,
     VariableMemoryRegion,
 )
@@ -325,14 +323,6 @@ def main(argv: list[str] | None = None):
                     utils.get_func_arg(state, specs.API_PROTOTYPE, index)
                 )
 
-        # ARMv7-M Architecture Reference Manual B1.5.8 Exception return behavior
-        proj.hook(
-            0xFFFFFFF1, ExcpReturnProcedure()
-        )  # return to handler mode, main stack, basic frame type
-        proj.hook(
-            0xFFFFFFF9, ExcpReturnProcedure()
-        )  # return to thread mode, main stack, basic frame type
-        # TODO: return stack 為 process stack pointer (PSP) 時、frame type 為 extended 時
         specs.init_inspect(state)
 
         if specs.precondition(state):
@@ -358,7 +348,7 @@ def main(argv: list[str] | None = None):
 
     simgr = proj.factory.simgr(state)
     simgr.stashes["violated"] = []
-    simgr.use_technique(InterruptInjector(specs, 0x00000000))
+    specs.CPU.setup(proj, specs, simgr)
 
     # simgr.use_technique(angr.exploration_techniques.DFS())
     """
