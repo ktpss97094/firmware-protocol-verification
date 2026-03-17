@@ -16,3 +16,6 @@
 [submodule "firmwares/nrf52840"]
 	path = firmwares/nrf52840
 	url = https://git.epl.tw/nrf52840-case-study/firmware-examples.git
+[submodule "evaluation/uEmu"]
+	path = evaluation/uEmu
+	url = https://github.com/ktpss97094/uEmu.git

@@ -114,7 +114,7 @@ class Specs(BaseSpecs):
         #     action=utils.stop_and_debug,
         # )
 
-    def precondition(self, state):
+    def init_input(self, state):
         usartn_status = utils.load(
             state, self.MEMORY_REGIONS["USART0"].start + USART.USARTn_STATUS.OFFSET
         )
@@ -132,7 +132,7 @@ class Specs(BaseSpecs):
 
         return True
 
-    def postcondition(self, simgr):
+    def final(self, simgr):
         # [Spec (Part 2)]
         for state in simgr.found:
             delta_time = state.globals.get("delay", 0) - state.globals.get(

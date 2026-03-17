@@ -164,12 +164,12 @@ class Specs(BaseSpecs):
         #     action=utils.stop_and_debug,
         # )
 
-    def precondition(self, state):
+    def init_input(self, state):
         # utils.set_func_args_symbolic(state, self.API_PROTOTYPE, {3: (0, 3)})
 
         return True
 
-    def postcondition(self, simgr):
+    def final(self, simgr):
         # [Spec 3 (Part 2)]
         for state in simgr.found:
             if state.globals.get("spec3_violation_pending", False):
