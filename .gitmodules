@@ -19,3 +19,6 @@
 [submodule "evaluation/uEmu"]
 	path = evaluation/uEmu
 	url = https://github.com/ktpss97094/uEmu.git
+[submodule "evaluation/automated-firmware-verification-using-firmware-hardware-interaction-patterns"]
+	path = evaluation/automated-firmware-verification-using-firmware-hardware-interaction-patterns
+	url = https://git.epl.tw/DavidPeng/automated-firmware-verification-using-firmware-hardware-interaction-patterns.git
