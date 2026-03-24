@@ -130,8 +130,6 @@ class Specs(BaseSpecs):
             new_usartn_status,
         )
 
-        return True
-
     def final(self, simgr):
         # [Spec (Part 2)]
         for state in simgr.found:

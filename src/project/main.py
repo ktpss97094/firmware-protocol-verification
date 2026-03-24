@@ -16,6 +16,7 @@ import project.utils as utils
 from project import config
 from project.types import (
     BaseCustomGlobals,
+    BaseSpecs,
     CustomEngine,
     MMIOMemoryRegion,
     VariableMemoryRegion,
@@ -174,18 +175,7 @@ def main(argv: list[str] | None = None):
         engine=CustomEngine,
     )
 
-    specs = Specs(proj)
-
-    # 過濾出需要處理的 memory regions
-    map_memory_regions = {}
-    for memory_region_name, memory_region in specs.MEMORY_REGIONS.items():
-        if isinstance(memory_region, VariableMemoryRegion):
-            logger.info(
-                f"Skip transfer memory region {memory_region_name}: belongs to class VariableMemoryRegion"
-            )
-            continue
-
-        map_memory_regions[memory_region_name] = memory_region
+    specs: BaseSpecs = Specs(proj)
 
     """
     avatar2 部分
@@ -206,6 +196,17 @@ def main(argv: list[str] | None = None):
             additional_args=["-f", Specs.OPENOCD_TARGET_SCRIPT_PATH],
         )
 
+    # 過濾出需要處理的 memory regions
+    map_memory_regions = {}
+    for memory_region_name, memory_region in specs.MEMORY_REGIONS.items():
+        if isinstance(memory_region, VariableMemoryRegion):
+            logger.info(
+                f"Skip transfer memory region {memory_region_name}: belongs to class VariableMemoryRegion"
+            )
+            continue
+
+        map_memory_regions[memory_region_name] = memory_region
+
     for memory_region in map_memory_regions.values():
         avatar.add_memory_range(
             memory_region.start,
@@ -217,125 +218,69 @@ def main(argv: list[str] | None = None):
     avatar.init_targets()
 
     avatar_target.set_breakpoint(specs.BEGIN_ADDR)
+    avatar_target.cont()
+    avatar_target.wait()
+    logger.info("Hit the breakpoint. Extracting state")
 
-    while True:
-        avatar_target.cont()
-        avatar_target.wait()
-        logger.info("Hit the breakpoint. Extracting state")
+    # e.g., Arm Cortex-M4: https://developer.arm.com/documentation/100166/0001/Programmers-Model/Processor-core-register-summary?lang=en
+    regs = {}
+    seen_indices = set()
+    for name, idx in avatar_target._arch.registers.items():
+        if idx in seen_indices:
+            continue
 
-        # e.g., Arm Cortex-M4: https://developer.arm.com/documentation/100166/0001/Programmers-Model/Processor-core-register-summary?lang=en
-        regs = {}
-        seen_indices = set()
-        for name, idx in avatar_target._arch.registers.items():
-            if idx in seen_indices:
-                continue
+        try:
+            val = avatar_target.read_register(name)
+        except Exception as e:
+            logger.warning(f"avatar2 read register {name} exception: {e}")
+            continue
 
-            try:
-                val = avatar_target.read_register(name)
-            except Exception as e:
-                logger.warning(f"avatar2 read register {name} exception: {e}")
-                continue
+        # 讀取 special_registers 時，read_register() 可能會回傳 list 或一般的 int
+        try:
+            regs[name] = val[0]
+        except (TypeError, IndexError):
+            regs[name] = val
 
-            # 讀取 special_registers 時，read_register() 可能會回傳 list 或一般的 int
-            try:
-                regs[name] = val[0]
-            except (TypeError, IndexError):
-                regs[name] = val
+        seen_indices.add(idx)
+    regs[avatar_target._arch.pc_name] = utils.normalize_code_addr(
+        proj,
+        regs[avatar_target._arch.pc_name],
+        target=avatar_target,
+        is_executing_pc=True,
+    )
 
-            seen_indices.add(idx)
-        regs[avatar_target._arch.pc_name] = utils.normalize_code_addr(
-            proj,
-            regs[avatar_target._arch.pc_name],
-            target=avatar_target,
-            is_executing_pc=True,
-        )
+    dumps = {}
+    for memory_region_name, memory_region in map_memory_regions.items():
+        if memory_region.transfer is False:
+            logger.info(
+                f"Skip transfer memory region {memory_region_name}: transfer argument is set to False"
+            )
+            continue
 
-        dumps = {}
-        for memory_region_name, memory_region in map_memory_regions.items():
-            if memory_region.transfer is False:
-                logger.info(
-                    f"Skip transfer memory region {memory_region_name}: transfer argument is set to False"
+        try:
+            if Specs.USE_RENODE and isinstance(memory_region, MMIOMemoryRegion):
+                dumps[memory_region_name] = read_MMIO_renode(
+                    avatar_target, memory_region.physical_addr, memory_region.size
                 )
-                continue
-
-            try:
-                if Specs.USE_RENODE and isinstance(memory_region, MMIOMemoryRegion):
-                    dumps[memory_region_name] = read_MMIO_renode(
-                        avatar_target, memory_region.physical_addr, memory_region.size
-                    )
-                else:
-                    dumps[memory_region_name] = avatar_target.read_memory(
-                        memory_region.physical_addr,
-                        size=proj.arch.bytes,
-                        num_words=memory_region.size // proj.arch.bytes,
-                        raw=True,
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"avatar2 read memory {memory_region_name} exception: {e}"
+            else:
+                dumps[memory_region_name] = avatar_target.read_memory(
+                    memory_region.physical_addr,
+                    size=proj.arch.bytes,
+                    num_words=memory_region.size // proj.arch.bytes,
+                    raw=True,
                 )
+        except Exception as e:
+            logger.warning(f"avatar2 read memory {memory_region_name} exception: {e}")
 
-        """
-        angr 部分
-        """
-        logger.info("Setting up angr state")
-
-        state = proj.factory.blank_state(
-            addr=regs[avatar_target._arch.pc_name]
-            # add_options=angr.options.refs,
-            #  | {angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY, angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS}  # ZERO_FILL_UNCONSTRAINED_MEMORY 及 ZERO_FILL_UNCONSTRAINED_REGISTERS 為指定當 Angr 讀取 Angr 未初始化的記憶體位置時，回傳 0 而不是 symbolic value
-        )
-
-        for reg_name, value in regs.items():
-            if reg_name in state.arch.registers:
-                setattr(state.regs, reg_name, value)
-            elif reg_name == "xpsr":  # xpsr 在 angr 不是單一個 register，需要手動處理
-                if "flags" in state.arch.registers:
-                    state.regs.flags = value & 0xF8000000
-                    if "cc_op" in state.arch.registers:
-                        state.regs.cc_op = 0
-                if "iepsr" in state.arch.registers:
-                    state.regs.iepsr = (value & 0x1FF) | (value & (1 << 24))
-                if "itstate" in state.arch.registers:
-                    it_high = (value >> 10) & 0x3F
-                    it_low = (value >> 25) & 0x3
-                    state.regs.itstate = (it_high << 2) | it_low
-
-        for memory_region_name in dumps:
-            try:
-                state.memory.store(
-                    map_memory_regions[memory_region_name].start,
-                    dumps[memory_region_name],
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to transfer {memory_region_name} at {map_memory_regions[memory_region_name].start:#x} to angr: {e}"
-                )
-
-        # with open("specs/STM32/I2C/Blocking_Mode/Hardware/state.pkl", "wb") as f:
-        #     pickle.dump(state, f)
-        #     exit(0)
-
-        # 計算 API 參數
-        if specs.API_PROTOTYPE is not None:
-            for index in range(len(specs.API_PROTOTYPE.args)):
-                specs.API_ARGS.append(
-                    utils.get_func_arg(state, specs.API_PROTOTYPE, index)
-                )
-
-        specs.init_inspect(state)
-
-        if specs.precondition(state):
-            logger.info("Precondition met")
-            break
-        else:
-            logger.info("Precondition not met, resume avatar2 execution")
-
-        if not hasattr(state, "custom_globals"):
-            BaseCustomGlobals.register_default("custom_globals")
-
-    avatar.shutdown()
-
+    """
+    angr 部分
+    """
+    logger.info("Setting up angr state")
+    state = proj.factory.blank_state(
+        addr=regs[avatar_target._arch.pc_name]
+        # add_options=angr.options.refs,
+        #  | {angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY, angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS}  # ZERO_FILL_UNCONSTRAINED_MEMORY 及 ZERO_FILL_UNCONSTRAINED_REGISTERS 為指定當 Angr 讀取 Angr 未初始化的記憶體位置時，回傳 0 而不是 symbolic value
+    )
     for opt in {
         angr.options.TRACK_MEMORY_ACTIONS,
         angr.options.TRACK_REGISTER_ACTIONS,
@@ -345,6 +290,47 @@ def main(argv: list[str] | None = None):
     }:
         if opt in state.options:
             state.options.remove(opt)
+
+    for reg_name, value in regs.items():
+        if reg_name in state.arch.registers:
+            setattr(state.regs, reg_name, value)
+        elif reg_name == "xpsr":  # xpsr 在 angr 不是單一個 register，需要手動處理
+            if "flags" in state.arch.registers:
+                state.regs.flags = value & 0xF8000000
+                if "cc_op" in state.arch.registers:
+                    state.regs.cc_op = 0
+            if "iepsr" in state.arch.registers:
+                state.regs.iepsr = (value & 0x1FF) | (value & (1 << 24))
+            if "itstate" in state.arch.registers:
+                it_high = (value >> 10) & 0x3F
+                it_low = (value >> 25) & 0x3
+                state.regs.itstate = (it_high << 2) | it_low
+
+    for memory_region_name in dumps:
+        try:
+            state.memory.store(
+                map_memory_regions[memory_region_name].start, dumps[memory_region_name]
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to transfer {memory_region_name} at {map_memory_regions[memory_region_name].start:#x} to angr: {e}"
+            )
+
+    # with open("specs/STM32/I2C/Blocking_Mode/Hardware/state.pkl", "wb") as f:
+    #     pickle.dump(state, f)
+    #     exit(0)
+
+    # 計算 API 參數
+    if specs.API_PROTOTYPE is not None:
+        for index in range(len(specs.API_PROTOTYPE.args)):
+            specs.API_ARGS.append(utils.get_func_arg(state, specs.API_PROTOTYPE, index))
+
+    specs.init_inspect(state)
+    specs.init_input(state)
+    if not hasattr(state, "custom_globals"):
+        BaseCustomGlobals.register_default("custom_globals")
+
+    avatar.shutdown()
 
     simgr = proj.factory.simgr(state)
     simgr.stashes["violated"] = []
@@ -413,7 +399,7 @@ def main(argv: list[str] | None = None):
 
             print("-" * 30)
     elif len(simgr.found) > 0 or len(simgr.stashes["violated"]) > 0:
-        specs.postcondition(simgr)
+        specs.final(simgr)
 
         if len(simgr.stashes["violated"]) > 0:
             print(

@@ -1,18 +1,22 @@
 """
-I2C Master Clock Stretching Spec
+read_back_verification
+blocking mode API 不會檢查 ARLO，interrupt/DMA mode 會檢查
+1. Trigger: write DR
+    Condition: ARLO 為 0
+2. Trigger: write STOP
+    Condition: ARLO 為 0
+3. Trigger: write START
+    Condition: ARLO 為 0
 
-1. clear ADDR bit 前，若 ADDR bit 為 0，則違反
-2. write DR 前，若 TxE bit 為 0 且 SB bit 非必為 1 且 ADD10 非必為 1，則違反
-    * SB bit 必為 1 或 ADD10 必為 1 時表示 address phase，TxE 不會 set
-3. Precondition: Size > 0
-    set STOP bit 前，若 BTF bit 為 0 且回傳 HAL_OK，則違反
-        * Size == 0 時只會送 address，BTF 不會 set
-        * HAL_OK: 不考慮 acknowledge failure、timeout 等造成的 set STOP bit
+ARLO set 之後 MSL 會自動 clear
 
-Symbolic Variables:
-    uwTick
-    SR1 (SB, ADD10 (10-bit 時), AF, ADDR, TxE, BTF)
-    CR1 STOP
+Symbolic:
+uwTick
+SR1 (SB, ADD10 (10-bit 時), AF, ADDR, TxE, BTF)
+CR1 STOP
+
+Interrupt:
+ITEVFEN, (ITBUFEN), ITERREN
 """
 
 import angr
@@ -166,8 +170,7 @@ class Specs(BaseSpecs):
 
     def init_input(self, state):
         # utils.set_func_args_symbolic(state, self.API_PROTOTYPE, {3: (0, 3)})
-
-        return True
+        pass
 
     def final(self, simgr):
         # [Spec 3 (Part 2)]

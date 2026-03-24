@@ -236,8 +236,11 @@ class BaseSpecs:
         for memory_region in self.MEMORY_REGIONS.values():
             memory_region.set_symbolic_mask(self.SYMBOLIC_MASKS)
 
+    def init_inspect(self, state):
+        pass
+
     def init_input(self, state):
-        return True
+        pass
 
     def final(self, simgr):
         pass
