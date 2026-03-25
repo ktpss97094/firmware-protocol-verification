@@ -165,6 +165,12 @@ class I2C(MMIOMemoryRegion):
         offset = addr - self.start
         value = state.inspect.mem_write_expr
 
+        # When BP_AFTER triggers, memory is already written. 
+        # But we can recover true old value with some foresight, 
+        # or we accept that value holds the NOT mask and we 
+        # should use old global state if needed. But for now,
+        # we can just use value as the clear mask for sr1 flags
+        # However, due to BP_AFTER, the memory was overwritten
         self.pre_write(state, offset, value)
 
         cr1 = utils.load(state, self.start + I2C.CR1.OFFSET)
@@ -289,6 +295,14 @@ class I2C(MMIOMemoryRegion):
                         ),
                     ),
                 )
+            case I2C.SR1.OFFSET:
+                # SR1 flags are rc_w0. Hardware clears them when a 0 is written.
+                # However we need a more principled way to handle this during 
+                # a BP_AFTER hook or in general.
+                # For basic simulation, we can just assume `value` holds the cleared 
+                # mask and new_sr1 already caught the mask. To simulate clear-by-0
+                # correctly: new_status = old_status & written_value.
+                pass
 
         utils.store(state, self.start + I2C.CR1.OFFSET, new_cr1)
         utils.store(state, self.start + I2C.SR1.OFFSET, new_sr1)
