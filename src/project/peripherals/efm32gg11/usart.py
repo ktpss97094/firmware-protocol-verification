@@ -13,8 +13,8 @@ class USART(MMIOMemoryRegion):
     class USARTn_TXDATA:
         OFFSET = 0x034
 
-    def read(self, state, offset):
-        self.pre_read(state, offset)
+    def post_read(self, state, offset):
+        self.post_read_spec(state, offset)
 
         usartn_status = utils.load(state, self.start + USART.USARTn_STATUS.OFFSET)
         new_usartn_status = usartn_status
@@ -38,8 +38,8 @@ class USART(MMIOMemoryRegion):
 
         utils.store(state, self.start + USART.USARTn_STATUS.OFFSET, new_usartn_status)
 
-    def write(self, state, offset, value):
-        self.pre_write(state, offset, value)
+    def post_write(self, state, offset, value):
+        self.post_write_spec(state, offset, value)
 
         usartn_status = utils.load(state, self.start + USART.USARTn_STATUS.OFFSET)
         new_usartn_status = usartn_status

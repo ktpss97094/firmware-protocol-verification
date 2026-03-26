@@ -1,4 +1,6 @@
 import copy
+from dataclasses import dataclass
+from enum import Enum, auto
 
 import angr
 import archinfo
@@ -10,8 +12,6 @@ from angr.engines.vex import (
     SuperFastpathMixin,
     TrackActionsMixin,
 )
-
-from project import utils
 
 
 class CustomEngine(
@@ -87,6 +87,27 @@ class CustomLoopLimiter(angr.ExplorationTechnique):
         return simgr.step(stash=stash, **kwargs)
 
 
+class AccessType(Enum):
+    RW = auto()
+    R = auto()
+    RC_W0 = auto()  # read or clear on write 0
+
+
+@dataclass(frozen=True)
+class BitField:
+    bit: int
+    access_type: AccessType
+    size: int = 1
+
+    @property
+    def mask(self) -> int:
+        return ((1 << self.size) - 1) << self.bit
+
+
+class BaseRegister:
+    OFFSET = -1
+
+
 class MemoryRegion:
     def __init__(
         self,
@@ -103,73 +124,23 @@ class MemoryRegion:
         self.physical_addr = physical_addr if physical_addr is not None else start
         self.transfer = transfer
         self.name = name
-        self.symbolic_masks = {}
 
-    # def __init_subclass__(cls, *args, **kwargs):
-    #     super().__init_subclass__(*args, **kwargs)
-
-    #     # --- read() wrapper ---
-    #     if getattr(cls, "_read_is_wrapped", False) or "read" not in cls.__dict__:
-    #         return
-    #     orig_read = cls.__dict__["read"]
-
-    #     def wrapped_read(self, state):
-    #         addr = state.solver.eval(state.inspect.mem_read_address)
-    #         offset = addr - self.start
-    #         orig_read(self, state, offset)
-    #         # if isinstance(self, MMIOMemoryRegion):
-    #         #     self._apply_symbolic(state, offset)
-
-    #     cls.read = wrapped_read
-    #     cls._read_is_wrapped = True
-
-    #     # --- write() wrapper ---
-    #     if getattr(cls, "_write_is_wrapped", False) or "write" not in cls.__dict__:
-    #         return
-    #     orig_write = cls.__dict__["write"]
-
-    #     def wrapped_write(self, state):
-    #         addr = state.solver.eval(state.inspect.mem_write_address)
-    #         offset = addr - self.start
-    #         value = state.inspect.mem_write_expr
-    #         orig_write(self, state, offset, value)
-
-    #     cls.write = wrapped_write
-    #     cls._write_is_wrapped = True
-
-    def _apply_symbolic(self, state, offset):
-        symbolic_mask = self.symbolic_masks.get(self.start + offset, 0)
-        if symbolic_mask == 0:
-            return
-
-        prev_val = utils.load(state, self.start + offset)
-        for i in range(state.arch.bits):
-            mask = symbolic_mask & (1 << i)
-            # 如果值是 symbolic，且有被 constraint 過，就不再新增一個新的 symbolic variable
-            if (
-                mask
-                and prev_val[i].symbolic
-                and not (
-                    state.solver.min(prev_val[i]) == 0
-                    and state.solver.max(prev_val[i]) == ((1 << prev_val[i].size()) - 1)
-                )
-            ):
-                symbolic_mask &= ~(1 << i)
-
-        state.inspect.mem_read_expr = utils.set_symbolic(
-            state, self.start + offset, symbolic_mask, f"{self.name}_{offset:#x}"
-        )
-
-    def pre_read(self, state, offset):
-        pass
-
-    def pre_write(self, state, offset, value):
-        pass
-
-    def read(self, state):
+    def pre_read(self, state):
         raise NotImplementedError("Call abstract method")
 
-    def write(self, state):
+    def pre_write(self, state):
+        raise NotImplementedError("Call abstract method")
+
+    def post_read_spec(self, state, offset):
+        pass
+
+    def post_write_spec(self, state, offset, value):
+        pass
+
+    def post_read(self, state):
+        raise NotImplementedError("Call abstract method")
+
+    def post_write(self, state):
         raise NotImplementedError("Call abstract method")
 
     def in_region_read(self, state):
@@ -186,18 +157,55 @@ class MemoryRegion:
         except Exception:
             return False
 
-    def set_symbolic_mask(self, global_symbolic_mask):
-        """
-        只挑出屬於此 memory region 的 symbolic mask
-        """
-
-        for addr, mask in global_symbolic_mask.items():
-            if self.start <= addr < (self.start + self.size):
-                self.symbolic_masks[addr] = mask
-
 
 class MMIOMemoryRegion(MemoryRegion):
-    pass
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self._write_masks = {}  # {offset: (MASK_RW, MASK_R, MASK_RC_W0)}
+
+        for name in dir(self.__class__):
+            value = getattr(self.__class__, name)
+
+            if (
+                isinstance(value, type)
+                and issubclass(value, BaseRegister)
+                and getattr(value, "OFFSET") != -1
+            ):
+                mask_rw, mask_r, mask_rc_w0 = 0, 0, 0
+
+                for _, attr_val in vars(value).items():
+                    if isinstance(attr_val, BitField):
+                        if attr_val.access_type == AccessType.RW:
+                            mask_rw |= attr_val.mask
+                        elif attr_val.access_type == AccessType.R:
+                            mask_r |= attr_val.mask
+                        elif attr_val.access_type == AccessType.RC_W0:
+                            mask_rc_w0 |= attr_val.mask
+
+                self._write_masks[value.OFFSET] = (mask_rw, mask_r, mask_rc_w0)
+
+    def mask_write(self, offset, orig_val, write_val):
+        masks = self._write_masks.get(offset)
+        if masks:
+            mask_rw, mask_r, mask_rc_w0 = masks
+            defined_mask = mask_rw | mask_r | mask_rc_w0
+            undefined_mask = ~defined_mask
+
+            return (
+                (write_val & mask_rw)
+                | (orig_val & mask_r)
+                | (orig_val & write_val & mask_rc_w0)
+                | (write_val & undefined_mask)
+            )
+        return write_val
+
+    def get_pending_irqs(self, state):
+        """
+        回傳此 peripheral 目前可能觸發的 IRQ
+        格式: {irq_number: [(trigger_var, trigger_cond), ...]}
+        """
+        return {}
 
 
 class VariableMemoryRegion(MemoryRegion):
@@ -219,8 +227,6 @@ class BaseSpecs:
 
         self._define_specs()
 
-        self._apply_symbolic_masks()
-
     @classmethod
     def _detect_cpu(cls):
         if isinstance(cls.ANGR_ARCH, archinfo.ArchARMCortexM):
@@ -231,10 +237,6 @@ class BaseSpecs:
 
     def _define_specs(self):
         pass
-
-    def _apply_symbolic_masks(self):
-        for memory_region in self.MEMORY_REGIONS.values():
-            memory_region.set_symbolic_mask(self.SYMBOLIC_MASKS)
 
     def init_inspect(self, state):
         pass

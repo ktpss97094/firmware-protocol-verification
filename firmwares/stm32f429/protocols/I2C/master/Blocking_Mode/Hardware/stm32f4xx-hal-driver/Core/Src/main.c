@@ -93,8 +93,6 @@ int main(void)
   /* USER CODE BEGIN 2 */
   uint8_t data[3] = {0x75, 0x76, 0x33};
   HAL_StatusTypeDef result = HAL_I2C_Master_Transmit(&hi2c1, 0x68 << 1, data, 2, 5);
-//   uint8_t data = 0x75;
-//   HAL_StatusTypeDef result = HAL_I2C_Master_Transmit(&hi2c1, 0x68 << 1, &data, 1, 25);
   SYMBOL_MARKER("END_SYMBOLIC_EXECUTION");
   /* USER CODE END 2 */
 

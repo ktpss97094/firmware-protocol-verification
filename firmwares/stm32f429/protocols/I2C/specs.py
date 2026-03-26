@@ -1,0 +1,211 @@
+"""
+read_back_verification
+1. Trigger: write CR1 START
+    Condition: ARLO 為 0
+2. Trigger: write DR
+    Condition: ARLO 為 0
+3. Trigger: write CR1 STOP
+    Condition: ARLO 為 0
+
+TODO: receiver
+ARLO set 時 RxNE 不會 set
+
+Symbolic:
+uwTick
+SR1 (SB, ADD10 (10-bit 時), AF, ADDR, TxE, BTF)
+CR1 STOP
+
+Interrupt:
+ITEVFEN, (ITBUFEN), ITERREN
+"""
+
+from enum import Enum, auto
+
+import angr
+import archinfo
+import avatar2
+
+from project import config, utils
+from project.cores.cortex_m.systick import SysTickVariable
+from project.peripherals.stm32f4.i2c import I2C as STM32F4_I2C
+from project.types import BaseSpecs, MemoryRegion
+
+
+class Mode(Enum):
+    BLOCKING = auto()
+    INTERRUPT = auto()
+    DMA = auto()
+
+
+MODE = Mode.BLOCKING
+
+
+class I2C(STM32F4_I2C):
+    def post_write_spec(self, state, offset, value):
+        sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
+
+        match offset:
+            case I2C.I2C_CR1.OFFSET:
+                if state.solver.eval(state.regs.pc) == 0x80089EF:
+                    pass
+
+                if state.solver.is_true(value[I2C.I2C_CR1.START.bit] == 1):
+                    # --- Spec 1 ---
+                    if state.solver.satisfiable(
+                        extra_constraints=[sr1[I2C.I2C_SR1.ARLO.bit] == 1]
+                    ):
+                        print(
+                            f"read_back_verification (spec 1) violation (pc: {state.regs.pc})"
+                        )
+                        state.globals["violation"] = True
+
+                if state.solver.is_true(value[I2C.I2C_CR1.STOP.bit] == 1):
+                    # --- Spec 3 ---
+                    if state.solver.satisfiable(
+                        extra_constraints=[sr1[I2C.I2C_SR1.ARLO.bit] == 1]
+                    ):
+                        print(
+                            f"read_back_verification (spec 3) violation (pc: {state.regs.pc})"
+                        )
+                        state.globals["violation"] = True
+
+            case I2C.I2C_DR.OFFSET:
+                # --- Spec 2 ---
+                if state.solver.satisfiable(
+                    extra_constraints=[sr1[I2C.I2C_SR1.ARLO.bit] == 1]
+                ):
+                    print(
+                        f"read_back_verification (spec 2) violation (pc: {state.regs.pc})"
+                    )
+                    state.globals["violation"] = True
+
+
+class Specs(BaseSpecs):
+    # --- Paths ---
+    match MODE:
+        case Mode.BLOCKING:
+            FIRMWARE_PATH = str(
+                config.PROJECT_ROOT
+                / "firmwares/stm32f429/build/protocols/I2C/master/Blocking_Mode/Hardware/stm32f4xx-hal-driver/firmware.elf"
+            )
+        case Mode.INTERRUPT:
+            FIRMWARE_PATH = str(
+                config.PROJECT_ROOT
+                / "firmwares/stm32f429/build/protocols/I2C/master/Interrupt_Mode/stm32f4xx-hal-driver/firmware.elf"
+            )
+    OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"
+    OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"
+
+    # --- Architecture ---
+    AVATAR_ARCH = avatar2.archs.arm.ARM_CORTEX_M3
+    ANGR_ARCH = archinfo.ArchARMCortexM(endness=archinfo.Endness.LE)
+
+    # --- Renode ---
+    USE_RENODE = False
+
+    # --- Constants ---
+    """
+    Warning:
+        不要繼承 IntEnum，因為 claripy 可能因為還沒支援 Bit Vector 與 IntEnum 的值比較，故會與 integer 行為有差異
+    """
+
+    def _define_specs(self):
+        self.MEMORY_REGIONS = {
+            "RAM": MemoryRegion(start=0x20000000, size=0x30000, name="RAM"),
+            "CCMRAM": MemoryRegion(start=0x10000000, size=0x10000, name="CCMRAM"),
+            "FLASH": MemoryRegion(
+                start=0x08000000, size=0x200000, name="FLASH", transfer=False
+            ),
+            "VECTOR_TABLE_ALIAS": MemoryRegion(
+                start=0x00000000,
+                size=0x400,
+                name="VECTOR_TABLE_ALIAS",
+                physical_addr=0x08000000,
+            ),
+            "I2C1": I2C(start=0x40005400, size=0x400, name="I2C1"),
+            "NVIC": MemoryRegion(start=0xE000E000, size=0x1000, name="NVIC"),
+            "SysTickVariable": SysTickVariable(
+                start=utils.get_symbol_addr(self.proj, "uwTick", is_variable=True),
+                size=0x4,
+                name="SysTickVariable",
+            ),
+        }
+
+        match MODE:
+            case Mode.BLOCKING:
+                self.BEGIN_ADDR = utils.get_symbol_addr(
+                    self.proj, "HAL_I2C_Master_Transmit", is_variable=False
+                )
+
+                # self.API_PROTOTYPE = SimTypeFunction(
+                #     args=[
+                #         SimTypePointer(SimStruct({}, name="I2C_HandleTypeDef")),
+                #         SimTypeShort(signed=False),
+                #         SimTypePointer(SimTypeChar(signed=False)),
+                #         SimTypeShort(signed=False),
+                #         SimTypeInt(signed=False),
+                #     ],
+                #     returnty=SimTypeInt(signed=False),
+                # )
+            case Mode.INTERRUPT:
+                self.BEGIN_ADDR = utils.get_symbol_addr(
+                    self.proj, "HAL_I2C_Master_Transmit_IT", is_variable=False
+                )
+
+                # self.API_PROTOTYPE = SimTypeFunction(
+                #     args=[
+                #         SimTypePointer(SimStruct({}, name="I2C_HandleTypeDef")),
+                #         SimTypeShort(signed=False),
+                #         SimTypePointer(SimTypeChar(signed=False)),
+                #         SimTypeShort(signed=False),
+                #     ],
+                #     returnty=SimTypeInt(signed=False),
+                # )
+        self.END_ADDRS = [
+            utils.get_symbol_addr(
+                self.proj, "END_SYMBOLIC_EXECUTION", is_variable=False
+            )
+            # utils.get_symbol_addr(
+            #     self.proj, "DEBUG_SYMBOLIC_EXECUTION", is_variable=False
+            # ),
+        ]
+        # self.DEBUG_FUNC_ADDR = utils.get_symbol_addr(
+        #     self.proj, "SYMBOL_FUNCTION", is_variable=False
+        # )
+
+    def init_inspect(self, state):
+        state.inspect.b(
+            "mem_read",
+            when=angr.BP_AFTER,
+            condition=self.MEMORY_REGIONS["I2C1"].in_region_read,
+            action=self.MEMORY_REGIONS["I2C1"].post_read,
+        )
+
+        state.inspect.b(
+            "mem_write",
+            when=angr.BP_BEFORE,
+            condition=self.MEMORY_REGIONS["I2C1"].in_region_write,
+            action=self.MEMORY_REGIONS["I2C1"].pre_write,
+        )
+
+        state.inspect.b(
+            "mem_write",
+            when=angr.BP_AFTER,
+            condition=self.MEMORY_REGIONS["I2C1"].in_region_write,
+            action=self.MEMORY_REGIONS["I2C1"].post_write,
+        )
+
+        state.inspect.b(
+            "mem_read",
+            when=angr.BP_BEFORE,
+            condition=self.MEMORY_REGIONS["SysTickVariable"].in_region_read,
+            action=self.MEMORY_REGIONS["SysTickVariable"].post_read,
+        )
+
+        # state.inspect.b(
+        #     "instruction", instruction=self.DEBUG_FUNC_ADDR, action=utils.stop_and_debug
+        # )
+
+    def init_input(self, state):
+        # utils.set_func_args_symbolic(state, self.API_PROTOTYPE, {3: (0, 3)})
+        pass

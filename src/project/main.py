@@ -336,7 +336,7 @@ def main(argv: list[str] | None = None):
     simgr.stashes["violated"] = []
     specs.CPU.setup(proj, specs, simgr)
 
-    # simgr.use_technique(angr.exploration_techniques.DFS())
+    simgr.use_technique(angr.exploration_techniques.DFS())
     """
     迴圈處理方式:
     1. concrete value 的無窮迴圈 (e.g., while(1) 且沒有 break)

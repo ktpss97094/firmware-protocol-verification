@@ -17,7 +17,7 @@ from project.types import BaseSpecs, MemoryRegion
 
 
 class USART(EFM32GG11_USART):
-    def pre_write(self, state, offset, value):
+    def post_write_spec(self, state, offset, value):
         char = chr(state.solver.eval(value))
         delta_time = state.globals.get("delay", 0) - state.globals.get(
             "last_tx_time", 0

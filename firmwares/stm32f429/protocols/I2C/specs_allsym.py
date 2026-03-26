@@ -1,22 +1,7 @@
 """
-read_back_verification
-blocking mode API 不會檢查 ARLO，interrupt/DMA mode 會檢查
-1. Trigger: write DR
-    Condition: ARLO 為 0
-2. Trigger: write STOP
-    Condition: ARLO 為 0
-3. Trigger: write START
-    Condition: ARLO 為 0
+每次 read 都回傳一個完整的 symbolic，可解析出可到達 Spec trigger 的路徑的所有 branch 會使用的硬體會改變的變數
 
-ARLO set 之後 MSL 會自動 clear
-
-Symbolic:
-uwTick
-SR1 (SB, ADD10 (10-bit 時), AF, ADDR, TxE, BTF)
-CR1 STOP
-
-Interrupt:
-ITEVFEN, (ITBUFEN), ITERREN
+可解析出: SB, AF, ADDR, TxE, BTF, uwTick
 """
 
 import angr
@@ -32,25 +17,70 @@ from angr.sim_type import (
 )
 
 from project import config, utils
-from project.cores.cortex_m.systick import SysTickVariable
-from project.peripherals.stm32f4.i2c import I2C as STM32F4_I2C
-from project.types import BaseSpecs, MemoryRegion
+from project.types import (
+    BaseSpecs,
+    MemoryRegion,
+    MMIOMemoryRegion,
+    VariableMemoryRegion,
+)
 
 
-class I2C(STM32F4_I2C):
-    def pre_read(self, state, offset):
+class I2C(MMIOMemoryRegion):
+    class CR1:
+        OFFSET = 0x00
+
+        STOP = 9
+        START = 8
+
+    class CR2:
+        OFFSET = 0x04
+
+        ITEVTEN = 9
+
+    class DR:
+        OFFSET = 0x10
+
+    class SR1:
+        OFFSET = 0x14
+
+        AF = 10
+        TXE = 7
+        ADD10 = 3
+        BTF = 2
+        ADDR = 1
+        SB = 0
+
+    class SR2:
+        OFFSET = 0x18
+
+        TRA = 2
+        BUSY = 1
+
+    def post_read(self, state, offset):
         sr1 = utils.load(state, self.start + I2C.SR1.OFFSET)
 
         match offset:
+            case I2C.SR1.OFFSET:
+                utils.store(
+                    state,
+                    self.start + I2C.SR1.OFFSET,
+                    utils.generate_symbolic(state, f"{self.name}_SR1"),
+                )
+
             case I2C.SR2.OFFSET:
                 # --- Spec 1 ---
                 if state.globals.get(
                     f"{self.name}_SR1_read", False
                 ) and state.solver.satisfiable(extra_constraints=[sr1[1] == 0]):
-                    print(f"Spec 1 violation (pc: {state.regs.pc})")
-                    state.globals["violation"] = True
+                    print(state.solver.constraints)
 
-    def pre_write(self, state, offset, value):
+                utils.store(
+                    state,
+                    self.start + I2C.SR2.OFFSET,
+                    utils.generate_symbolic(state, f"{self.name}_SR2"),
+                )
+
+    def post_write(self, state, offset, value):
         sr1 = utils.load(state, self.start + I2C.SR1.OFFSET)
 
         match offset:
@@ -59,15 +89,21 @@ class I2C(STM32F4_I2C):
                 if not state.solver.satisfiable(
                     extra_constraints=[value[9] == 0]
                 ) and state.solver.satisfiable(extra_constraints=[sr1[2] == 0]):
-                    state.globals["spec3_violation_pending"] = True
+                    print(state.solver.constraints)
 
             case I2C.DR.OFFSET:
                 # --- Spec 2 ---
                 if state.solver.satisfiable(
                     extra_constraints=[sr1[7] == 0, sr1[0] != 1, sr1[3] != 1]
                 ):
-                    print(f"Spec 2 violation (pc: {state.regs.pc})")
-                    state.globals["violation"] = True
+                    print(state.solver.constraints)
+
+
+class SysTickVariable(VariableMemoryRegion):
+    def post_read(self, state, offset):
+        utils.store(
+            state, self.start + offset, utils.generate_symbolic(state, self.name)
+        )
 
 
 class Specs(BaseSpecs):
@@ -87,12 +123,12 @@ class Specs(BaseSpecs):
     USE_RENODE = False
 
     # --- Constants ---
-    """
-    Warning:
-        不要繼承 IntEnum，因為 claripy 可能因為還沒支援 Bit Vector 與 IntEnum 的值比較，故會與 integer 行為有差異
-    """
-
     class HAL_StatusTypeDef:
+        """
+        .. warning::
+            不要繼承 IntEnum，因為 claripy 可能因為還沒支援 Bit Vector 與 IntEnum 的值比較，故會與 integer 行為有差異
+        """
+
         HAL_OK = 0x00
         HAL_ERROR = 0x01
         HAL_BUSY = 0x02
@@ -117,6 +153,14 @@ class Specs(BaseSpecs):
                 size=0x4,
                 name="SysTickVariable",
             ),
+        }
+
+        self.SYMBOLIC_MASKS = {
+            0x40005414: 0b00000000000000000000010010001111,
+            0x40005418: 0b00000000000000000000000000000010,
+            self.MEMORY_REGIONS[
+                "SysTickVariable"
+            ].start: 0b11111111111111111111111111111111,
         }
 
         self.BEGIN_ADDR = utils.get_symbol_addr(
@@ -170,7 +214,19 @@ class Specs(BaseSpecs):
 
     def init_input(self, state):
         # utils.set_func_args_symbolic(state, self.API_PROTOTYPE, {3: (0, 3)})
-        pass
+
+        # utils.store(
+        #     state,
+        #     self.MEMORY_REGIONS["I2C1"].start + I2C.SR2.OFFSET,
+        #     utils.symbolic_bit(
+        #         state,
+        #         utils.load(state, self.MEMORY_REGIONS["I2C1"].start + I2C.SR2.OFFSET),
+        #         I2C.SR2.BUSY,
+        #         f"I2C1_{I2C.SR2.OFFSET:#x}_BUSY",
+        #     ),
+        # )
+
+        return True
 
     def final(self, simgr):
         # [Spec 3 (Part 2)]

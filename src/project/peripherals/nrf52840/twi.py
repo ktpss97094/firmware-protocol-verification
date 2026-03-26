@@ -5,7 +5,7 @@ from project.types import MMIOMemoryRegion
 
 
 class TWI(MMIOMemoryRegion):
-    IRQ_NUMBER = 3
+    IRQ_NUMBERS = [3]
 
     class TASKS_STARTRX:
         OFFSET = 0x000
@@ -54,11 +54,11 @@ class TWI(MMIOMemoryRegion):
     class TXD:
         OFFSET = 0x51C
 
-    def read(self, state):
+    def post_read(self, state):
         addr = state.solver.eval(state.inspect.mem_read_address)
         offset = addr - self.start
 
-        self.pre_read(state, offset)
+        self.post_read_spec(state, offset)
 
         tasks_stop = utils.load(state, self.start + TWI.TASKS_STOP.OFFSET)
         events_stopped = utils.load(state, self.start + TWI.EVENTS_STOPPED.OFFSET)
@@ -181,12 +181,12 @@ class TWI(MMIOMemoryRegion):
         utils.store(state, self.start + TWI.EVENTS_ERROR.OFFSET, new_events_error)
         utils.store(state, self.start + TWI.RXD.OFFSET, new_rxd)
 
-    def write(self, state):
+    def post_write(self, state):
         addr = state.solver.eval(state.inspect.mem_write_address)
         offset = addr - self.start
         value = state.inspect.mem_write_expr
 
-        self.pre_write(state, offset, value)
+        self.post_write_spec(state, offset, value)
 
         events_stopped = utils.load(state, self.start + TWI.EVENTS_STOPPED.OFFSET)
         events_rxdready = utils.load(state, self.start + TWI.EVENTS_RXDREADY.OFFSET)
@@ -269,13 +269,9 @@ class TWI(MMIOMemoryRegion):
         utils.store(state, self.start + TWI.EVENTS_ERROR.OFFSET, new_events_error)
 
     def get_pending_irqs(self, state):
-        """
-        回傳此 peripheral 目前可能觸發的 IRQ
-        格式: {irq_number: [(trigger_var, trigger_cond), ...]}
-        """
-
-        if self.IRQ_NUMBER not in state.custom_globals.irq:
-            state.custom_globals.irq[self.IRQ_NUMBER] = {"handled_hashes": frozenset()}
+        for irq_num in self.IRQ_NUMBERS:
+            if irq_num not in state.custom_globals.irq:
+                state.custom_globals.irq[irq_num] = {"handled_hashes": frozenset()}
 
         triggers = []
         intenset = utils.load(state, self.start + TWI.INTENSET.OFFSET)
@@ -307,9 +303,11 @@ class TWI(MMIOMemoryRegion):
             if state.solver.is_true(intenset[intenset_bit] == 1):
                 event_val = utils.load(state, self.start + event_offset)[event_bit]
                 trigger_cond = event_val != 0
-                if hash(event_val) not in state.custom_globals.irq[self.IRQ_NUMBER][
-                    "handled_hashes"
-                ] and state.solver.satisfiable(extra_constraints=[trigger_cond]):
+                if all(
+                    hash(event_val)
+                    not in state.custom_globals.irq[irq_num]["handled_hashes"]
+                    for irq_num in self.IRQ_NUMBERS
+                ) and state.solver.satisfiable(extra_constraints=[trigger_cond]):
                     triggers.append((event_val, trigger_cond))
 
-        return {self.IRQ_NUMBER: triggers} if triggers else {}
+        return {irq_num: triggers for irq_num in self.IRQ_NUMBERS} if triggers else {}

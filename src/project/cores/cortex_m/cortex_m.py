@@ -174,7 +174,9 @@ class CortexM:
                     for stash_name, states in new_simgr.items():
                         merged_results.setdefault(stash_name, []).extend(states)
 
-                negated_previous_conds.append(claripy.Not(trigger_cond))
+                # trigger_cond 為 claripy True 時表示 trigger_var 為 concrete value，不需要儲存 not trigger_cond
+                if not state.solver.is_true(trigger_cond):
+                    negated_previous_conds.append(claripy.Not(trigger_cond))
 
             # 分支 2: 不觸發 IRQ
             normal_state = state.copy()

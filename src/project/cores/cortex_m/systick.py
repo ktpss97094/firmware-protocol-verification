@@ -3,7 +3,7 @@ from project.types import VariableMemoryRegion
 
 
 class SysTickVariable(VariableMemoryRegion):
-    def read(self, state):
+    def post_read(self, state):
         addr = state.solver.eval(state.inspect.mem_read_address)
 
         origin_val = utils.load(state, addr)
