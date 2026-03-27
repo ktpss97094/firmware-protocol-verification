@@ -8,10 +8,10 @@ class SysTickVariable(VariableMemoryRegion):
 
         origin_val = utils.load(state, addr)
 
-        # new_val = utils.generate_symbolic(state, self.name)
-        # state.add_constraints(new_val > origin_val)
-        delta = 1
+        new_val = utils.generate_symbolic(state, self.name)
+        state.add_constraints(new_val > origin_val)
 
-        new_val = origin_val + delta
+        # delta = 1
+        # new_val = origin_val + delta
 
         utils.store(state, addr, new_val)

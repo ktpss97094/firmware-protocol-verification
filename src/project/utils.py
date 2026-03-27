@@ -2,6 +2,7 @@ import logging
 
 import archinfo
 import claripy
+from angr.sim_type import SimTypeFunction
 
 logger = logging.getLogger(__name__)
 
@@ -88,24 +89,32 @@ def get_func_ret(state, prototype):
     return state.project.factory.cc().return_val(prototype.returnty).get_value(state)
 
 
-def set_func_args_symbolic(state, prototype, constraints: dict):
+def set_func_args_symbolic(state, prototype: SimTypeFunction, constraints: dict):
     """
     處理純數值的參數。無法設定 struct 內的 member 或是 pointer 指向的值
 
     Args:
-        constraints: dict[function 參數 index] = (constraint low, constraint high)
+        constraints: dict[function 參數 index] = (constraint low, constraint high)。如果不指定 value 則無 constraint
     """
 
     arg_locs = state.project.factory.cc().arg_locs(prototype)
 
-    for index, (lo, hi) in constraints.items():
+    for index, constraint_range in constraints.items():
         if index < 0 or index >= len(arg_locs):
             raise ValueError(
                 f"Arg index {index} out of range for arg_num={len(arg_locs)}"
             )
 
-        new_val = generate_symbolic(state, f"FuncArgs[{index}]")
-        state.add_constraints(new_val >= lo, new_val <= hi)
+        new_val = generate_symbolic(
+            state,
+            f"FuncArgs[{index}]",
+            size=prototype.args[index].with_arch(state.arch).size,
+        )
+
+        if constraint_range is not None:
+            state.add_constraints(
+                new_val >= constraint_range[0], new_val <= constraint_range[1]
+            )
 
         arg_locs[index].set_value(state, new_val)
 

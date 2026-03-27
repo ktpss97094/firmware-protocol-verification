@@ -24,6 +24,15 @@ from enum import Enum, auto
 import angr
 import archinfo
 import avatar2
+import claripy
+from angr.sim_type import (
+    SimStruct,
+    SimTypeChar,
+    SimTypeFunction,
+    SimTypeInt,
+    SimTypePointer,
+    SimTypeShort,
+)
 
 from project import config, utils
 from project.cores.cortex_m.systick import SysTickVariable
@@ -46,9 +55,6 @@ class I2C(STM32F4_I2C):
 
         match offset:
             case I2C.I2C_CR1.OFFSET:
-                if state.solver.eval(state.regs.pc) == 0x80089EF:
-                    pass
-
                 if state.solver.is_true(value[I2C.I2C_CR1.START.bit] == 1):
                     # --- Spec 1 ---
                     if state.solver.satisfiable(
@@ -137,30 +143,30 @@ class Specs(BaseSpecs):
                     self.proj, "HAL_I2C_Master_Transmit", is_variable=False
                 )
 
-                # self.API_PROTOTYPE = SimTypeFunction(
-                #     args=[
-                #         SimTypePointer(SimStruct({}, name="I2C_HandleTypeDef")),
-                #         SimTypeShort(signed=False),
-                #         SimTypePointer(SimTypeChar(signed=False)),
-                #         SimTypeShort(signed=False),
-                #         SimTypeInt(signed=False),
-                #     ],
-                #     returnty=SimTypeInt(signed=False),
-                # )
+                self.API_PROTOTYPE = SimTypeFunction(
+                    args=[
+                        SimTypePointer(SimStruct({}, name="I2C_HandleTypeDef")),
+                        SimTypeShort(signed=False),
+                        SimTypePointer(SimTypeChar(signed=False)),
+                        SimTypeShort(signed=False),
+                        SimTypeInt(signed=False),
+                    ],
+                    returnty=SimTypeInt(signed=False),
+                )
             case Mode.INTERRUPT:
                 self.BEGIN_ADDR = utils.get_symbol_addr(
                     self.proj, "HAL_I2C_Master_Transmit_IT", is_variable=False
                 )
 
-                # self.API_PROTOTYPE = SimTypeFunction(
-                #     args=[
-                #         SimTypePointer(SimStruct({}, name="I2C_HandleTypeDef")),
-                #         SimTypeShort(signed=False),
-                #         SimTypePointer(SimTypeChar(signed=False)),
-                #         SimTypeShort(signed=False),
-                #     ],
-                #     returnty=SimTypeInt(signed=False),
-                # )
+                self.API_PROTOTYPE = SimTypeFunction(
+                    args=[
+                        SimTypePointer(SimStruct({}, name="I2C_HandleTypeDef")),
+                        SimTypeShort(signed=False),
+                        SimTypePointer(SimTypeChar(signed=False)),
+                        SimTypeShort(signed=False),
+                    ],
+                    returnty=SimTypeInt(signed=False),
+                )
         self.END_ADDRS = [
             utils.get_symbol_addr(
                 self.proj, "END_SYMBOLIC_EXECUTION", is_variable=False
@@ -207,5 +213,22 @@ class Specs(BaseSpecs):
         # )
 
     def init_input(self, state):
-        # utils.set_func_args_symbolic(state, self.API_PROTOTYPE, {3: (0, 3)})
-        pass
+        size_range = (0, 3)  # 測 size = 0 ~ 3
+
+        # address, size symbolic
+        utils.set_func_args_symbolic(
+            state, self.API_PROTOTYPE, {1: None, 3: size_range}
+        )
+
+        # data symbolic
+        element_size_bits = self.API_PROTOTYPE.args[2].pts_to.size
+        element_size_bytes = element_size_bits // 8
+        for idx in range(*size_range):
+            utils.store(
+                state,
+                self.API_ARGS[2] + (idx * element_size_bytes),
+                claripy.BVS(f"data[{idx}]", element_size_bits),
+                size=element_size_bytes,
+            )
+
+        # BLOCKING mode timeout 維持 concrete 避免 state explosion
