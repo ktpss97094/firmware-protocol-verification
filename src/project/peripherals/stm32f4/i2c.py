@@ -82,24 +82,30 @@ class I2C(MMIOMemoryRegion):
             case I2C.I2C_SR1.OFFSET:
                 state.globals[f"{self.name}_SR1_read"] = True
 
-                if sr1[I2C.I2C_SR1.ADDR.bit].symbolic and state.solver.satisfiable(
-                    extra_constraints=[sr1[I2C.I2C_SR1.ADDR.bit] != 1]
-                ):
+                if sr1[I2C.I2C_SR1.ADDR.bit].symbolic:
                     new_sr1 = utils.replace_bit(
                         new_sr1,
                         I2C.I2C_SR1.ADDR.bit,
-                        utils.generate_symbolic(
-                            state, f"{self.name}_{I2C.I2C_SR1.OFFSET:#x}_ADDR", size=1
+                        claripy.If(
+                            sr1[I2C.I2C_SR1.ADDR.bit] == 1,
+                            sr1[I2C.I2C_SR1.ADDR.bit],
+                            utils.generate_symbolic(
+                                state,
+                                f"{self.name}_{I2C.I2C_SR1.OFFSET:#x}_ADDR",
+                                size=1,
+                            ),
                         ),
                     )
-                if sr1[I2C.I2C_SR1.SB.bit].symbolic and state.solver.satisfiable(
-                    extra_constraints=[sr1[I2C.I2C_SR1.SB.bit] != 1]
-                ):
+                if sr1[I2C.I2C_SR1.SB.bit].symbolic:
                     new_sr1 = utils.replace_bit(
                         new_sr1,
                         I2C.I2C_SR1.SB.bit,
-                        utils.generate_symbolic(
-                            state, f"{self.name}_{I2C.I2C_SR1.OFFSET:#x}_SB", size=1
+                        claripy.If(
+                            sr1[I2C.I2C_SR1.SB.bit] == 1,
+                            sr1[I2C.I2C_SR1.SB.bit],
+                            utils.generate_symbolic(
+                                state, f"{self.name}_{I2C.I2C_SR1.OFFSET:#x}_SB", size=1
+                            ),
                         ),
                     )
 
@@ -123,29 +129,33 @@ class I2C(MMIOMemoryRegion):
                             sr1[I2C.I2C_SR1.BTF.bit],
                         ),
                     )
-                if sr1[I2C.I2C_SR1.ADD10.bit].symbolic and state.solver.satisfiable(
-                    extra_constraints=[sr1[I2C.I2C_SR1.ADD10.bit] != 1]
-                ):
+                if sr1[I2C.I2C_SR1.ADD10.bit].symbolic:
                     new_sr1 = utils.replace_bit(
                         new_sr1,
                         I2C.I2C_SR1.ADD10.bit,
-                        utils.generate_symbolic(
-                            state, f"{self.name}_{I2C.I2C_SR1.OFFSET:#x}_ADD10", size=1
+                        claripy.If(
+                            sr1[I2C.I2C_SR1.ADD10.bit] == 1,
+                            sr1[I2C.I2C_SR1.ADD10.bit],
+                            utils.generate_symbolic(
+                                state,
+                                f"{self.name}_{I2C.I2C_SR1.OFFSET:#x}_ADD10",
+                                size=1,
+                            ),
                         ),
                     )
-                if sr1[I2C.I2C_SR1.AF.bit].symbolic and state.solver.satisfiable(
-                    extra_constraints=[sr1[I2C.I2C_SR1.AF.bit] != 1]
-                ):
+                if sr1[I2C.I2C_SR1.AF.bit].symbolic:
                     new_sr1 = utils.replace_bit(
                         new_sr1,
                         I2C.I2C_SR1.AF.bit,
-                        utils.generate_symbolic(
-                            state, f"{self.name}_{I2C.I2C_SR1.OFFSET:#x}_AF", size=1
+                        claripy.If(
+                            sr1[I2C.I2C_SR1.AF.bit] == 1,
+                            sr1[I2C.I2C_SR1.AF.bit],
+                            utils.generate_symbolic(
+                                state, f"{self.name}_{I2C.I2C_SR1.OFFSET:#x}_AF", size=1
+                            ),
                         ),
                     )
-                if sr1[I2C.I2C_SR1.ARLO.bit].symbolic and state.solver.satisfiable(
-                    extra_constraints=[sr1[I2C.I2C_SR1.ARLO.bit] != 1]
-                ):
+                if sr1[I2C.I2C_SR1.ARLO.bit].symbolic:
                     new_sr1 = utils.replace_bit(
                         new_sr1,
                         I2C.I2C_SR1.ARLO.bit,
@@ -163,24 +173,32 @@ class I2C(MMIOMemoryRegion):
                             ),
                         ),
                     )
-                if sr1[I2C.I2C_SR1.TXE.bit].symbolic and state.solver.satisfiable(
-                    extra_constraints=[sr1[I2C.I2C_SR1.TXE.bit] != 1]
-                ):
+                if sr1[I2C.I2C_SR1.TXE.bit].symbolic:
                     new_sr1 = utils.replace_bit(
                         new_sr1,
                         I2C.I2C_SR1.TXE.bit,
-                        utils.generate_symbolic(
-                            state, f"{self.name}_{I2C.I2C_SR1.OFFSET:#x}_TxE", size=1
+                        claripy.If(
+                            sr1[I2C.I2C_SR1.TXE.bit] == 1,
+                            sr1[I2C.I2C_SR1.TXE.bit],
+                            utils.generate_symbolic(
+                                state,
+                                f"{self.name}_{I2C.I2C_SR1.OFFSET:#x}_TxE",
+                                size=1,
+                            ),
                         ),
                     )
-                if sr1[I2C.I2C_SR1.BTF.bit].symbolic and state.solver.satisfiable(
-                    extra_constraints=[sr1[I2C.I2C_SR1.BTF.bit] != 1]
-                ):
+                if sr1[I2C.I2C_SR1.BTF.bit].symbolic:
                     new_sr1 = utils.replace_bit(
                         new_sr1,
                         I2C.I2C_SR1.BTF.bit,
-                        utils.generate_symbolic(
-                            state, f"{self.name}_{I2C.I2C_SR1.OFFSET:#x}_BTF", size=1
+                        claripy.If(
+                            sr1[I2C.I2C_SR1.BTF.bit] == 1,
+                            sr1[I2C.I2C_SR1.BTF.bit],
+                            utils.generate_symbolic(
+                                state,
+                                f"{self.name}_{I2C.I2C_SR1.OFFSET:#x}_BTF",
+                                size=1,
+                            ),
                         ),
                     )
 

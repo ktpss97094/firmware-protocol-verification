@@ -3,7 +3,7 @@ project(firmware C ASM)
 
 set(LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib")
 
-set(MCU_FLAGS "-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard")
+set(MCU_FLAGS "-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard --specs=nosys.specs")
 set(CMAKE_C_FLAGS "${OPT_FLAGS} ${MCU_FLAGS} -Wall -g -DSTM32F429xx -DUSE_HAL_DRIVER")
 set(CMAKE_ASM_FLAGS "${MCU_FLAGS}")
 
