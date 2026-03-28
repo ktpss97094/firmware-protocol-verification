@@ -7,16 +7,10 @@ read_back_verification
 3. Trigger: write CR1 STOP
     Condition: ARLO 為 0
 
-TODO: receiver
-ARLO set 時 RxNE 不會 set
-
 Symbolic:
 uwTick
-SR1 (SB, ADD10 (10-bit 時), AF, ADDR, TxE, BTF)
+SR1 (START, SB, ADD10 (10-bit 時), AF, ARLO, ADDR, TxE, BTF)
 CR1 STOP
-
-Interrupt:
-ITEVFEN, (ITBUFEN), ITERREN
 """
 
 from enum import Enum, auto
