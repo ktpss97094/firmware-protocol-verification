@@ -8,11 +8,10 @@ set(CMAKE_C_FLAGS "${OPT_FLAGS} ${MCU_FLAGS} -Wall -g -DSTM32F429xx -DUSE_HAL_DR
 set(CMAKE_ASM_FLAGS "${MCU_FLAGS}")
 
 function(add_firmware TARGET_NAME)
+    file(GLOB CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/*.c")
     file(GLOB HAL_SOURCES "${LIB_DIR}/stm32f4xx-hal-driver/Src/*.c")
     list(FILTER HAL_SOURCES EXCLUDE REGEX ".*template\\.c$")
     set(STARTUP_SOURCE "${LIB_DIR}/cmsis-device-f4/Source/Templates/gcc/startup_stm32f429xx.s")
-    file(GLOB CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/*.c")
-    list(FILTER CORE_SOURCES EXCLUDE REGEX "contract.*\\.c$")
 
     add_executable(${TARGET_NAME}
         ${HAL_SOURCES}
