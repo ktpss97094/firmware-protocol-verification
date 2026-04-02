@@ -106,6 +106,10 @@ class Specs(BaseSpecs):
             action=self.MEMORY_REGIONS["USART0"].write,
         )
 
+        """
+        FIXME: hook function 等會造成把裡面使用的指令全部被取代，有可能會覆蓋掉 interrupt point 的檢查 (例如 global variable read 前)
+        例如這裡 hook Delay 的話，裡面 read msTicks (global variable) 就會被覆蓋。只要有 interrupt 有可能會改變 msTicks，就可能會漏掉驗證可能的路徑
+        """
         self.proj.hook_symbol("Delay", Delay())
 
         # state.inspect.b(

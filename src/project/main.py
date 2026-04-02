@@ -334,7 +334,7 @@ def main(argv: list[str] | None = None):
 
     simgr = proj.factory.simgr(state)
     simgr.stashes["violated"] = []
-    specs.CPU.setup(proj, specs, simgr)
+    cfg = specs.CPU.setup(proj, specs, simgr, state)
 
     # simgr.use_technique(angr.exploration_techniques.DFS())
     """
@@ -348,7 +348,7 @@ def main(argv: list[str] | None = None):
     """
     simgr.use_technique(
         angr.exploration_techniques.LoopSeer(
-            cfg=proj.analyses.CFGFast(normalize=True),
+            cfg=cfg,
             bound=15,
             limit_concrete_loops=False,
             bound_reached=LoopSeer_bound_reached_handler,
@@ -360,7 +360,6 @@ def main(argv: list[str] | None = None):
     # )
 
     simgr.explore(
-        find=specs.END_ADDRS,
         num_find=float("inf"),
         step_func=explore_step_func,
         # num_inst=1,

@@ -230,7 +230,7 @@ class BaseSpecs:
     @classmethod
     def _detect_cpu(cls):
         if isinstance(cls.ANGR_ARCH, archinfo.ArchARMCortexM):
-            from project.cores.cortex_m.cortex_m import CortexM
+            from project.cores.arm.cortex_m.cortex_m import CortexM
 
             return CortexM()
         return None

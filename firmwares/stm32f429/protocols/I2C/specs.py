@@ -29,7 +29,7 @@ from angr.sim_type import (
 )
 
 from project import config, utils
-from project.cores.cortex_m.systick import SysTickVariable
+from project.cores.arm.cortex_m.systick import SysTickVariable
 from project.peripherals.stm32f4.i2c import I2C as STM32F4_I2C
 from project.types import BaseSpecs, MemoryRegion
 
@@ -123,7 +123,9 @@ class Specs(BaseSpecs):
                 physical_addr=0x08000000,
             ),
             "I2C1": I2C(start=0x40005400, size=0x400, name="I2C1"),
-            "NVIC": MemoryRegion(start=0xE000E000, size=0x1000, name="NVIC"),
+            "NVIC": MemoryRegion(
+                start=0xE000E000, size=0x1000, name="NVIC"
+            ),  # FIXME: MMIOMemoryRegion?
             "SysTickVariable": SysTickVariable(
                 start=utils.get_symbol_addr(self.proj, "uwTick", is_variable=True),
                 size=0x4,
