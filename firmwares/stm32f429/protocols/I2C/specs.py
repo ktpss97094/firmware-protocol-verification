@@ -209,7 +209,9 @@ class Specs(BaseSpecs):
         # )
 
     def init_input(self, state):
-        size_range = (0, 65535)  # 測 size = 0 ~ 3
+        size_range = (0, 2**16 - 1)
+        # size_range = (0, 3)
+        timeout_range = None
 
         # address, size symbolic
         utils.set_func_args_symbolic(
@@ -227,4 +229,9 @@ class Specs(BaseSpecs):
                 size=element_size_bytes,
             )
 
-        # BLOCKING mode timeout 維持 concrete 避免 state explosion
+        # timeout symbolic
+        match MODE:
+            case Mode.BLOCKING:
+                utils.set_func_args_symbolic(
+                    state, self.API_PROTOTYPE, {4: timeout_range}
+                )
