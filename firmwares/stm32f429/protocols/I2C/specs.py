@@ -40,7 +40,7 @@ class Mode(Enum):
     DMA = auto()
 
 
-MODE = Mode.INTERRUPT
+MODE = Mode.BLOCKING
 
 
 class I2C(STM32F4_I2C):
@@ -209,7 +209,7 @@ class Specs(BaseSpecs):
         # )
 
     def init_input(self, state):
-        size_range = (0, 3)  # 測 size = 0 ~ 3
+        size_range = (0, 65535)  # 測 size = 0 ~ 3
 
         # address, size symbolic
         utils.set_func_args_symbolic(
