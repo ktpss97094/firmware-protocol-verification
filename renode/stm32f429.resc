@@ -1,11 +1,8 @@
 mach create
-# machine LoadPlatformDescription @platforms/boards/stm32f4_discovery-kit.repl
 machine LoadPlatformDescription @platforms/cpus/stm32f429.repl
 machine LoadPlatformDescriptionFromString "dummy: Mocks.DummyI2CSlave @ i2c1 0x68"
 
-# include @renode.py
-
-sysbus LoadELF @../firmwares/stm32f429/protocols/I2C/master/Blocking_Mode/Hardware/stm32f4xx-hal-driver/build/clockstretching.elf
+sysbus LoadELF @../firmwares/stm32f429/build/protocols/I2C/master/Blocking_Mode/Hardware/stm32f4xx-hal-driver/firmware.elf
 
 # 啟動 GDB Server
 machine StartGdbServer 3333 true

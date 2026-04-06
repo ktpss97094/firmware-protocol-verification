@@ -13,3 +13,9 @@
 ```sh
 uv sync
 ```
+
+## Verify
+
+```sh
+uv run verify <spec file>
+```
