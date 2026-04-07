@@ -334,7 +334,7 @@ def main(argv: list[str] | None = None):
 
     simgr = proj.factory.simgr(state)
     simgr.stashes["violated"] = []
-    cfg = specs.CPU.setup(proj, specs, simgr, state)
+    cfg = specs.CPU.setup(proj, specs, simgr)
 
     # simgr.use_technique(angr.exploration_techniques.DFS())
     """

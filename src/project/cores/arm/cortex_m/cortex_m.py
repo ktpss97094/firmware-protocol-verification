@@ -4,13 +4,12 @@ import claripy
 from project import utils
 from project.cores.arm.arm import ARM
 from project.cores.arm.cortex_m.nvic import NVIC
-from project.types import MMIOMemoryRegion
 
 
 class CortexM(ARM):
     VTOR_ADDR = None
 
-    def setup(self, proj, specs, simgr, state):
+    def setup(self, proj, specs, simgr):
         # ARMv7-M Architecture Reference Manual B1.5.8 Exception return behavior
         proj.hook(
             0xFFFFFFF1, self._ExcpReturnProcedure(cpu=self)
@@ -20,9 +19,12 @@ class CortexM(ARM):
         )  # return to thread mode, main stack, basic frame
         # TODO: return stack 為 process stack pointer (PSP) 時、frame type 為 extended 時
 
-        cfg = proj.analyses.CFGFast(normalize=True)
+        # 要在所有的 hook 都完成後才執行
+        cfg = proj.analyses.CFGFast(normalize=True, cross_references=True)
 
-        interrupt_checkpoints = self.get_interrupt_checkpoints(proj, cfg)
+        interrupt_checkpoints = self.get_interrupt_checkpoints(
+            proj, cfg, specs.get_MMIOMemoryRegions()
+        )
         interrupt_checkpoints[0xFFFFFFF1] = "inst_after"
         interrupt_checkpoints[0xFFFFFFF9] = "inst_after"
         for end_addr in specs.END_ADDRS:
@@ -151,12 +153,11 @@ class CortexM(ARM):
             for current_state in states_to_check:
                 # 收集所有 peripheral 的 pending IRQ
                 IRQ_triggers = {}
-                for region in self.specs.MEMORY_REGIONS.values():
-                    if isinstance(region, MMIOMemoryRegion):
-                        for irq_number, triggers in region.get_pending_irqs(
-                            current_state
-                        ).items():
-                            IRQ_triggers.setdefault(irq_number, []).extend(triggers)
+                for region in self.specs.get_MMIOMemoryRegions():
+                    for irq_number, triggers in region.get_pending_irqs(
+                        current_state
+                    ).items():
+                        IRQ_triggers.setdefault(irq_number, []).extend(triggers)
 
                 if all(not v for v in IRQ_triggers.values()):
                     if is_end_addr:

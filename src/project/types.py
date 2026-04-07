@@ -143,17 +143,18 @@ class MemoryRegion:
     def post_write(self, state):
         raise NotImplementedError("Call abstract method")
 
+    def in_region(self, addr):
+        return self.start <= addr < self.start + self.size
+
     def in_region_read(self, state):
         try:
-            addr = state.solver.eval(state.inspect.mem_read_address)
-            return self.start <= addr < self.start + self.size
+            return self.in_region(state.solver.eval(state.inspect.mem_read_address))
         except Exception:
             return False
 
     def in_region_write(self, state):
         try:
-            addr = state.solver.eval(state.inspect.mem_write_address)
-            return self.start <= addr < self.start + self.size
+            return self.in_region(state.solver.eval(state.inspect.mem_write_address))
         except Exception:
             return False
 
@@ -246,6 +247,11 @@ class BaseSpecs:
 
     def final(self, simgr):
         pass
+
+    def get_MMIOMemoryRegions(self):
+        return [
+            r for r in self.MEMORY_REGIONS.values() if isinstance(r, MMIOMemoryRegion)
+        ]
 
 
 class BaseCustomGlobals(angr.SimStatePlugin):

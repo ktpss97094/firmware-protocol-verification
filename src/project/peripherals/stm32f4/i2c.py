@@ -5,6 +5,9 @@ import claripy
 from project import utils
 from project.types import AccessType, BaseRegister, BitField, MMIOMemoryRegion
 
+# TODO: PE bit
+# FIXME: ADDR read SR1 "immediately" after read SR2?
+
 
 class I2C(MMIOMemoryRegion):
     IRQ_NUMBERS = [31, 32]  # I2C1_EV, I2C1_ER
