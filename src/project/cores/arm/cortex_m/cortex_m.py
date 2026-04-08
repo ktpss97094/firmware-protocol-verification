@@ -22,6 +22,7 @@ class CortexM(ARM):
         # 要在所有的 hook 都完成後才執行
         cfg = proj.analyses.CFGFast(normalize=True, cross_references=True)
 
+        # interrupt_checkpoints = {}
         interrupt_checkpoints = self.get_interrupt_checkpoints(
             proj, cfg, specs.get_MMIOMemoryRegions()
         )

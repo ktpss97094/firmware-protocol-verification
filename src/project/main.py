@@ -340,7 +340,7 @@ def main(argv: list[str] | None = None):
     """
     迴圈處理方式:
     1. concrete value 的無窮迴圈 (e.g., while(1) 且沒有 break)
-        angr 無法測出來，也極少發生，故用 print 的方式提示
+        目前無法測出，我們也只 assume finite execution traces
     2. concrete value 大 loop bound 迴圈 (e.g., while(i < 1000000))
         不限制 (limit_concrete_loops=False)，避免影響 firmware 實際功能
     3. symbolic condition 造成的無窮迴圈 (e.g., polling loop，condition 為一等待 hardware set 的 flag)
@@ -349,7 +349,7 @@ def main(argv: list[str] | None = None):
     simgr.use_technique(
         angr.exploration_techniques.LoopSeer(
             cfg=cfg,
-            bound=15,
+            bound=10,
             limit_concrete_loops=False,
             bound_reached=LoopSeer_bound_reached_handler,
         )

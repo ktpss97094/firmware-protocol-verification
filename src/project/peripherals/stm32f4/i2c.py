@@ -1,3 +1,4 @@
+import warnings
 from collections import defaultdict
 
 import claripy
@@ -5,8 +6,20 @@ import claripy
 from project import utils
 from project.types import AccessType, BaseRegister, BitField, MMIOMemoryRegion
 
-# TODO: PE bit
+# TODO: PE bit, BTF NOSTRETCH bit
 # FIXME: ADDR read SR1 "immediately" after read SR2?
+
+
+def unique(state, bit):
+    can_be_0 = state.solver.solution(bit, 0)
+    can_be_1 = state.solver.solution(bit, 1)
+
+    if can_be_0 and can_be_1:
+        return False
+    elif (can_be_0 and not can_be_1) or (not can_be_0 and can_be_1):
+        return True
+    else:
+        warnings.warn(f"state.solver.solution cannot solve bit {bit}")
 
 
 class I2C(MMIOMemoryRegion):
@@ -22,7 +35,9 @@ class I2C(MMIOMemoryRegion):
 
         @classmethod
         def update_STOP(cls, i2c, state, cr1, sr1, sr2, force=False):
+            # if force or not unique(state, cr1[cls.STOP.bit]):
             if force or not state.solver.unique(cr1[cls.STOP.bit]):
+                # if force or cr1[cls.STOP.bit].symbolic:
                 # (STOP) cleared by hardware when a Stop condition is detected
                 cr1 = utils.replace_bit(
                     cr1,
@@ -88,7 +103,9 @@ class I2C(MMIOMemoryRegion):
 
         @classmethod
         def update_AF(cls, i2c, state, sr1, force=False, value=None):
+            # if force or not unique(state, sr1[cls.AF.bit]):
             if force or not state.solver.unique(sr1[cls.AF.bit]):
+                # if force or sr1[cls.AF.bit].symbolic:
                 if value is None:
                     value = claripy.If(
                         sr1[cls.AF.bit] == 1,
@@ -110,7 +127,9 @@ class I2C(MMIOMemoryRegion):
 
         @classmethod
         def update_ARLO(cls, i2c, state, sr1, sr2, force=False, value=None):
+            # if force or not unique(state, sr1[cls.ARLO.bit]):
             if force or not state.solver.unique(sr1[cls.ARLO.bit]):
+                # if force or sr1[cls.ARLO.bit].symbolic:
                 if value is None:
                     value = claripy.If(
                         sr1[cls.ARLO.bit] == 1,
@@ -134,7 +153,9 @@ class I2C(MMIOMemoryRegion):
 
         @classmethod
         def update_TXE(cls, i2c, state, sr1, cr1, sr2, force=False, value=None):
+            # if force or not unique(state, sr1[cls.TXE.bit]):
             if force or not state.solver.unique(sr1[cls.TXE.bit]):
+                # if force or sr1[cls.TXE.bit].symbolic:
                 if value is None:
                     value = claripy.If(
                         sr1[cls.TXE.bit] == 1,
@@ -150,9 +171,7 @@ class I2C(MMIOMemoryRegion):
                     cls.BTF.bit,
                     claripy.If(
                         claripy.And(
-                            cr1[I2C.I2C_CR1.NOSTRETCH.bit] == 0,
-                            sr2[I2C.I2C_SR2.TRA.bit] == 1,
-                            sr1[cls.TXE.bit] == 0,
+                            sr2[I2C.I2C_SR2.TRA.bit] == 1, sr1[cls.TXE.bit] == 0
                         ),
                         claripy.BVV(0, 1),
                         sr1[cls.BTF.bit],
@@ -165,6 +184,15 @@ class I2C(MMIOMemoryRegion):
                     cls.AF.bit,
                     claripy.If(
                         sr1[cls.TXE.bit] == 1, claripy.BVV(0, 1), sr1[cls.AF.bit]
+                    ),
+                )
+
+                # (ARLO) Set by hardware when the interface loses the arbitration of the bus to another master
+                sr1 = utils.replace_bit(
+                    sr1,
+                    cls.ARLO.bit,
+                    claripy.If(
+                        sr1[cls.TXE.bit] == 1, claripy.BVV(0, 1), sr1[cls.ARLO.bit]
                     ),
                 )
 
@@ -196,7 +224,9 @@ class I2C(MMIOMemoryRegion):
 
         @classmethod
         def update_ADD10(cls, i2c, state, sr1, cr1, force=False, value=None):
+            # if force or not unique(state, sr1[cls.ADD10.bit]):
             if force or not state.solver.unique(sr1[cls.ADD10.bit]):
+                # if force or sr1[cls.ADD10.bit].symbolic:
                 if value is None:
                     value = claripy.If(
                         sr1[cls.ADD10.bit] == 1,
@@ -227,7 +257,9 @@ class I2C(MMIOMemoryRegion):
 
         @classmethod
         def update_BTF(cls, i2c, state, sr1, force=False, value=None):
+            # if force or not unique(state, sr1[cls.BTF.bit]):
             if force or not state.solver.unique(sr1[cls.BTF.bit]):
+                # if force or sr1[cls.BTF.bit].symbolic:
                 if value is None:
                     value = claripy.If(
                         sr1[cls.BTF.bit] == 1,
@@ -258,7 +290,9 @@ class I2C(MMIOMemoryRegion):
 
         @classmethod
         def update_ADDR(cls, i2c, state, sr1, cr1, force=False, value=None):
+            # if force or not unique(state, sr1[cls.ADDR.bit]):
             if force or not state.solver.unique(sr1[cls.ADDR.bit]):
+                # if force or sr1[cls.ADDR.bit].symbolic:
                 if value is None:
                     value = claripy.If(
                         sr1[cls.ADDR.bit] == 1,
@@ -289,7 +323,9 @@ class I2C(MMIOMemoryRegion):
 
         @classmethod
         def update_SB(cls, i2c, state, sr1, cr1, sr2, force=False, value=None):
+            # if force or not unique(state, sr1[cls.SB.bit]):
             if force or not state.solver.unique(sr1[cls.SB.bit]):
+                # if force or sr1[cls.SB.bit].symbolic:
                 if value is None:
                     value = claripy.If(
                         sr1[cls.SB.bit] == 1,
