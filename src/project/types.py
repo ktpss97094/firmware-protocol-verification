@@ -90,13 +90,15 @@ class CustomLoopLimiter(angr.ExplorationTechnique):
 class AccessType(Enum):
     RW = auto()
     R = auto()
+    W = auto()
     RC_W0 = auto()  # read or clear on write 0
 
 
 @dataclass(frozen=True)
-class BitField:
+class BitsField:
     bit: int
     access_type: AccessType
+    rst_val: int
     size: int = 1
 
     @property
@@ -163,7 +165,8 @@ class MMIOMemoryRegion(MemoryRegion):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self._write_masks = {}  # {offset: (MASK_RW, MASK_R, MASK_RC_W0)}
+        self._access_masks = {}  # {offset: (rw mask, r mask, w mask, rc_w0 mask)}
+        self._rst_vals = {}  # {offset: rst_val}
 
         for name in dir(self.__class__):
             value = getattr(self.__class__, name)
@@ -173,33 +176,58 @@ class MMIOMemoryRegion(MemoryRegion):
                 and issubclass(value, BaseRegister)
                 and getattr(value, "OFFSET") != -1
             ):
-                mask_rw, mask_r, mask_rc_w0 = 0, 0, 0
+                mask_rw, mask_r, mask_w, mask_rc_w0 = 0, 0, 0, 0
+                rst_val = 0
 
                 for _, attr_val in vars(value).items():
-                    if isinstance(attr_val, BitField):
+                    if isinstance(attr_val, BitsField):
                         if attr_val.access_type == AccessType.RW:
                             mask_rw |= attr_val.mask
                         elif attr_val.access_type == AccessType.R:
                             mask_r |= attr_val.mask
+                        elif attr_val.access_type == AccessType.W:
+                            mask_w |= attr_val.mask
                         elif attr_val.access_type == AccessType.RC_W0:
                             mask_rc_w0 |= attr_val.mask
 
-                self._write_masks[value.OFFSET] = (mask_rw, mask_r, mask_rc_w0)
+                        rst_val |= attr_val.rst_val << attr_val.bit
 
-    def mask_write(self, offset, orig_val, write_val):
-        masks = self._write_masks.get(offset)
+                self._access_masks[value.OFFSET] = (mask_rw, mask_r, mask_w, mask_rc_w0)
+                self._rst_vals[value.OFFSET] = rst_val
+
+    def mask_pre_write(self, offset, orig_val, write_val):
+        masks = self._access_masks.get(offset)
         if masks:
-            mask_rw, mask_r, mask_rc_w0 = masks
-            defined_mask = mask_rw | mask_r | mask_rc_w0
+            mask_rw, mask_r, mask_w, mask_rc_w0 = masks
+            defined_mask = mask_rw | mask_r | mask_w | mask_rc_w0
             undefined_mask = ~defined_mask
 
             return (
                 (write_val & mask_rw)
                 | (orig_val & mask_r)
+                | (write_val & mask_w)
                 | (orig_val & write_val & mask_rc_w0)
                 | (write_val & undefined_mask)
             )
         return write_val
+
+    def mask_post_read(self, offset, val):
+        masks = self._access_masks.get(offset)
+        if masks:
+            mask_rw, mask_r, mask_w, mask_rc_w0 = masks
+            defined_mask = mask_rw | mask_r | mask_w | mask_rc_w0
+            undefined_mask = ~defined_mask
+
+            return (
+                (val & (mask_rw | mask_r | mask_rc_w0))
+                | (
+                    self._rst_vals[offset]
+                    & (
+                        mask_w | undefined_mask
+                    )  # TODO: mask_w 也許可改成 base class 用 symbolic、derived class 再依照 reference manual 上的說明實作是否有明說回傳的是 reset value
+                )
+            )
+        return val
 
     def get_pending_irqs(self, state):
         """
