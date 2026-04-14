@@ -12,6 +12,7 @@ from angr.engines.vex import (
     SuperFastpathMixin,
     TrackActionsMixin,
 )
+from angr.errors import SimEngineError
 
 
 class CustomEngine(
@@ -30,61 +31,8 @@ class CustomEngine(
     pass
 
 
-class CustomLoopLimiter(angr.ExplorationTechnique):
-    def __init__(self, limit=100, max_concrete_limit=100000, discard_stash="spinning"):
-        super(CustomLoopLimiter, self).__init__()
-        self.limit = limit
-        self.max_concrete_limit = (
-            max_concrete_limit  # 給正常迴圈一個超大的上限，避免真的跑太久
-        )
-        self.discard_stash = discard_stash
-
-    def step(self, simgr, stash="active", **kwargs):
-        new_active = []
-        # 建立(或取得)一個用於存放被砍掉的狀態的 stash
-        simgr.stashes.setdefault(self.discard_stash, [])
-
-        for state in simgr.stashes[stash]:
-            # 取得當前基本塊的執行次數
-            # 注意：state.addr 是當前 Instruction Pointer
-            loop_count = list(state.history.bbl_addrs).count(state.addr)
-
-            if loop_count > self.limit:
-                # --- 關鍵判斷：是「運算迴圈」還是「等待迴圈」？ ---
-
-                # 取得導致跳轉回來的那個條件 (Guard)
-                # 我們嘗試檢查最後一個跳轉的條件是否依賴於符號變數
-                try:
-                    last_guard = state.history.jump_guards[-1]
-                    is_symbolic = state.solver.symbolic(last_guard)
-                except (IndexError, AttributeError):
-                    # 如果找不到 guard (極少見)，保守起見假設它是具體的
-                    is_symbolic = False
-
-                if is_symbolic:
-                    # [情況 3] 符號迴圈 (Polling) -> 這是你要殺的
-                    # 條件不明確 (依賴 Input)，且已經跑了 100 次，判定為無窮等待
-                    # print(f"砍掉 Polling: {hex(state.addr)}")
-                    simgr.stashes[self.discard_stash].append(state)
-                    continue
-
-                else:
-                    # [情況 1] 具體迴圈 (Normal Loop / while(1)) -> 這是你要留的
-                    # 條件是確定的 (例如 loop counter)，只是跑比較多次
-
-                    # 為了防止真正的死結 (while(1)) 跑道天荒地老，我們還是設一個極限
-                    if loop_count > self.max_concrete_limit:
-                        # print(f"砍掉過長的具體迴圈: {hex(state.addr)}")
-                        simgr.stashes[self.discard_stash].append(state)
-                        continue
-
-                    # 否則，放行！讓它繼續跑
-                    pass
-
-            new_active.append(state)
-
-        simgr.stashes[stash] = new_active
-        return simgr.step(stash=stash, **kwargs)
+class Violation(SimEngineError):
+    pass
 
 
 class AccessType(Enum):
@@ -128,22 +76,31 @@ class MemoryRegion:
         self.name = name
 
     def pre_read(self, state):
-        raise NotImplementedError("Call abstract method")
+        addr = state.solver.eval(state.inspect.mem_read_address)
+        offset = addr - self.start
+
+        return addr, offset
 
     def pre_write(self, state):
-        raise NotImplementedError("Call abstract method")
+        addr = state.solver.eval(state.inspect.mem_write_address)
+        offset = addr - self.start
+        value = state.inspect.mem_write_expr
 
-    def post_read_spec(self, state, offset):
-        pass
-
-    def post_write_spec(self, state, offset, value):
-        pass
+        return addr, offset, value
 
     def post_read(self, state):
-        raise NotImplementedError("Call abstract method")
+        addr = state.solver.eval(state.inspect.mem_read_address)
+        offset = addr - self.start
+        readout_value = state.inspect.mem_read_expr
+
+        return addr, offset, readout_value
 
     def post_write(self, state):
-        raise NotImplementedError("Call abstract method")
+        addr = state.solver.eval(state.inspect.mem_write_address)
+        offset = addr - self.start
+        value = state.inspect.mem_write_expr
+
+        return addr, offset, value
 
     def in_region(self, addr):
         return self.start <= addr < self.start + self.size

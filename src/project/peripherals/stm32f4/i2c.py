@@ -395,26 +395,20 @@ class I2C(MMIOMemoryRegion):
         TRA = BitsField(2, AccessType.R, 0)
 
     def pre_write(self, state):
-        addr = state.solver.eval(state.inspect.mem_write_address)
-        offset = addr - self.start
-        value = state.inspect.mem_write_expr
+        addr, offset, value = super().pre_write(state)
+
         orig_value = utils.load(state, addr)
 
         state.inspect.mem_write_expr = self.mask_pre_write(offset, orig_value, value)
 
+        return addr, offset, state.inspect.mem_write_expr
+
     def post_read(self, state):
-        addr = state.solver.eval(state.inspect.mem_read_address)
-        offset = addr - self.start
-        readout_value = state.inspect.mem_read_expr
+        _, offset, readout_value = super().post_read(state)
 
-        self.post_read_spec(state, offset)
-
-        cr1 = utils.load(state, self.start + I2C.I2C_CR1.OFFSET)
-        sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
-        sr2 = utils.load(state, self.start + I2C.I2C_SR2.OFFSET)
-        new_cr1 = cr1
-        new_sr1 = sr1
-        new_sr2 = sr2
+        new_cr1 = utils.load(state, self.start + I2C.I2C_CR1.OFFSET)
+        new_sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
+        new_sr2 = utils.load(state, self.start + I2C.I2C_SR2.OFFSET)
 
         match offset:
             case I2C.I2C_SR1.OFFSET:
@@ -470,18 +464,11 @@ class I2C(MMIOMemoryRegion):
         state.inspect.mem_read_expr = self.mask_post_read(offset, readout_value)
 
     def post_write(self, state):
-        addr = state.solver.eval(state.inspect.mem_write_address)
-        offset = addr - self.start
-        value = state.inspect.mem_write_expr
+        _, offset, value = super().post_write(state)
 
-        self.post_write_spec(state, offset, value)
-
-        cr1 = utils.load(state, self.start + I2C.I2C_CR1.OFFSET)
-        sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
-        sr2 = utils.load(state, self.start + I2C.I2C_SR2.OFFSET)
-        new_cr1 = cr1
-        new_sr1 = sr1
-        new_sr2 = sr2
+        new_cr1 = utils.load(state, self.start + I2C.I2C_CR1.OFFSET)
+        new_sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
+        new_sr2 = utils.load(state, self.start + I2C.I2C_SR2.OFFSET)
 
         match offset:
             case I2C.I2C_CR1.OFFSET:

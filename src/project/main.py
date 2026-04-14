@@ -20,6 +20,7 @@ from project.types import (
     CustomEngine,
     MMIOMemoryRegion,
     VariableMemoryRegion,
+    Violation,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,23 +112,18 @@ def step_explore(simgr, proj, monitor_exploration=None):
 
 
 def explore_step_func(simgr):
-    simgr.move(
-        from_stash="active",
-        to_stash="violated",
-        filter_func=lambda s: s.globals.get("violation", False),
+    # 取出 violated states
+    for err in simgr.errored.copy():
+        if isinstance(err.error, Violation):
+            print(
+                err.error.args[0] + f" violation (ins_addr: {hex(err.error.ins_addr)})"
+            )
+            simgr.violated.append(err.state)
+            simgr.errored.remove(err)
+
+    print(
+        f"Step: Active={len(simgr.active)}, Found={len(simgr.found)}, Violated={len(simgr.violated)}"
     )
-
-    print(f"Step: Active={len(simgr.active)}, Found={len(simgr.found)}")
-    # for state in simgr.active:
-    #     print(f"  - PC: {state.regs.pc}")
-
-    # for state in simgr.active:
-    #     state.history.trim()
-
-    # if n_active > 500:
-    #     print("State explosion detected! Aborting exploration.")
-    #     simgr.move(from_stash="active", to_stash="exploded")
-    #     exit(1)
 
     return simgr
 
@@ -354,10 +350,6 @@ def main(argv: list[str] | None = None):
             bound_reached=LoopSeer_bound_reached_handler,
         )
     )
-    # simgr.use_technique(CustomLoopLimiter(limit=10, max_concrete_limit=50000))
-    # simgr.use_technique(
-    #     angr.exploration_techniques.LengthLimiter(max_length=100000, drop=False)
-    # )
 
     simgr.explore(
         num_find=float("inf"),
@@ -397,12 +389,12 @@ def main(argv: list[str] | None = None):
                 print(f"  Could not extract debug info: {e}")
 
             print("-" * 30)
-    elif len(simgr.found) > 0 or len(simgr.stashes["violated"]) > 0:
+    elif len(simgr.found) > 0 or len(simgr.violated) > 0:
         specs.final(simgr)
 
-        if len(simgr.stashes["violated"]) > 0:
+        if len(simgr.violated) > 0:
             print(
-                f"Verification FAILURE! Found {len(simgr.stashes['violated'])} violation state(s)"
+                f"Verification FAILURE! Found {len(simgr.violated)} violation state(s)"
             )
         else:
             print(

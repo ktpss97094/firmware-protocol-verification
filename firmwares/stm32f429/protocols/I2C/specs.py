@@ -31,7 +31,7 @@ from angr.sim_type import (
 from project import config, utils
 from project.cores.arm.cortex_m.systick import SysTickVariable
 from project.peripherals.stm32f4.i2c import I2C as STM32F4_I2C
-from project.types import BaseSpecs, MemoryRegion, MMIOMemoryRegion
+from project.types import BaseSpecs, MemoryRegion, MMIOMemoryRegion, Violation
 
 
 class Mode(Enum):
@@ -44,8 +44,9 @@ MODE = Mode.BLOCKING
 
 
 class I2C(STM32F4_I2C):
-    # FIXME: 是不是該改成 pre_*?
-    def post_write_spec(self, state, offset, value):
+    def pre_write(self, state):
+        _, offset, value = super().pre_write(state)
+
         sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
 
         match offset:
@@ -55,30 +56,21 @@ class I2C(STM32F4_I2C):
                     if state.solver.satisfiable(
                         extra_constraints=[sr1[I2C.I2C_SR1.ARLO.bit] == 1]
                     ):
-                        print(
-                            f"read_back_verification (spec 1) violation (pc: {state.regs.pc})"
-                        )
-                        state.globals["violation"] = True
+                        raise Violation("read_back_verification (spec 1)")
 
                 if state.solver.is_true(value[I2C.I2C_CR1.STOP.bit] == 1):
                     # --- Spec 3 ---
                     if state.solver.satisfiable(
                         extra_constraints=[sr1[I2C.I2C_SR1.ARLO.bit] == 1]
                     ):
-                        print(
-                            f"read_back_verification (spec 3) violation (pc: {state.regs.pc})"
-                        )
-                        state.globals["violation"] = True
+                        raise Violation("read_back_verification (spec 3)")
 
             case I2C.I2C_DR.OFFSET:
                 # --- Spec 2 ---
                 if state.solver.satisfiable(
                     extra_constraints=[sr1[I2C.I2C_SR1.ARLO.bit] == 1]
                 ):
-                    print(
-                        f"read_back_verification (spec 2) violation (pc: {state.regs.pc})"
-                    )
-                    state.globals["violation"] = True
+                    raise Violation("read_back_verification (spec 2)")
 
 
 class Specs(BaseSpecs):
