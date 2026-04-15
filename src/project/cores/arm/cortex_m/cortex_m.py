@@ -124,82 +124,89 @@ class CortexM(ARM):
             self._is_first_step = True
 
         def step_state(self, simgr, state, **kwargs):
+            # 將 interrupt checkpoints 加入 kwargs["extra_stop_points"]
             if self._is_first_step:
                 new_extra_stop_points = kwargs.get("extra_stop_points", set())
                 new_extra_stop_points.update(self.interrupt_checkpoints.keys())
                 kwargs["extra_stop_points"] = new_extra_stop_points
                 self._is_first_step = False
 
-            is_end_addr = state.addr in self.end_addrs
-
-            if state.addr not in self.interrupt_checkpoints and not is_end_addr:
+            if state.addr not in self.interrupt_checkpoints:
                 return simgr.step_state(state, **kwargs)
 
             merged_results = {}
             states_to_check = []
+
             if (
-                state.addr in self.interrupt_checkpoints
-                and self.interrupt_checkpoints[state.addr] == "inst_after"
+                self.interrupt_checkpoints[state.addr] == "inst_after"
             ):  # instruction 執行後才 inject interrupt
                 kwargs_single = kwargs.copy()
                 kwargs_single["num_inst"] = 1
-                succs = simgr.step_state(state, **kwargs_single)
-                states_to_check.extend(succs.get("active", []))
-                for stash_name, states in succs.items():
+                succ_stashes = simgr.step_state(state, **kwargs_single)
+                states_to_check.extend(succ_stashes.get("active", []))
+                for stash_name, states in succ_stashes.items():
                     if stash_name != "active":
                         merged_results.setdefault(stash_name, []).extend(states)
             else:  # instruction 執行前就 inject interrupt
                 states_to_check.append(state)
 
-            for current_state in states_to_check:
-                # 收集所有 peripheral 的 pending IRQ
+            for check_state in states_to_check:
+                is_end_addr = check_state.addr in self.end_addrs
+
+                # 收集所有 peripheral 的 pending IRQs
                 IRQ_triggers = {}
                 for region in self.specs.get_MMIOMemoryRegions():
                     for irq_number, triggers in region.get_pending_irqs(
-                        current_state
+                        check_state
                     ).items():
                         IRQ_triggers.setdefault(irq_number, []).extend(triggers)
 
-                if all(not v for v in IRQ_triggers.values()):
+                if not IRQ_triggers:  # 沒有 pending IRQs
                     if is_end_addr:
-                        merged_results.setdefault("found", []).append(current_state)
-                    elif current_state is state:
-                        new_simgr_normal = simgr.step_state(current_state, **kwargs)
-                        for stash_name, states in new_simgr_normal.items():
+                        merged_results.setdefault("found", []).append(check_state)
+                    elif check_state is state:
+                        succ_stashes = simgr.step_state(check_state, **kwargs)
+                        for stash_name, states in succ_stashes.items():
                             merged_results.setdefault(stash_name, []).extend(states)
                     else:
-                        merged_results.setdefault("active", []).append(current_state)
+                        merged_results.setdefault("active", []).append(check_state)
                     continue
 
                 # 計算目前 priority 最大的 IRQ
                 best_IRQ = min(
                     IRQ_triggers.keys(),
-                    key=lambda k: (NVIC.get_irq_priority(current_state, k), k),
+                    key=lambda k: (NVIC.get_irq_priority(check_state, k), k),
                 )
                 if NVIC.get_irq_priority(
-                    current_state, best_IRQ
-                ) >= current_state.globals.get("current_priority", 256):
+                    check_state, best_IRQ
+                ) >= check_state.globals.get(
+                    "current_priority", 256
+                ):  # IRQ priority 低於目前 priority
                     if is_end_addr:
-                        merged_results.setdefault("found", []).append(current_state)
-                    elif current_state is state:
-                        new_simgr_normal = simgr.step_state(current_state, **kwargs)
-                        for stash_name, states in new_simgr_normal.items():
+                        merged_results.setdefault("found", []).append(check_state)
+                    elif check_state is state:
+                        succ_stashes = simgr.step_state(check_state, **kwargs)
+                        for stash_name, states in succ_stashes.items():
                             merged_results.setdefault(stash_name, []).extend(states)
                     else:
-                        merged_results.setdefault("active", []).append(current_state)
+                        merged_results.setdefault("active", []).append(check_state)
                     continue
 
                 negated_previous_conds = []
 
                 # 分支 1: 觸發 IRQ
                 for trigger_var, trigger_cond in IRQ_triggers[best_IRQ]:
-                    isr_state = current_state.copy()
+                    isr_state = check_state.copy()
 
-                    isr_state.add_constraints(trigger_cond)
                     for neg_cond in negated_previous_conds:
                         isr_state.add_constraints(neg_cond)
+                    isr_state.add_constraints(trigger_cond)
 
                     if isr_state.satisfiable():
+                        # trigger_cond 為絕對 True 時不需要儲存 not trigger_cond
+                        if not check_state.solver.is_true(trigger_cond):
+                            negated_previous_conds.append(claripy.Not(trigger_cond))
+
                         isr_handled_hashes = set(
                             isr_state.custom_globals.irq[best_IRQ]["handled_hashes"]
                         )
@@ -211,30 +218,28 @@ class CortexM(ARM):
                         self.cpu.excp_entry(isr_state, best_IRQ)
 
                         print(
-                            f"IRQ Injection | pc: {current_state.regs.pc} -> Branching into IRQ {best_IRQ}"
+                            f"IRQ Injection | pc: {check_state.regs.pc} -> Branching into IRQ {best_IRQ}"
                         )
 
-                        if current_state is state:
-                            new_simgr = simgr.step_state(isr_state, **kwargs)
-                            for stash_name, states in new_simgr.items():
+                        if check_state is state:
+                            succ_stashes = simgr.step_state(isr_state, **kwargs)
+                            for stash_name, states in succ_stashes.items():
                                 merged_results.setdefault(stash_name, []).extend(states)
                         else:
                             merged_results.setdefault("active", []).append(isr_state)
 
-                    # trigger_cond 為 claripy True 時表示 trigger_var 為 concrete value，不需要儲存 not trigger_cond
-                    if not current_state.solver.is_true(trigger_cond):
-                        negated_previous_conds.append(claripy.Not(trigger_cond))
+                if state.solver.satisfiable(extra_constraints=negated_previous_conds):
+                    # 分支 2: 不觸發 IRQ
+                    normal_state = check_state.copy()
 
-                # 分支 2: 不觸發 IRQ
-                normal_state = current_state.copy()
-                if is_end_addr:
-                    merged_results.setdefault("found", []).append(normal_state)
-                elif current_state is state:
-                    new_simgr_normal = simgr.step_state(normal_state, **kwargs)
-                    for stash_name, states in new_simgr_normal.items():
-                        merged_results.setdefault(stash_name, []).extend(states)
-                else:
-                    merged_results.setdefault("active", []).append(normal_state)
+                    if is_end_addr:
+                        merged_results.setdefault("found", []).append(normal_state)
+                    elif check_state is state:
+                        succ_stashes = simgr.step_state(normal_state, **kwargs)
+                        for stash_name, states in succ_stashes.items():
+                            merged_results.setdefault(stash_name, []).extend(states)
+                    else:
+                        merged_results.setdefault("active", []).append(normal_state)
 
             return merged_results
 
