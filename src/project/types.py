@@ -1,4 +1,3 @@
-import copy
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -244,15 +243,11 @@ class BaseCustomGlobals(angr.SimStatePlugin):
     angr 的 globals 不會自己做 deepcopy，如果有必須要 deepcopy 的 globals (e.g., mutable object) 就要放 custom_globals
     """
 
-    def __init__(self, irq=None):
+    def __init__(self):
         super().__init__()
-
-        self.irq = {} if irq is None else irq
 
     @angr.SimStatePlugin.memo
     def copy(self, memo):
         new_plugin = super().copy(memo)
-
-        new_plugin.irq = copy.deepcopy(self.irq, memo)
 
         return new_plugin

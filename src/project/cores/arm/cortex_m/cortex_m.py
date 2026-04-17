@@ -123,15 +123,19 @@ class CortexM(ARM):
             self.specs = specs
             self.interrupt_checkpoints = interrupt_checkpoints
             self.end_addrs = end_addrs
-            self._is_first_step = True
+
+        def step(self, simgr, stash="active", **kwargs):
+            # 將 interrupt checkpoints 加入 kwargs["extra_stop_points"]
+            new_extra_stop_points = set(kwargs.get("extra_stop_points", set()))
+            new_extra_stop_points.update(self.interrupt_checkpoints.keys())
+            kwargs["extra_stop_points"] = new_extra_stop_points
+
+            return simgr.step(stash=stash, **kwargs)
 
         def step_state(self, simgr, state, **kwargs):
-            # 將 interrupt checkpoints 加入 kwargs["extra_stop_points"]
-            if self._is_first_step:
-                new_extra_stop_points = kwargs.get("extra_stop_points", set())
-                new_extra_stop_points.update(self.interrupt_checkpoints.keys())
-                kwargs["extra_stop_points"] = new_extra_stop_points
-                self._is_first_step = False
+            """
+            回傳值的 key None 即表示 active
+            """
 
             if state.addr not in self.interrupt_checkpoints:
                 return simgr.step_state(state, **kwargs)
@@ -142,12 +146,11 @@ class CortexM(ARM):
             if (
                 self.interrupt_checkpoints[state.addr] == "inst_after"
             ):  # instruction 執行後才 inject interrupt
-                kwargs_single = kwargs.copy()
-                kwargs_single["num_inst"] = 1
-                succ_stashes = simgr.step_state(state, **kwargs_single)
-                states_to_check.extend(succ_stashes.get("active", []))
+                kwargs["num_inst"] = 1
+                succ_stashes = simgr.step_state(state, **kwargs)
+                states_to_check.extend(succ_stashes.get(None, []))
                 for stash_name, states in succ_stashes.items():
-                    if stash_name != "active":
+                    if stash_name is not None:
                         merged_results[stash_name].extend(states)
             else:  # instruction 執行前就 inject interrupt
                 states_to_check.append(state)
@@ -170,7 +173,7 @@ class CortexM(ARM):
                         for stash_name, states in succ_stashes.items():
                             merged_results[stash_name].extend(states)
                     else:
-                        merged_results["active"].append(check_state)
+                        merged_results[None].append(check_state)
                     continue
 
                 # 剔除低於目前 priority 的 IRQ，並根據 priority 排序 IRQ
@@ -188,66 +191,65 @@ class CortexM(ARM):
                         for stash_name, states in succ_stashes.items():
                             merged_results[stash_name].extend(states)
                     else:
-                        merged_results["active"].append(check_state)
+                        merged_results[None].append(check_state)
                     continue
 
-                neg_prev_conds = []
-                has_irq = False
+                accumulated_neg_conds = []
+                found_unconditional_irq = False
 
                 for _, irq, trig_info in eligible_irqs:
                     for trig_var, trig_cond in trig_info:
-                        new_state = check_state.copy()
+                        if not check_state.solver.satisfiable(
+                            extra_constraints=accumulated_neg_conds + [trig_cond]
+                        ):  # 因為加了 neg_prev_conds constraints，所以需要檢查
+                            continue
 
-                        for neg_cond in neg_prev_conds:
-                            new_state.add_constraints(neg_cond)
+                        new_state = check_state.copy()
+                        for neg_prev_cond in accumulated_neg_conds:
+                            new_state.add_constraints(neg_prev_cond)
                         new_state.add_constraints(trig_cond)
 
-                        if (
-                            new_state.satisfiable()
-                        ):  # 因為加了 neg_prev_conds constraints，所以需要再檢查一次
-                            # trig_cond 為絕對 True 時不需要儲存 not trig_cond
-                            if not check_state.solver.is_true(trig_cond):
-                                neg_prev_conds.append(claripy.Not(trig_cond))
+                        self.cpu.excp_entry(new_state, irq)
+                        print(
+                            f"IRQ Injection | pc: {check_state.regs.pc} -> Branching into IRQ {irq}"
+                        )
+                        if check_state is state:
+                            succ_stashes = simgr.step_state(new_state, **kwargs)
+                            for stash_name, states in succ_stashes.items():
+                                merged_results[stash_name].extend(states)
+                        else:
+                            merged_results[None].append(new_state)
 
-                            handled_hashes = set(
-                                new_state.custom_globals.irq[irq]["handled_hashes"]
+                        if trig_cond.is_true():
+                            found_unconditional_irq = True
+                        else:
+                            can_skip = check_state.solver.satisfiable(
+                                extra_constraints=accumulated_neg_conds
+                                + [claripy.Not(trig_cond)]
                             )
-                            handled_hashes.add(hash(trig_var))
-                            new_state.custom_globals.irq[irq]["handled_hashes"] = (
-                                frozenset(handled_hashes)
-                            )
-
-                            self.cpu.excp_entry(new_state, irq)
-
-                            print(
-                                f"IRQ Injection | pc: {check_state.regs.pc} -> Branching into IRQ {irq}"
-                            )
-
-                            if check_state is state:
-                                succ_stashes = simgr.step_state(new_state, **kwargs)
-                                for stash_name, states in succ_stashes.items():
-                                    merged_results[stash_name].extend(states)
+                            if not can_skip:
+                                found_unconditional_irq = True
                             else:
-                                merged_results["active"].append(new_state)
+                                accumulated_neg_conds.append(claripy.Not(trig_cond))
 
-                    if not check_state.solver.satisfiable(
-                        extra_constraints=neg_prev_conds
-                    ):
-                        has_irq = True
+                    if found_unconditional_irq:
                         break
-                if has_irq:
+                if found_unconditional_irq:
                     continue
 
                 # 沒有 IRQ 觸發
-                normal_state = check_state.copy()
-                if is_end_addr:
-                    merged_results["found"].append(normal_state)
-                elif check_state is state:
-                    succ_stashes = simgr.step_state(normal_state, **kwargs)
-                    for stash_name, states in succ_stashes.items():
-                        merged_results[stash_name].extend(states)
-                else:
-                    merged_results["active"].append(normal_state)
+                if check_state.solver.satisfiable(
+                    extra_constraints=accumulated_neg_conds
+                ):
+                    normal_state = check_state.copy()
+                    if is_end_addr:
+                        merged_results["found"].append(normal_state)
+                    elif check_state is state:
+                        succ_stashes = simgr.step_state(normal_state, **kwargs)
+                        for stash_name, states in succ_stashes.items():
+                            merged_results[stash_name].extend(states)
+                    else:
+                        merged_results[None].append(normal_state)
 
             return merged_results
 

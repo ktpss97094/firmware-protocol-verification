@@ -2,13 +2,12 @@ from project import utils
 
 
 class NVIC:
-    # NVIC Interrupt Priority Registers base address
-    NVIC_IPR_BASE = 0xE000E400
+    NVIC_IPR = 0xE000E400  # Interrupt Priority Registers
 
     @staticmethod
     def get_irq_priority(state, irq_number):
         return state.solver.eval(
-            utils.load(state, NVIC.NVIC_IPR_BASE + irq_number, size=1)[7:4]
+            utils.load(state, NVIC.NVIC_IPR + irq_number, size=1)[7:4]
         )
 
     @staticmethod
