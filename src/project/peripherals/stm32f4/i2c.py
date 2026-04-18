@@ -600,6 +600,6 @@ class I2C(MMIOMemoryRegion):
             trigger_cond = event_val == 1
 
             if state.solver.satisfiable(extra_constraints=[trigger_cond]):
-                output[irq_num].append((event_val, trigger_cond))
+                output[irq_num].append(trigger_cond)
 
         return output

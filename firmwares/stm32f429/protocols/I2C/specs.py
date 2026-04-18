@@ -40,7 +40,7 @@ class Mode(Enum):
     DMA = auto()
 
 
-MODE = Mode.BLOCKING
+MODE = Mode.INTERRUPT
 
 
 class I2C(STM32F4_I2C):
@@ -116,7 +116,7 @@ class Specs(BaseSpecs):
                 physical_addr=0x08000000,
             ),
             "I2C1": I2C(start=0x40005400, size=0x400, name="I2C1"),
-            "NVIC": MMIOMemoryRegion(start=0xE000E000, size=0x1000, name="NVIC"),
+            "NVIC": MMIOMemoryRegion(start=0xE000E100, size=0xC00, name="NVIC"),
             "SysTickVariable": SysTickVariable(
                 start=utils.get_symbol_addr(self.proj, "uwTick", is_variable=True),
                 size=0x4,
@@ -201,7 +201,7 @@ class Specs(BaseSpecs):
 
     def init_input(self, state):
         # size_range = (0, 2**16 - 1)
-        size_range = (1, 1)
+        size_range = (0, 3)
         # timeout_range = None
         timeout_range = (5, 5)
 

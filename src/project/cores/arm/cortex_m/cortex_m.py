@@ -104,6 +104,23 @@ class CortexM(ARM):
             return state.solver.eval(utils.load(state, self.VTOR_ADDR)) & 0xFFFFFF80
         return 0x00000000
 
+    def _sort_irqs(self, irqs):
+        # 1. trigger condition 為 concrete true 的放到前面
+        for _, _, trig_conds in irqs:
+            concrete_trues = []
+            not_concrete_trues = []
+
+            for trig_cond in trig_conds:
+                if trig_cond.is_true():
+                    concrete_trues.append(trig_cond)
+                else:
+                    not_concrete_trues.append(trig_cond)
+
+            trig_conds[:] = concrete_trues + not_concrete_trues
+
+        # 依照 priority 及 IRQ number 排序
+        irqs.sort(key=lambda x: (x[0], x[1]))
+
     class _ExcpReturnProcedure(angr.SimProcedure):
         NO_RET = True
 
@@ -163,8 +180,8 @@ class CortexM(ARM):
                     list
                 )  # {irq: [(trigger variable, trigger condition), ...]}
                 for region in self.specs.get_MMIOMemoryRegions():
-                    for irq, trig_info in region.get_pending_irqs(check_state).items():
-                        pending_irqs[irq].extend(trig_info)
+                    for irq, trig_conds in region.get_pending_irqs(check_state).items():
+                        pending_irqs[irq].extend(trig_conds)
                 if not pending_irqs:
                     if is_end_addr:
                         merged_results["found"].append(check_state)
@@ -178,11 +195,11 @@ class CortexM(ARM):
 
                 # 剔除低於目前 priority 的 IRQ，並根據 priority 排序 IRQ
                 eligible_irqs = []  # [(priority, irq, [(trigger variable, trigger condition), ...]), ...]
-                for irq, trig_info in pending_irqs.items():
+                for irq, trig_conds in pending_irqs.items():
                     prio = NVIC.get_irq_priority(check_state, irq)
                     if prio < check_state.globals.get("current_priority", 256):
-                        eligible_irqs.append((prio, irq, trig_info))
-                eligible_irqs.sort()
+                        eligible_irqs.append((prio, irq, trig_conds))
+                self.cpu._sort_irqs(eligible_irqs)
                 if not eligible_irqs:
                     if is_end_addr:
                         merged_results["found"].append(check_state)
@@ -194,19 +211,22 @@ class CortexM(ARM):
                         merged_results[None].append(check_state)
                     continue
 
-                accumulated_neg_conds = []
-                found_unconditional_irq = False
+                neg_prev_conds = []
+                pruning = False
 
-                for _, irq, trig_info in eligible_irqs:
-                    for trig_var, trig_cond in trig_info:
-                        if not check_state.solver.satisfiable(
-                            extra_constraints=accumulated_neg_conds + [trig_cond]
-                        ):  # 因為加了 neg_prev_conds constraints，所以需要檢查
+                for _, irq, trig_conds in eligible_irqs:
+                    for trig_cond in trig_conds:
+                        if (
+                            not trig_cond.is_true()  # pruning，如果是 concrete true 就不用再算 satisfiable
+                            and not check_state.solver.satisfiable(
+                                extra_constraints=neg_prev_conds + [trig_cond]
+                            )  # 因為加了 neg_prev_conds constraints，所以需要檢查
+                        ):
                             continue
 
                         new_state = check_state.copy()
-                        for neg_prev_cond in accumulated_neg_conds:
-                            new_state.add_constraints(neg_prev_cond)
+                        if neg_prev_conds:
+                            new_state.add_constraints(*neg_prev_conds)
                         new_state.add_constraints(trig_cond)
 
                         self.cpu.excp_entry(new_state, irq)
@@ -220,36 +240,28 @@ class CortexM(ARM):
                         else:
                             merged_results[None].append(new_state)
 
-                        if trig_cond.is_true():
-                            found_unconditional_irq = True
-                        else:
-                            can_skip = check_state.solver.satisfiable(
-                                extra_constraints=accumulated_neg_conds
-                                + [claripy.Not(trig_cond)]
-                            )
-                            if not can_skip:
-                                found_unconditional_irq = True
-                            else:
-                                accumulated_neg_conds.append(claripy.Not(trig_cond))
+                        neg_prev_conds.append(claripy.Not(trig_cond))
+                        if not check_state.solver.satisfiable(
+                            extra_constraints=neg_prev_conds
+                        ):  # pruning，如果這個 IRQ 到目前是一定會被觸發，則代表到目前 fork 出的所有 state 已滿足所有可能的情況，而且更低優先權的 IRQ 不可能會被執行。所以同等於計算是否不可能有滿足 neg_prev_conds 的情況
+                            pruning = True
+                            break
 
-                    if found_unconditional_irq:
+                    if pruning:
                         break
-                if found_unconditional_irq:
+                if pruning:
                     continue
 
                 # 沒有 IRQ 觸發
-                if check_state.solver.satisfiable(
-                    extra_constraints=accumulated_neg_conds
-                ):
-                    normal_state = check_state.copy()
-                    if is_end_addr:
-                        merged_results["found"].append(normal_state)
-                    elif check_state is state:
-                        succ_stashes = simgr.step_state(normal_state, **kwargs)
-                        for stash_name, states in succ_stashes.items():
-                            merged_results[stash_name].extend(states)
-                    else:
-                        merged_results[None].append(normal_state)
+                normal_state = check_state.copy()
+                if is_end_addr:
+                    merged_results["found"].append(normal_state)
+                elif check_state is state:
+                    succ_stashes = simgr.step_state(normal_state, **kwargs)
+                    for stash_name, states in succ_stashes.items():
+                        merged_results[stash_name].extend(states)
+                else:
+                    merged_results[None].append(normal_state)
 
             return merged_results
 
