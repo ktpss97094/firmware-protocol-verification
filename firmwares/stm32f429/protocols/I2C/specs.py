@@ -40,13 +40,11 @@ class Mode(Enum):
     DMA = auto()
 
 
-MODE = Mode.INTERRUPT
+MODE = Mode.BLOCKING
 
 
 class I2C(STM32F4_I2C):
-    def pre_write(self, state):
-        _, offset, value = super().pre_write(state)
-
+    def post_write_spec(self, state, addr, offset, value):
         sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
 
         match offset:
@@ -201,7 +199,7 @@ class Specs(BaseSpecs):
 
     def init_input(self, state):
         # size_range = (0, 2**16 - 1)
-        size_range = (0, 3)
+        size_range = (0, 2)
         # timeout_range = None
         timeout_range = (5, 5)
 
