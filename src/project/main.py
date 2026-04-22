@@ -127,6 +127,9 @@ def explore_step_func(simgr):
         f"Step: Active={len(simgr.active)}, Found={len(simgr.found)}, Violated={len(simgr.violated)}"
     )
 
+    for state in simgr.active:
+        state.history.trim()
+
     return simgr
 
 
@@ -277,10 +280,15 @@ def main(
     """
     logger.info("Setting up angr state")
     state = proj.factory.blank_state(
-        addr=regs[avatar_target._arch.pc_name]
-        # add_options=angr.options.refs,
-        #  | {angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY, angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS}  # ZERO_FILL_UNCONSTRAINED_MEMORY 及 ZERO_FILL_UNCONSTRAINED_REGISTERS 為指定當 Angr 讀取 Angr 未初始化的記憶體位置時，回傳 0 而不是 symbolic value
+        addr=regs[avatar_target._arch.pc_name],
+        add_options={
+            angr.options.SIMPLIFY_EXPRS,
+            angr.options.SIMPLIFY_MEMORY_WRITES,
+            angr.options.SIMPLIFY_REGISTER_WRITES,
+        },
     )
+    state.options -= angr.options.unicorn
+
     for opt in {
         angr.options.TRACK_MEMORY_ACTIONS,
         angr.options.TRACK_REGISTER_ACTIONS,

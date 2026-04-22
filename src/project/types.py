@@ -9,7 +9,6 @@ from angr.engines.vex import (
     HeavyVEXMixin,
     SimInspectMixin,
     SuperFastpathMixin,
-    TrackActionsMixin,
 )
 from angr.errors import SimEngineError
 
@@ -19,7 +18,7 @@ class CustomEngine(
     SimEngineSyscall,
     HooksMixin,
     SuperFastpathMixin,
-    TrackActionsMixin,
+    # TrackActionsMixin,
     SimInspectMixin,
     HeavyResilienceMixin,
     # SootMixin,
