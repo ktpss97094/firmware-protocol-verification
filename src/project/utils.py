@@ -1,4 +1,6 @@
 import logging
+import pickle
+from pathlib import Path
 
 import archinfo
 import claripy
@@ -191,6 +193,32 @@ def get_constraint_info(state, constraint):
     if result:
         high, low, source = result
         return find_variable_origin(state, source), (high, low)
+
+
+def process_cache_file(
+    source_file: str | Path, cache_file: str | Path, process_func, **kwargs
+):
+    source_path = Path(source_file)
+    cache_path = Path(cache_file)
+
+    if not source_path.exists():
+        raise FileNotFoundError(f"Didn't find source file: {source_path}")
+
+    if (
+        not cache_path.exists()
+        or source_path.stat().st_mtime > cache_path.stat().st_mtime
+    ):
+        result_dict = process_func(**kwargs)
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with cache_path.open("wb") as f:
+            pickle.dump(result_dict, f)
+
+    else:
+        with cache_path.open("rb") as f:
+            result_dict = pickle.load(f)
+
+    return result_dict
 
 
 def stop_and_debug(state):

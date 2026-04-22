@@ -1,4 +1,5 @@
 from collections import defaultdict
+from pathlib import Path
 
 import angr
 import claripy
@@ -25,9 +26,17 @@ class CortexM(ARM):
         cfg = proj.analyses.CFGFast(normalize=True, cross_references=True)
 
         # interrupt_checkpoints = {}
-        interrupt_checkpoints = self.get_interrupt_checkpoints(
-            proj, cfg, specs.get_MMIOMemoryRegions()
+        interrupt_checkpoints = utils.process_cache_file(
+            specs.FIRMWARE_PATH,
+            Path(specs.FIRMWARE_PATH).with_suffix(".intrckpt"),
+            self.get_interrupt_checkpoints,
+            proj=proj,
+            cfg=cfg,
+            mmio_regions=specs.get_MMIOMemoryRegions(),
         )
+        # interrupt_checkpoints = self.get_interrupt_checkpoints(
+        #     proj, cfg, specs.get_MMIOMemoryRegions()
+        # )
         interrupt_checkpoints[0xFFFFFFF1] = "inst_after"
         interrupt_checkpoints[0xFFFFFFF9] = "inst_after"
         for end_addr in specs.END_ADDRS:
