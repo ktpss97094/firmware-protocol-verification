@@ -1,4 +1,3 @@
-import argparse
 import hashlib
 import importlib
 import importlib.util
@@ -11,6 +10,8 @@ from typing import Any, Type
 
 import angr
 import avatar2
+import typer
+from typing_extensions import Annotated
 
 import project.utils as utils
 from project import config
@@ -24,6 +25,7 @@ from project.types import (
 )
 
 logger = logging.getLogger(__name__)
+app = typer.Typer(name="verify")
 
 
 def init_logging():
@@ -153,11 +155,13 @@ def LoopSeer_bound_reached_handler(seer, state):
     seer.cut_succs.append(state)
 
 
-def main(argv: list[str] | None = None):
-    parser = argparse.ArgumentParser(prog="verify")
-    parser.add_argument("spec", nargs="?", help="Spec file path")
-    args = parser.parse_args(argv)
-    Specs = load_specs_class(args.spec)
+@app.command()
+def main(
+    spec: str,
+    search_tech="dfs",
+    debug: Annotated[bool, typer.Option(hidden=True)] = False,
+):
+    Specs = load_specs_class(spec)
 
     init_logging()
 
@@ -332,7 +336,8 @@ def main(argv: list[str] | None = None):
     simgr.stashes["violated"] = []
     cfg = specs.CPU.setup(proj, specs, simgr)
 
-    # simgr.use_technique(angr.exploration_techniques.DFS())
+    if search_tech == "dfs":
+        simgr.use_technique(angr.exploration_techniques.DFS())
     """
     迴圈處理方式:
     1. concrete value 的無窮迴圈 (e.g., while(1) 且沒有 break)
@@ -405,4 +410,4 @@ def main(argv: list[str] | None = None):
 
 
 if __name__ == "__main__":
-    main()
+    app()

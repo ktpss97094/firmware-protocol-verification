@@ -6,6 +6,7 @@ dependencies = [
     "angr>=9.2.194",
     "avatar2",
     "setuptools>=80.9.0",
+    "typer>=0.24.1",
 ]
 
 [tool.uv.sources]
@@ -32,4 +33,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.scripts]
-verify = "project.main:main"
+verify = "project.main:app"
