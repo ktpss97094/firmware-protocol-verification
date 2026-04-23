@@ -26,6 +26,7 @@ from project.types import (
 
 logger = logging.getLogger(__name__)
 app = typer.Typer(name="verify")
+found_cnt, violated_cnt = 0, 0
 
 
 def init_logging():
@@ -114,6 +115,8 @@ def step_explore(simgr, proj, monitor_exploration=None):
 
 
 def explore_step_func(simgr):
+    global found_cnt, violated_cnt
+
     # 取出 violated states
     for err in simgr.errored.copy():
         if isinstance(err.error, Violation):
@@ -123,12 +126,17 @@ def explore_step_func(simgr):
             simgr.violated.append(err.state)
             simgr.errored.remove(err)
 
-    print(
-        f"Step: Active={len(simgr.active)}, Found={len(simgr.found)}, Violated={len(simgr.violated)}"
-    )
-
     for state in simgr.active:
         state.history.trim()
+    found_cnt += len(simgr.found)
+    # 如果需要 found state 做驗證，可以在這裡只取出需要的部分
+    violated_cnt += len(simgr.violated)
+    simgr.stashes["found"].clear()
+    simgr.stashes["violated"].clear()
+
+    print(
+        f"Step: Active={len(simgr.active)}, Found={found_cnt}, Violated={violated_cnt}"
+    )
 
     return simgr
 
@@ -285,9 +293,11 @@ def main(
             angr.options.SIMPLIFY_EXPRS,
             angr.options.SIMPLIFY_MEMORY_WRITES,
             angr.options.SIMPLIFY_REGISTER_WRITES,
+            angr.options.COMPOSITE_SOLVER,
+            angr.options.OPTIMIZE_IR,
+            angr.options.UNICORN,
         },
     )
-    state.options -= angr.options.unicorn
 
     for opt in {
         angr.options.TRACK_MEMORY_ACTIONS,
@@ -402,16 +412,14 @@ def main(
                 print(f"  Could not extract debug info: {e}")
 
             print("-" * 30)
-    elif len(simgr.found) > 0 or len(simgr.violated) > 0:
+    elif found_cnt > 0 or violated_cnt > 0:
         specs.final(simgr)
 
-        if len(simgr.violated) > 0:
-            print(
-                f"Verification FAILURE! Found {len(simgr.violated)} violation state(s)"
-            )
+        if violated_cnt > 0:
+            print(f"Verification FAILURE! Found {violated_cnt} violation state(s)")
         else:
             print(
-                f"Verification SUCCESS! Found {len(simgr.found)} state(s) that reached the end"
+                f"Verification SUCCESS! Found {found_cnt} state(s) that reached the end"
             )
     else:
         raise AssertionError("No valid paths found or no violations detected")

@@ -3,7 +3,12 @@ from enum import Enum, auto
 
 import angr
 import archinfo
-from angr.engines import HooksMixin, SimEngineFailure, SimEngineSyscall
+from angr.engines import (
+    HooksMixin,
+    SimEngineFailure,
+    SimEngineSyscall,
+    SimEngineUnicorn,
+)
 from angr.engines.vex import (
     HeavyResilienceMixin,
     HeavyVEXMixin,
@@ -23,7 +28,7 @@ class CustomEngine(
     HeavyResilienceMixin,
     # SootMixin,
     # AILMixin,
-    # SimEngineUnicorn,
+    SimEngineUnicorn,
     HeavyVEXMixin,
 ):
     pass
