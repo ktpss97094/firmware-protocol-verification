@@ -150,7 +150,10 @@ def LoopSeer_bound_reached_handler(seer, state):
 
 @app.command()
 def main(
-    spec: str, search="dfs", debug: Annotated[bool, typer.Option(hidden=True)] = False
+    spec: str,
+    search: str = "dfs",
+    renode: bool = False,
+    debug: Annotated[bool, typer.Option(hidden=True)] = False,
 ):
     Specs = load_specs_class(spec)
 
@@ -172,7 +175,7 @@ def main(
     avatar2 部分
     """
     avatar_target: avatar2.Target | None = None
-    if Specs.USE_RENODE:
+    if renode:
         avatar_target = avatar.add_target(
             avatar2.GDBTarget,
             gdb_port=config.RENODE_GDB_PORT,
@@ -249,7 +252,7 @@ def main(
             continue
 
         try:
-            if Specs.USE_RENODE and isinstance(memory_region, MMIOMemoryRegion):
+            if renode and isinstance(memory_region, MMIOMemoryRegion):
                 dumps[memory_region_name] = read_MMIO_renode(
                     avatar_target, memory_region.physical_addr, memory_region.size
                 )

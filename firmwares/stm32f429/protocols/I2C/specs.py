@@ -91,9 +91,6 @@ class Specs(BaseSpecs):
     AVATAR_ARCH = avatar2.archs.arm.ARM_CORTEX_M3
     ANGR_ARCH = archinfo.ArchARMCortexM(endness=archinfo.Endness.LE)
 
-    # --- Renode ---
-    USE_RENODE = False
-
     # --- Parameters ---
     SYMBOLIC_LOOP_BOUND = 2
 
@@ -202,9 +199,7 @@ class Specs(BaseSpecs):
 
     def init_input(self, state):
         # size_range = (0, 2**16 - 1)
-        size_range = (1, 1)
-        timeout_range = None
-        # timeout_range = (5, 5)
+        size_range = (0, 3)
 
         # address, size symbolic
         utils.set_func_args_symbolic(
@@ -225,6 +220,4 @@ class Specs(BaseSpecs):
         # timeout symbolic
         match MODE:
             case Mode.BLOCKING:
-                utils.set_func_args_symbolic(
-                    state, self.API_PROTOTYPE, {4: timeout_range}
-                )
+                utils.set_func_args_symbolic(state, self.API_PROTOTYPE, {4: None})
