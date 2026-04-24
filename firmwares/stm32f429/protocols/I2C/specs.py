@@ -94,6 +94,9 @@ class Specs(BaseSpecs):
     # --- Renode ---
     USE_RENODE = False
 
+    # --- Parameters ---
+    SYMBOLIC_LOOP_BOUND = 2
+
     # --- Constants ---
     """
     Warning:
@@ -199,9 +202,9 @@ class Specs(BaseSpecs):
 
     def init_input(self, state):
         # size_range = (0, 2**16 - 1)
-        size_range = (0, 2)
-        # timeout_range = None
-        timeout_range = (5, 5)
+        size_range = (1, 1)
+        timeout_range = None
+        # timeout_range = (5, 5)
 
         # address, size symbolic
         utils.set_func_args_symbolic(

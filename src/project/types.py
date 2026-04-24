@@ -212,11 +212,12 @@ class VariableMemoryRegion(MemoryRegion):
 
 
 class BaseSpecs:
+    SYMBOLIC_LOOP_BOUND = 10
+
     def __init__(self, proj):
         super().__init__()
 
         self.proj = proj
-        self.SYMBOLIC_MASKS = {}
         self.MEMORY_REGIONS = {}
         self.BEGIN_ADDR = None
         self.END_ADDRS = []

@@ -133,6 +133,7 @@ def explore_step_func(simgr):
     violated_cnt += len(simgr.violated)
     simgr.stashes["found"].clear()
     simgr.stashes["violated"].clear()
+    simgr.stashes["loopseer"].clear()
 
     print(
         f"Step: Active={len(simgr.active)}, Found={found_cnt}, Violated={violated_cnt}"
@@ -142,35 +143,14 @@ def explore_step_func(simgr):
 
 
 def LoopSeer_bound_reached_handler(seer, state):
-    if not state.loop_data.current_loop:
-        logger.warning(
-            f"LoopSeer_handler: State {state} at address {hex(state.addr)} has no loop data. Cut this state"
-        )
-        seer.cut_succs.append(state)
-        return
-
-    loop = state.loop_data.current_loop[-1][0]
-    header_addr = loop.entry.addr
-    loop_condition = state.history.jump_guard
-
-    logger.info(f"Spinning State Detected (addr: {hex(state.addr)})")
-    logger.info(f"    - Loop Entry Address: {hex(header_addr)}")
-
-    if loop_condition is not None:
-        variables = list(loop_condition.variables)
-        logger.info(f"    - Loop Condition: {loop_condition}")
-        logger.info(f"    - Related Symbolic Variables: {variables}")
-    else:
-        logger.warning("LoopSeer_handler: Cannot retrieve loop condition")
+    logger.info(f"Symbolic loop bound reached at {hex(state.addr)}. Truncating state.")
 
     seer.cut_succs.append(state)
 
 
 @app.command()
 def main(
-    spec: str,
-    search_tech="dfs",
-    debug: Annotated[bool, typer.Option(hidden=True)] = False,
+    spec: str, search="dfs", debug: Annotated[bool, typer.Option(hidden=True)] = False
 ):
     Specs = load_specs_class(spec)
 
@@ -352,9 +332,10 @@ def main(
 
     simgr = proj.factory.simgr(state)
     simgr.stashes["violated"] = []
+    simgr.stashes["loopseer"] = []
     cfg = specs.CPU.setup(proj, specs, simgr)
 
-    if search_tech == "dfs":
+    if search == "dfs":
         simgr.use_technique(angr.exploration_techniques.DFS())
     """
     迴圈處理方式:
@@ -368,9 +349,10 @@ def main(
     simgr.use_technique(
         angr.exploration_techniques.LoopSeer(
             cfg=cfg,
-            bound=10,
+            bound=Specs.SYMBOLIC_LOOP_BOUND,
             limit_concrete_loops=False,
             bound_reached=LoopSeer_bound_reached_handler,
+            discard_stash="loopseer",
         )
     )
 
