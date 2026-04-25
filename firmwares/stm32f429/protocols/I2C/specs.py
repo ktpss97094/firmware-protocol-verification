@@ -20,7 +20,6 @@ import archinfo
 import avatar2
 import claripy
 from angr.sim_type import (
-    SimStruct,
     SimTypeChar,
     SimTypeFunction,
     SimTypeInt,
@@ -122,6 +121,23 @@ class Specs(BaseSpecs):
             ),
         }
 
+        I2C_InitTypeDef = angr.types.parse_type("""
+            struct I2C_InitTypeDef {
+                uint32_t ClockSpeed;
+                uint32_t DutyCycle;
+                uint32_t OwnAddress1;
+                uint32_t AddressingMode;
+            }
+            """)
+        angr.types.register_types(I2C_InitTypeDef)
+        I2C_HandleTypeDef = angr.types.parse_type("""
+            struct I2C_HandleTypeDef {
+                void *Instance;
+                struct I2C_InitTypeDef Init;
+            }
+            """)
+        angr.types.register_types(I2C_HandleTypeDef)
+
         match MODE:
             case Mode.BLOCKING:
                 self.BEGIN_ADDR = utils.get_symbol_addr(
@@ -130,7 +146,7 @@ class Specs(BaseSpecs):
 
                 self.API_PROTOTYPE = SimTypeFunction(
                     args=[
-                        SimTypePointer(SimStruct({}, name="I2C_HandleTypeDef")),
+                        SimTypePointer(I2C_HandleTypeDef),
                         SimTypeShort(signed=False),
                         SimTypePointer(SimTypeChar(signed=False)),
                         SimTypeShort(signed=False),
@@ -145,7 +161,7 @@ class Specs(BaseSpecs):
 
                 self.API_PROTOTYPE = SimTypeFunction(
                     args=[
-                        SimTypePointer(SimStruct({}, name="I2C_HandleTypeDef")),
+                        SimTypePointer(I2C_HandleTypeDef),
                         SimTypeShort(signed=False),
                         SimTypePointer(SimTypeChar(signed=False)),
                         SimTypeShort(signed=False),
@@ -200,6 +216,14 @@ class Specs(BaseSpecs):
     def init_input(self, state):
         # size_range = (0, 2**16 - 1)
         size_range = (0, 3)
+
+        # addressing mode symbolic
+        addressing_mode = state.mem[
+            self.API_ARGS[0]
+        ].struct.I2C_HandleTypeDef.Init.AddressingMode
+        addressing_mode.store(
+            claripy.BVS("AddressingMode", addressing_mode.resolved.length)
+        )
 
         # address, size symbolic
         utils.set_func_args_symbolic(
