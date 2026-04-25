@@ -14,7 +14,7 @@ STATS=$(awk '$1 ~ /^[0-9.]+$/ && NF >= 5 {print $0; exit}' "$TIME_OUT")
 read -r ELAPSED_SEC MAX_RSS_KB CPU_PER USER_SEC SYS_SEC <<< "$STATS"
 rm "$TIME_OUT"
 
-ELAPSED_INT=$(awk "BEGIN {print int($ELAPSED_SEC)}")
+ELAPSED_SEC=$(awk "BEGIN {print int($ELAPSED_SEC)}")
 MAX_RSS_MB=$(awk "BEGIN {print int($MAX_RSS_KB / 1024)}")
 
 printf "Elapsed (wall clock) time: %d s\n" "$ELAPSED_SEC"
