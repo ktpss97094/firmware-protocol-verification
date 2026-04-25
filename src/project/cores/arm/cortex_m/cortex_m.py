@@ -14,6 +14,7 @@ class CortexM(ARM):
 
     def setup(self, proj, specs, simgr):
         # ARMv7-M Architecture Reference Manual B1.5.8 Exception return behavior
+        # 實際上 processor 的行為是攔截到 write exception return value 到 pc 的時機做 exception return；但我的實作是讓 pc 成功 write exception return value 之後，把 pc 要執行的指令 hook 成 exception return 行為
         proj.hook(
             0xFFFFFFF1, self._ExcpReturnProcedure(cpu=self)
         )  # return to handler mode, main stack, basic frame
@@ -138,6 +139,7 @@ class CortexM(ARM):
             self.cpu = cpu
 
         def run(self):
+            # TODO: If an EXC_RETURN value is loaded into the PC when in Thread mode, or from the vector table, or by any other instruction, the value is treated as an address, not as a special value. The 0xFXXXXXXX address range, that includes all possible EXC_RETURN values, has Execute Never (XN) permissions, and loading this value causes a MemManage exception, or an INVSTATE UsageFault exception, or escalation of the exception to a HardFault.
             pc = self.cpu.excp_exit(self.state)
 
             self.successors.add_successor(self.state, pc, claripy.true(), "Ijk_Boring")
