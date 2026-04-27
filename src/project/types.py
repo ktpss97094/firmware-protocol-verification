@@ -91,18 +91,10 @@ class MemoryRegion:
 
         return addr, offset, value
 
-    def post_read_spec(self, state, addr, offset, readout_value):
-        pass
-
-    def post_write_spec(self, state, addr, offset, value):
-        pass
-
     def post_read(self, state):
         addr = state.solver.eval(state.inspect.mem_read_address)
         offset = addr - self.start
         readout_value = state.inspect.mem_read_expr
-
-        self.post_read_spec(state, addr, offset, readout_value)
 
         return addr, offset, readout_value
 
@@ -110,8 +102,6 @@ class MemoryRegion:
         addr = state.solver.eval(state.inspect.mem_write_address)
         offset = addr - self.start
         value = state.inspect.mem_write_expr
-
-        self.post_write_spec(state, addr, offset, value)
 
         return addr, offset, value
 

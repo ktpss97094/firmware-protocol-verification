@@ -43,7 +43,9 @@ MODE = Mode.BLOCKING
 
 
 class I2C(STM32F4_I2C):
-    def post_write_spec(self, state, addr, offset, value):
+    def pre_write(self, state):
+        _, offset, value = super().pre_write(state)
+
         sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
 
         match offset:
