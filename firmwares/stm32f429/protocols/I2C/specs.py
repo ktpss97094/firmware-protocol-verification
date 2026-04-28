@@ -1,11 +1,11 @@
 """
 read_back_verification
-1. Trigger: write CR1 START
-    Condition: ARLO 為 0
+1. Trigger: write CR1
+    Condition: START 為 1 且 ARLO 為 0
 2. Trigger: write DR
     Condition: ARLO 為 0
-3. Trigger: write CR1 STOP
-    Condition: ARLO 為 0
+3. Trigger: write CR1
+    Condition: STOP 為 1 且 ARLO 為 0
 
 Symbolic:
 uwTick
@@ -50,19 +50,23 @@ class I2C(STM32F4_I2C):
 
         match offset:
             case I2C.I2C_CR1.OFFSET:
-                if state.solver.is_true(value[I2C.I2C_CR1.START.bit] == 1):
-                    # --- Spec 1 ---
-                    if state.solver.satisfiable(
-                        extra_constraints=[sr1[I2C.I2C_SR1.ARLO.bit] == 1]
-                    ):
-                        raise Violation("read_back_verification (spec 1)")
+                # --- Spec 1 ---
+                if state.solver.satisfiable(
+                    extra_constraints=[
+                        value[I2C.I2C_CR1.START.bit] == 1,
+                        sr1[I2C.I2C_SR1.ARLO.bit] == 1,
+                    ]
+                ):
+                    raise Violation("read_back_verification (spec 1)")
 
-                if state.solver.is_true(value[I2C.I2C_CR1.STOP.bit] == 1):
-                    # --- Spec 3 ---
-                    if state.solver.satisfiable(
-                        extra_constraints=[sr1[I2C.I2C_SR1.ARLO.bit] == 1]
-                    ):
-                        raise Violation("read_back_verification (spec 3)")
+                # --- Spec 3 ---
+                if state.solver.satisfiable(
+                    extra_constraints=[
+                        value[I2C.I2C_CR1.STOP.bit] == 1,
+                        sr1[I2C.I2C_SR1.ARLO.bit] == 1,
+                    ]
+                ):
+                    raise Violation("read_back_verification (spec 3)")
 
             case I2C.I2C_DR.OFFSET:
                 # --- Spec 2 ---
