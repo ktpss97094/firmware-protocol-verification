@@ -3,9 +3,9 @@ read_back_verification
 1. Trigger: write CR1
     Condition: START 為 1 且 ARLO 為 0
 2. Trigger: write DR
-    Condition: ARLO 為 0
+    Condition: MSL 為 1 且 ARLO 為 0
 3. Trigger: write CR1
-    Condition: STOP 為 1 且 ARLO 為 0
+    Condition: STOP 為 1 MSL 為 1 且 ARLO 為 0
 
 Symbolic:
 uwTick
@@ -47,6 +47,7 @@ class I2C(STM32F4_I2C):
         _, offset, value = super().pre_write(state)
 
         sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
+        sr2 = utils.load(state, self.start + I2C.I2C_SR2.OFFSET)
 
         match offset:
             case I2C.I2C_CR1.OFFSET:
@@ -63,6 +64,7 @@ class I2C(STM32F4_I2C):
                 if state.solver.satisfiable(
                     extra_constraints=[
                         value[I2C.I2C_CR1.STOP.bit] == 1,
+                        sr2[I2C.I2C_SR2.MSL.bit] == 1,
                         sr1[I2C.I2C_SR1.ARLO.bit] == 1,
                     ]
                 ):
@@ -71,7 +73,10 @@ class I2C(STM32F4_I2C):
             case I2C.I2C_DR.OFFSET:
                 # --- Spec 2 ---
                 if state.solver.satisfiable(
-                    extra_constraints=[sr1[I2C.I2C_SR1.ARLO.bit] == 1]
+                    extra_constraints=[
+                        sr2[I2C.I2C_SR2.MSL.bit] == 1,
+                        sr1[I2C.I2C_SR1.ARLO.bit] == 1,
+                    ]
                 ):
                     raise Violation("read_back_verification (spec 2)")
 
