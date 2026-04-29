@@ -143,13 +143,9 @@ def explore_step_func(simgr):
 
 
 def LoopSeer_bound_reached_handler(seer, state):
-    pass
-    if any("SYMBIT" in var for var in state.history.jump_guard.variables):
-        logger.info(
-            f"Symbolic loop bound reached at {hex(state.addr)}. Truncating state."
-        )
+    logger.info(f"Loop bound reached at {hex(state.addr)}. Truncating state.")
 
-        seer.cut_succs.append(state)
+    seer.cut_succs.append(state)
 
 
 @app.command()
@@ -344,19 +340,11 @@ def main(
 
     if search == "dfs":
         simgr.use_technique(angr.exploration_techniques.DFS())
-    """
-    迴圈處理方式:
-    1. concrete value 的無窮迴圈 (e.g., while(1) 且沒有 break)
-        目前無法測出，我們也只 assume finite execution traces
-    2. concrete value 大 loop bound 迴圈 (e.g., while(i < 1000000))
-        不限制 (limit_concrete_loops=False)，避免影響 firmware 實際功能
-    3. symbolic condition 造成的無窮迴圈 (e.g., polling loop，condition 為一等待 hardware set 的 flag)
-        限制在 bound 個迴圈內做 verification，超過就 truncate
-    """
     simgr.use_technique(
         angr.exploration_techniques.LoopSeer(
             cfg=cfg,
-            bound=Specs.SYMBOLIC_LOOP_BOUND,
+            functions=Specs.BOUND_LOOP_FUNCTIONS,
+            bound=Specs.LOOP_BOUND,
             bound_reached=LoopSeer_bound_reached_handler,
             discard_stash="loopseer",
         )
