@@ -3,6 +3,7 @@ from enum import Enum, auto
 
 import angr
 import archinfo
+import claripy
 from angr.engines import (
     HooksMixin,
     SimEngineFailure,
@@ -256,3 +257,25 @@ class BaseCustomGlobals(angr.SimStatePlugin):
         new_plugin = super().copy(memo)
 
         return new_plugin
+
+
+class SymbolicAnnotation(claripy.Annotation):
+    def __init__(self, identifier=""):
+        self.identifier = identifier
+
+    @property
+    def eliminatable(self):
+        return False  # 簡化時不要消除它
+
+    @property
+    def relocatable(self):
+        return False  # 參與運算時，不要將這個標記 propogate 給結果
+
+    def __hash__(self):
+        return hash((type(self), self.identifier))
+
+    def __eq__(self, other):
+        return type(other) is type(self) and self.identifier == other.identifier
+
+    def __repr__(self):
+        return f"<SymAnn {self.identifier}>"

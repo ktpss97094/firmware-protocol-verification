@@ -143,9 +143,13 @@ def explore_step_func(simgr):
 
 
 def LoopSeer_bound_reached_handler(seer, state):
-    logger.info(f"Symbolic loop bound reached at {hex(state.addr)}. Truncating state.")
+    pass
+    if any("SYMBIT" in var for var in state.history.jump_guard.variables):
+        logger.info(
+            f"Symbolic loop bound reached at {hex(state.addr)}. Truncating state."
+        )
 
-    seer.cut_succs.append(state)
+        seer.cut_succs.append(state)
 
 
 @app.command()
@@ -353,7 +357,6 @@ def main(
         angr.exploration_techniques.LoopSeer(
             cfg=cfg,
             bound=Specs.SYMBOLIC_LOOP_BOUND,
-            limit_concrete_loops=False,
             bound_reached=LoopSeer_bound_reached_handler,
             discard_stash="loopseer",
         )
