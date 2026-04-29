@@ -449,6 +449,7 @@ class I2C(MMIOMemoryRegion):
         new_cr1 = utils.load(state, self.start + I2C.I2C_CR1.OFFSET)
         new_sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
         new_sr2 = utils.load(state, self.start + I2C.I2C_SR2.OFFSET)
+        SR1_read = state.globals.get(f"{self.name}_SR1_read", False)
 
         match offset:
             case I2C.I2C_SR1.OFFSET:
@@ -470,7 +471,7 @@ class I2C(MMIOMemoryRegion):
                 )
 
             case I2C.I2C_SR2.OFFSET:
-                if state.globals.get(f"{self.name}_SR1_read", False):
+                if SR1_read:
                     state.globals[f"{self.name}_SR1_read"] = False
 
                     # (ADDR) This bit is cleared by software reading SR1 register followed reading SR2
@@ -509,6 +510,7 @@ class I2C(MMIOMemoryRegion):
         new_cr1 = utils.load(state, self.start + I2C.I2C_CR1.OFFSET)
         new_sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
         new_sr2 = utils.load(state, self.start + I2C.I2C_SR2.OFFSET)
+        SR1_read = state.globals.get(f"{self.name}_SR1_read", False)
 
         match offset:
             case I2C.I2C_CR1.OFFSET:
@@ -538,7 +540,7 @@ class I2C(MMIOMemoryRegion):
                     self, state, new_sr1, new_cr1, new_sr2, force=True, value=0
                 )
 
-                if state.globals.get(f"{self.name}_SR1_read", False):
+                if SR1_read:
                     state.globals[f"{self.name}_SR1_read"] = False
 
                     # (SB) Cleared by software by reading the SR1 register followed by writing the DR register
@@ -571,7 +573,7 @@ class I2C(MMIOMemoryRegion):
 
                         state.globals["R/W"] = value[0]
                     else:
-                        if state.globals.get(f"{self.name}_SR1_read", False):
+                        if SR1_read:
                             state.globals[f"{self.name}_SR1_read"] = False
 
                             # (ADD10) Cleared by software reading the SR1 register followed by a write in the DR register of the second address byte
