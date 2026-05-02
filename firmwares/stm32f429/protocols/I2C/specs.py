@@ -1,11 +1,13 @@
-"""
+r"""
 read_back_verification
 1. Trigger: write CR1
-    Condition: START 為 1 且 ARLO 為 0
+    Condition: START = 1 \implies (MSL = 1 \implies ARLO = 0)
 2. Trigger: write DR
-    Condition: MSL 為 1 且 ARLO 為 0
+    Condition: MSL = 1 \implies ARLO = 0
 3. Trigger: write CR1
-    Condition: STOP 為 1 MSL 為 1 且 ARLO 為 0
+    Condition: STOP = 1 \implies (MSL = 1 \implies ARLO = 0)
+4. (DMA Mode) Trigger: TxE = 1 \land DMAEN = 1 \land DMA_SxCR.EN = 1 \land DMA_SxNDTR > 0
+    Condition: MSL = 1 \implies ARLO = 0
 
 Symbolic:
 uwTick
@@ -29,6 +31,7 @@ from angr.sim_type import (
 
 from project import config, utils
 from project.cores.arm.cortex_m.systick import SysTickVariable
+from project.peripherals.stm32f4.dma import DMA as STM32F4_DMA
 from project.peripherals.stm32f4.i2c import I2C as STM32F4_I2C
 from project.types import BaseSpecs, MemoryRegion, MMIOMemoryRegion, Violation
 
@@ -39,7 +42,7 @@ class Mode(Enum):
     DMA = auto()
 
 
-MODE = Mode.BLOCKING
+MODE = Mode.DMA
 
 
 class I2C(STM32F4_I2C):
@@ -55,6 +58,7 @@ class I2C(STM32F4_I2C):
                 if state.solver.satisfiable(
                     extra_constraints=[
                         value[I2C.I2C_CR1.START.bit] == 1,
+                        sr2[I2C.I2C_SR2.MSL.bit] == 1,
                         sr1[I2C.I2C_SR1.ARLO.bit] == 1,
                     ]
                 ):
@@ -81,6 +85,40 @@ class I2C(STM32F4_I2C):
                     raise Violation("read_back_verification (spec 2)")
 
 
+class DMA(STM32F4_DMA):
+    def pre_inst(self, state):
+        super().pre_inst(state)
+
+        i2c_cr2 = utils.load(
+            state, self.spec.MEMORY_REGIONS["I2C1"].start + I2C.I2C_CR2.OFFSET
+        )
+        i2c_sr1 = utils.load(
+            state, self.spec.MEMORY_REGIONS["I2C1"].start + I2C.I2C_SR1.OFFSET
+        )
+        i2c_sr2 = utils.load(
+            state, self.spec.MEMORY_REGIONS["I2C1"].start + I2C.I2C_SR2.OFFSET
+        )
+        s6cr = utils.load(state, self.start + DMA.DMA_S6CR.OFFSET)
+        s6ndtr = utils.load(state, self.start + DMA.DMA_S6NDTR.OFFSET)
+
+        if state.solver.satisfiable(
+            extra_constraints=[
+                i2c_sr1[I2C.I2C_SR1.TxE.bit] == 1,
+                i2c_cr2[I2C.I2C_CR2.DMAEN.bit] == 1,
+                s6cr[DMA.DMA_S6CR.EN.bit] == 1,
+                s6ndtr[
+                    DMA.DMA_S6NDTR.NDT.bit
+                    + DMA.DMA_S6NDTR.NDT.size
+                    - 1 : DMA.DMA_S6NDTR.NDT.bit
+                ]
+                > 0,
+                i2c_sr2[I2C.I2C_SR2.MSL.bit] == 1,
+                i2c_sr1[I2C.I2C_SR1.ARLO.bit] == 1,
+            ]
+        ):
+            raise Violation("read_back_verification (spec 4)")
+
+
 class Specs(BaseSpecs):
     # --- Paths ---
     match MODE:
@@ -93,6 +131,11 @@ class Specs(BaseSpecs):
             FIRMWARE_PATH = str(
                 config.PROJECT_ROOT
                 / "firmwares/stm32f429/build/protocols/I2C/master/Interrupt_Mode/stm32f4xx-hal-driver/firmware.elf"
+            )
+        case Mode.DMA:
+            FIRMWARE_PATH = str(
+                config.PROJECT_ROOT
+                / "firmwares/stm32f429/build/protocols/I2C/master/DMA_Mode/stm32f4xx-hal-driver/firmware.elf"
             )
     OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"
     OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"
@@ -118,22 +161,29 @@ class Specs(BaseSpecs):
 
     def _define_specs(self):
         self.MEMORY_REGIONS = {
-            "RAM": MemoryRegion(start=0x20000000, size=0x30000, name="RAM"),
-            "CCMRAM": MemoryRegion(start=0x10000000, size=0x10000, name="CCMRAM"),
+            "RAM": MemoryRegion(start=0x20000000, size=0x30000, spec=self, name="RAM"),
+            "CCMRAM": MemoryRegion(
+                start=0x10000000, size=0x10000, spec=self, name="CCMRAM"
+            ),
             "FLASH": MemoryRegion(
-                start=0x08000000, size=0x200000, name="FLASH", transfer=False
+                start=0x08000000, size=0x200000, spec=self, name="FLASH", transfer=False
             ),
             "VECTOR_TABLE_ALIAS": MemoryRegion(
                 start=0x00000000,
                 size=0x400,
+                spec=self,
                 name="VECTOR_TABLE_ALIAS",
                 physical_addr=0x08000000,
             ),
-            "I2C1": I2C(start=0x40005400, size=0x400, name="I2C1"),
-            "NVIC": MMIOMemoryRegion(start=0xE000E100, size=0xC00, name="NVIC"),
+            "I2C1": I2C(start=0x40005400, size=0x400, spec=self, name="I2C1"),
+            "NVIC": MMIOMemoryRegion(
+                start=0xE000E100, size=0xC00, spec=self, name="NVIC"
+            ),
+            "DMA1": DMA(start=0x40026000, size=0x400, spec=self, name="DMA1"),
             "SysTickVariable": SysTickVariable(
                 start=utils.get_symbol_addr(self.proj, "uwTick", is_variable=True),
                 size=0x4,
+                spec=self,
                 name="SysTickVariable",
             ),
         }
@@ -160,7 +210,17 @@ class Specs(BaseSpecs):
                 self.BEGIN_ADDR = utils.get_symbol_addr(
                     self.proj, "HAL_I2C_Master_Transmit", is_variable=False
                 )
+            case Mode.INTERRUPT:
+                self.BEGIN_ADDR = utils.get_symbol_addr(
+                    self.proj, "HAL_I2C_Master_Transmit_IT", is_variable=False
+                )
+            case Mode.DMA:
+                self.BEGIN_ADDR = utils.get_symbol_addr(
+                    self.proj, "HAL_I2C_Master_Transmit_DMA", is_variable=False
+                )
 
+        match MODE:
+            case Mode.BLOCKING:
                 self.API_PROTOTYPE = SimTypeFunction(
                     args=[
                         SimTypePointer(I2C_HandleTypeDef),
@@ -171,11 +231,7 @@ class Specs(BaseSpecs):
                     ],
                     returnty=SimTypeInt(signed=False),
                 )
-            case Mode.INTERRUPT:
-                self.BEGIN_ADDR = utils.get_symbol_addr(
-                    self.proj, "HAL_I2C_Master_Transmit_IT", is_variable=False
-                )
-
+            case Mode.INTERRUPT | Mode.DMA:
                 self.API_PROTOTYPE = SimTypeFunction(
                     args=[
                         SimTypePointer(I2C_HandleTypeDef),
@@ -185,6 +241,7 @@ class Specs(BaseSpecs):
                     ],
                     returnty=SimTypeInt(signed=False),
                 )
+
         self.END_ADDRS = [
             utils.get_symbol_addr(
                 self.proj, "END_SYMBOLIC_EXECUTION", is_variable=False
@@ -197,7 +254,7 @@ class Specs(BaseSpecs):
         #     self.proj, "SYMBOL_FUNCTION", is_variable=False
         # )
 
-    def init_inspect(self, state):
+    def init_inspect(self, state: angr.SimState):
         state.inspect.b(
             "mem_read",
             when=angr.BP_AFTER,
@@ -217,6 +274,12 @@ class Specs(BaseSpecs):
             when=angr.BP_AFTER,
             condition=self.MEMORY_REGIONS["I2C1"].in_region_write,
             action=self.MEMORY_REGIONS["I2C1"].post_write,
+        )
+
+        state.inspect.b(
+            "instruction",
+            when=angr.BP_BEFORE,
+            action=self.MEMORY_REGIONS["DMA1"].pre_inst,
         )
 
         state.inspect.b(

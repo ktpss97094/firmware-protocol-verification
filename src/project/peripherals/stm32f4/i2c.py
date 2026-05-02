@@ -74,6 +74,7 @@ class I2C(MMIOMemoryRegion):
     class I2C_CR2(BaseRegister):
         OFFSET = 0x04
 
+        DMAEN = BitsField(11, AccessType.RW, 0)
         ITBUFEN = BitsField(10, AccessType.RW, 0)
         ITEVTEN = BitsField(9, AccessType.RW, 0)
         ITERREN = BitsField(8, AccessType.RW, 0)

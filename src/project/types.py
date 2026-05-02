@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -66,6 +68,7 @@ class MemoryRegion:
         self,
         start: int,
         size: int,
+        spec: BaseSpecs,
         physical_addr: int | None = None,
         transfer: bool = True,
         name: str = "",
@@ -74,9 +77,13 @@ class MemoryRegion:
 
         self.start = start
         self.size = size
+        self.spec = spec
         self.physical_addr = physical_addr if physical_addr is not None else start
         self.transfer = transfer
         self.name = name
+
+    def pre_inst(self, state):
+        pass
 
     def pre_read(self, state):
         addr = state.solver.eval(state.inspect.mem_read_address)

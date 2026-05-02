@@ -205,7 +205,7 @@ class CortexM(ARM):
                     continue
 
                 # 剔除低於目前 priority 的 IRQ，並根據 priority 排序 IRQ
-                eligible_irqs = []  # [(priority, irq, [(trigger variable, trigger condition), ...]), ...]
+                eligible_irqs = []  # [(priority, irq, trigger conditions), ...]
                 for irq, trig_conds in pending_irqs.items():
                     prio = NVIC.get_irq_priority(check_state, irq)
                     if prio < check_state.globals.get("current_priority", 256):

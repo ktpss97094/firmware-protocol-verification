@@ -2,6 +2,7 @@ import logging
 import pickle
 from pathlib import Path
 
+import angr
 import archinfo
 import claripy
 from angr.sim_type import SimTypeFunction
@@ -19,7 +20,7 @@ def load(state, addr, size=None):
     )
 
 
-def store(state, addr, value, size=None):
+def store(state: angr.SimState, addr, value, size=None):
     state.memory.store(
         addr,
         value,
