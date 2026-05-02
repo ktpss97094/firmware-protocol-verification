@@ -1,8 +1,16 @@
 from collections import defaultdict
 
+import claripy
+
 from project import utils
 from project.peripherals.stm32f4.i2c import I2C
-from project.types import AccessType, BaseRegister, BitsField, MMIOMemoryRegion
+from project.types import (
+    AccessType,
+    BaseRegister,
+    BitsField,
+    EventForkHandler,
+    MMIOMemoryRegion,
+)
 
 
 class DMA(MMIOMemoryRegion):
@@ -55,43 +63,6 @@ class DMA(MMIOMemoryRegion):
 
         FEIE = BitsField(7, AccessType.RW, 0)  # FE (FIFO error) interrupt enable
 
-    def pre_inst(self, state):
-        super().pre_inst(state)
-
-        s6cr = utils.load(state, self.start + DMA.DMA_S6CR.OFFSET)
-
-        # channel select
-        match state.solver.eval(
-            s6cr[
-                DMA.DMA_S6CR.CHSEL.bit
-                + DMA.DMA_S6CR.CHSEL.size
-                - 1 : DMA.DMA_S6CR.CHSEL.bit
-            ]
-        ):
-            case 1:  # I2C1_TX
-                i2c1_sr1 = utils.load(
-                    state, self.spec.MEMORY_REGIONS["I2C1"].start + I2C.I2C_SR1.OFFSET
-                )
-                s6m0ar = utils.load(state, self.start + DMA.DMA_S6M0AR.OFFSET)
-                s6par = utils.load(state, self.start + DMA.DMA_S6PAR.OFFSET)
-                data = utils.load(
-                    state,
-                    s6m0ar[
-                        DMA.DMA_S6M0AR.M0A.bit
-                        + DMA.DMA_S6M0AR.M0A.size
-                        - 1 : DMA.DMA_S6M0AR.M0A.bit
-                    ],
-                )
-                state.memory.store(
-                    s6par[
-                        DMA.DMA_S6PAR.PAR.bit
-                        + DMA.DMA_S6PAR.PAR.size
-                        - 1 : DMA.DMA_S6PAR.PAR.bit
-                    ],
-                    data,
-                    condition=i2c1_sr1[I2C.I2C_SR1.TXE.bit] == 1,
-                )
-
     def get_pending_irqs(self, state):
         s6cr = utils.load(state, self.start + DMA.DMA_S6CR.OFFSET)
         s6fcr = utils.load(state, self.start + DMA.DMA_S6FCR.OFFSET)
@@ -131,3 +102,90 @@ class DMA(MMIOMemoryRegion):
                 output[irq_num].append(trigger_cond)
 
         return output
+
+    class _DMAHandler(EventForkHandler):
+        def __init__(self, cpu, proj, specs, dma):
+            self.cpu = cpu
+            self.specs = specs
+            self.dma = dma
+            self.checkpoints = defaultdict(set)
+
+            ckpt_addrs = self.cpu.get_explicit_memory_access_instruction_address(
+                proj, specs.get_MMIOMemoryRegions()
+            )
+            for ins_addr in ckpt_addrs:
+                self.checkpoints[ins_addr].add("inst_after")
+
+        def get_checkpoints(self):
+            return self.checkpoints
+
+        def get_eligible_events(self, state):
+            s6cr = utils.load(state, self.dma.start + DMA.DMA_S6CR.OFFSET)
+            s6ndtr = utils.load(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET)
+
+            # channel select
+            match state.solver.eval(
+                s6cr[
+                    DMA.DMA_S6CR.CHSEL.bit
+                    + DMA.DMA_S6CR.CHSEL.size
+                    - 1 : DMA.DMA_S6CR.CHSEL.bit
+                ]
+            ):
+                case 1:  # I2C1_TX
+                    i2c1_cr2 = utils.load(
+                        state,
+                        self.spec.MEMORY_REGIONS["I2C1"].start + I2C.I2C_CR2.OFFSET,
+                    )
+                    i2c1_sr1 = utils.load(
+                        state,
+                        self.spec.MEMORY_REGIONS["I2C1"].start + I2C.I2C_SR1.OFFSET,
+                    )
+
+                    if state.solver.is_true(
+                        claripy.And(
+                            i2c1_cr2[I2C.I2C_CR2.DMAEN.bit] == 1,
+                            s6cr[DMA.DMA_S6CR.EN.bit] == 1,
+                            s6ndtr[
+                                DMA.DMA_S6NDTR.NDT.bit
+                                + DMA.DMA_S6NDTR.NDT.size
+                                - 1 : DMA.DMA_S6NDTR.NDT.bit
+                            ]
+                            > 0,
+                        )
+                    ):
+                        return [(None, [i2c1_sr1[I2C.I2C_SR1.TXE.bit] == 1])]
+
+            return []
+
+        def trigger_event(self, state, event_info):
+            s6m0ar = utils.load(state, self.dma.start + DMA.DMA_S6M0AR.OFFSET)
+            s6par = utils.load(state, self.dma.start + DMA.DMA_S6PAR.OFFSET)
+            s6ndtr = utils.load(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET)
+            hisr = utils.load(state, self.dma.start + DMA.DMA_HISR.OFFSET)
+            data = utils.load(
+                state,
+                s6m0ar[
+                    DMA.DMA_S6M0AR.M0A.bit
+                    + DMA.DMA_S6M0AR.M0A.size
+                    - 1 : DMA.DMA_S6M0AR.M0A.bit
+                ],
+            )
+
+            print(f"Perform DMA transfer | pc: {state.regs.pc}")
+            state.memory.store(
+                s6par[
+                    DMA.DMA_S6PAR.PAR.bit
+                    + DMA.DMA_S6PAR.PAR.size
+                    - 1 : DMA.DMA_S6PAR.PAR.bit
+                ],
+                data,
+            )
+            utils.store(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET, s6ndtr - 1)
+            utils.store(
+                state,
+                self.dma.start + DMA.DMA_HISR.OFFSET,
+                utils.replace_bit(hisr, DMA.DMA_HISR.TCIF6.bit, 1),
+            )
+
+    def get_event_handlers(self, cpu, proj, specs):
+        return [DMA._DMAHandler(cpu=cpu, proj=proj, specs=specs, dma=self)]

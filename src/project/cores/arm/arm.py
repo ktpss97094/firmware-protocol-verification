@@ -19,14 +19,16 @@ class ARM(CPU):
 
                 # 1. WFI, WFE (休眠) 之前
                 if mnemonic in {"WFI", "WFE"}:
-                    checkpoints[self.normalize_address(insn.address)] = "inst_before"
+                    checkpoints[self.normalize_address(insn.address)].add("inst_before")
                 # 2. CPSID (禁用中斷) 之前、CPSIE (開啟中斷) 之後
                 elif mnemonic.startswith("CPS"):
                     if mnemonic == "CPSID":
-                        checkpoints[self.normalize_address(insn.address)] = (
+                        checkpoints[self.normalize_address(insn.address)].add(
                             "inst_before"
                         )
                     elif mnemonic == "CPSIE":
-                        checkpoints[self.normalize_address(insn.address)] = "inst_after"
+                        checkpoints[self.normalize_address(insn.address)].add(
+                            "inst_after"
+                        )
 
         return checkpoints

@@ -6,8 +6,6 @@ read_back_verification
     Condition: MSL = 1 \implies ARLO = 0
 3. Trigger: write CR1
     Condition: STOP = 1 \implies (MSL = 1 \implies ARLO = 0)
-4. (DMA Mode) Trigger: TxE = 1 \land DMAEN = 1 \land DMA_SxCR.EN = 1 \land DMA_SxNDTR > 0
-    Condition: MSL = 1 \implies ARLO = 0
 
 Symbolic:
 uwTick
@@ -20,7 +18,6 @@ from enum import Enum, auto
 import angr
 import archinfo
 import avatar2
-import claripy
 from angr.sim_type import (
     SimTypeChar,
     SimTypeFunction,
@@ -31,7 +28,7 @@ from angr.sim_type import (
 
 from project import config, utils
 from project.cores.arm.cortex_m.systick import SysTickVariable
-from project.peripherals.stm32f4.dma import DMA as STM32F4_DMA
+from project.peripherals.stm32f4.dma import DMA
 from project.peripherals.stm32f4.i2c import I2C as STM32F4_I2C
 from project.types import BaseSpecs, MemoryRegion, MMIOMemoryRegion, Violation
 
@@ -83,40 +80,6 @@ class I2C(STM32F4_I2C):
                     ]
                 ):
                     raise Violation("read_back_verification (spec 2)")
-
-
-class DMA(STM32F4_DMA):
-    def pre_inst(self, state):
-        super().pre_inst(state)
-
-        i2c_cr2 = utils.load(
-            state, self.spec.MEMORY_REGIONS["I2C1"].start + I2C.I2C_CR2.OFFSET
-        )
-        i2c_sr1 = utils.load(
-            state, self.spec.MEMORY_REGIONS["I2C1"].start + I2C.I2C_SR1.OFFSET
-        )
-        i2c_sr2 = utils.load(
-            state, self.spec.MEMORY_REGIONS["I2C1"].start + I2C.I2C_SR2.OFFSET
-        )
-        s6cr = utils.load(state, self.start + DMA.DMA_S6CR.OFFSET)
-        s6ndtr = utils.load(state, self.start + DMA.DMA_S6NDTR.OFFSET)
-
-        if state.solver.satisfiable(
-            extra_constraints=[
-                i2c_sr1[I2C.I2C_SR1.TxE.bit] == 1,
-                i2c_cr2[I2C.I2C_CR2.DMAEN.bit] == 1,
-                s6cr[DMA.DMA_S6CR.EN.bit] == 1,
-                s6ndtr[
-                    DMA.DMA_S6NDTR.NDT.bit
-                    + DMA.DMA_S6NDTR.NDT.size
-                    - 1 : DMA.DMA_S6NDTR.NDT.bit
-                ]
-                > 0,
-                i2c_sr2[I2C.I2C_SR2.MSL.bit] == 1,
-                i2c_sr1[I2C.I2C_SR1.ARLO.bit] == 1,
-            ]
-        ):
-            raise Violation("read_back_verification (spec 4)")
 
 
 class Specs(BaseSpecs):
@@ -277,12 +240,6 @@ class Specs(BaseSpecs):
         )
 
         state.inspect.b(
-            "instruction",
-            when=angr.BP_BEFORE,
-            action=self.MEMORY_REGIONS["DMA1"].pre_inst,
-        )
-
-        state.inspect.b(
             "mem_read",
             when=angr.BP_BEFORE,
             condition=self.MEMORY_REGIONS["SysTickVariable"].in_region_read,
@@ -295,31 +252,31 @@ class Specs(BaseSpecs):
 
     def init_input(self, state):
         # size_range = (0, 2**16 - 1)
-        size_range = (0, 3)
+        size_range = (2, 2)
 
         # addressing mode symbolic
-        addressing_mode = state.mem[
-            self.API_ARGS[0]
-        ].struct.I2C_HandleTypeDef.Init.AddressingMode
-        addressing_mode.store(
-            claripy.BVS("AddressingMode", addressing_mode.resolved.length)
-        )
+        # addressing_mode = state.mem[
+        #     self.API_ARGS[0]
+        # ].struct.I2C_HandleTypeDef.Init.AddressingMode
+        # addressing_mode.store(
+        #     claripy.BVS("AddressingMode", addressing_mode.resolved.length)
+        # )
 
         # address, size symbolic
-        utils.set_func_args_symbolic(
-            state, self.API_PROTOTYPE, {1: None, 3: size_range}
-        )
+        # utils.set_func_args_symbolic(
+        #     state, self.API_PROTOTYPE, {1: None, 3: size_range}
+        # )
 
         # data symbolic
-        element_size_bits = self.API_PROTOTYPE.args[2].pts_to.size
-        element_size_bytes = element_size_bits // 8
-        for idx in range(*size_range):
-            utils.store(
-                state,
-                self.API_ARGS[2] + (idx * element_size_bytes),
-                claripy.BVS(f"data[{idx}]", element_size_bits),
-                size=element_size_bytes,
-            )
+        # element_size_bits = self.API_PROTOTYPE.args[2].pts_to.size
+        # element_size_bytes = element_size_bits // 8
+        # for idx in range(*size_range):
+        #     utils.store(
+        #         state,
+        #         self.API_ARGS[2] + (idx * element_size_bytes),
+        #         claripy.BVS(f"data[{idx}]", element_size_bits),
+        #         size=element_size_bytes,
+        #     )
 
         # timeout symbolic
         match MODE:

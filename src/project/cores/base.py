@@ -1,6 +1,9 @@
 import logging
+from collections import defaultdict
 
+import angr
 import angr.analyses.variable_recovery.engine_vex as engine_vex
+import claripy
 import pyvex
 from angr.knowledge_plugins.variables.variable_access import VariableAccessSort
 from angr.knowledge_plugins.xrefs.xref_types import XRefType
@@ -72,11 +75,31 @@ engine_vex.SimEngineVRVEX._handle_stmt_StoreG = _patched_handle_stmt_StoreG
 
 
 class CPU:
+    def __init__(self):
+        self._mmio_rw_addrs = None
+
     def normalize_address(self, addr):
         return addr
 
+    def get_explicit_memory_access_instruction_address(self, proj, mmio_regions):
+        if self._mmio_rw_addrs is not None:
+            return self._mmio_rw_addrs
+
+        self._mmio_rw_addrs = []
+
+        for dst_addr, xref_set in proj.kb.xrefs.xrefs_by_dst.items():
+            if any(mmio_region.in_region(dst_addr) for mmio_region in mmio_regions):
+                for xref in xref_set:
+                    if xref.ins_addr is not None:
+                        if xref.type == XRefType.Read or xref.type == XRefType.Write:
+                            self._mmio_rw_addrs.append(
+                                self.normalize_address(xref.ins_addr)
+                            )
+
+        return self._mmio_rw_addrs
+
     def get_interrupt_checkpoints(self, proj, cfg, mmio_regions):
-        checkpoints: dict[int, str] = {}
+        checkpoints = defaultdict(set)
 
         for node in cfg.graph.nodes():
             if node.block is None:
@@ -92,7 +115,7 @@ class CPU:
                         ins_addr = block.instruction_addrs[
                             self._stmt_idx_to_inst_idx(block.vex, stmt_idx)
                         ]
-                        checkpoints[self.normalize_address(ins_addr)] = "inst_before"
+                        checkpoints[self.normalize_address(ins_addr)].add("inst_before")
                     except IndexError:
                         pass
                 # 2. Store-Conditional 之前
@@ -103,7 +126,7 @@ class CPU:
                             ins_addr = block.instruction_addrs[
                                 self._stmt_idx_to_inst_idx(block.vex, stmt_idx)
                             ]
-                            checkpoints[self.normalize_address(ins_addr)] = (
+                            checkpoints[self.normalize_address(ins_addr)].add(
                                 "inst_before"
                             )
                         except IndexError:
@@ -126,17 +149,14 @@ class CPU:
                     access.access_type == VariableAccessSort.READ
                     or access.access_type == VariableAccessSort.WRITE
                 ):
-                    checkpoints[self.normalize_address(ins_addr)] = "inst_before"
+                    checkpoints[self.normalize_address(ins_addr)].add("inst_before")
 
         # 4. MMIO R/W 之前
-        for dst_addr, xref_set in proj.kb.xrefs.xrefs_by_dst.items():
-            if any(mmio_region.in_region(dst_addr) for mmio_region in mmio_regions):
-                for xref in xref_set:
-                    if xref.ins_addr is not None:
-                        if xref.type == XRefType.Read or xref.type == XRefType.Write:
-                            checkpoints[self.normalize_address(xref.ins_addr)] = (
-                                "inst_before"
-                            )
+        mmio_rw_addrs = self.get_explicit_memory_access_instruction_address(
+            proj, mmio_regions
+        )
+        for ins_addr in mmio_rw_addrs:
+            checkpoints[ins_addr].add("inst_before")
 
         return checkpoints
 
@@ -150,3 +170,126 @@ class CPU:
             if isinstance(vex_block.statements[i], pyvex.stmt.IMark):
                 curr_inst += 1
         return curr_inst - 1 if curr_inst > 0 else 0
+
+    class ForkEventManager(angr.ExplorationTechnique):
+        def __init__(self, handlers, end_addrs):
+            super().__init__()
+            self.handlers = handlers
+            self.end_addrs = end_addrs
+
+            self.checkpoints = defaultdict(set)
+            for handler in handlers:
+                for addr, when in handler.get_checkpoints().items():
+                    self.checkpoints[addr].update(when)
+
+        def _process_events(self, states, check_type):
+            final_states = []
+
+            while states:
+                check_state = states.pop(0)
+                handler_triggered = False
+
+                # 輪詢每個註冊的 EventHandler
+                for handler in self.handlers:
+                    if check_type not in handler.get_checkpoints()[check_state.addr]:
+                        continue
+
+                    eligible_events = handler.get_eligible_events(check_state)
+                    if not eligible_events:
+                        continue
+
+                    handler_triggered = True
+                    neg_prev_conds = []
+                    pruning = False
+
+                    for event_info, trig_conds in eligible_events:
+                        for trig_cond in trig_conds:
+                            if (
+                                not trig_cond.is_true()  # pruning，如果是 concrete true 就不用再算 satisfiable
+                                and not check_state.solver.satisfiable(
+                                    extra_constraints=neg_prev_conds + [trig_cond]
+                                )  # 因為加了 neg_prev_conds constraints，所以需要檢查
+                            ):
+                                continue
+
+                            new_state = check_state.copy()
+                            if neg_prev_conds:
+                                new_state.add_constraints(*neg_prev_conds)
+                            new_state.add_constraints(trig_cond)
+
+                            handler.trigger_event(new_state, event_info)
+                            states.append(new_state)
+
+                            neg_prev_conds.append(claripy.Not(trig_cond))
+                            if not check_state.solver.satisfiable(
+                                extra_constraints=neg_prev_conds
+                            ):  # pruning，如果這個 trigger condition 到目前是一定會被觸發，則代表到目前 fork 出的所有 state 已滿足所有可能的情況。所以同等於計算是否不可能有滿足 neg_prev_conds 的情況
+                                pruning = True
+                                break
+                        if pruning:
+                            break
+
+                    if not pruning:
+                        normal_state = check_state.copy()
+                        states.append(normal_state)
+
+                    # 只要有觸發事件（或狀態被切分），就中斷這輪 handler 輪詢，因為放入 worklist 的 states 會重新從第一個 handler 開始檢查。
+                    break
+
+                if not handler_triggered:
+                    final_states.append(check_state)
+
+            return final_states
+
+        def step(self, simgr, stash="active", **kwargs):
+            # 將 checkpoints 加入 kwargs["extra_stop_points"]
+            new_extra_stop_points = set(kwargs.get("extra_stop_points", set()))
+            new_extra_stop_points.update(self.checkpoints.keys())
+            kwargs["extra_stop_points"] = new_extra_stop_points
+
+            return simgr.step(stash=stash, **kwargs)
+
+        def step_state(self, simgr, state, **kwargs):
+            if state.addr not in self.checkpoints:
+                return simgr.step_state(state, **kwargs)
+
+            check_types = self.checkpoints[state.addr]
+            merged_results = defaultdict(list)
+
+            # 階段 1: 執行前檢查
+            before_states = []
+            if "inst_before" in check_types:
+                before_states = self._process_events([state], "inst_before")
+            else:
+                before_states = [state]
+
+            # 階段 2：對確認可以放行的 state，實際上推動一個 instruction
+            stepped_states = []
+            step_kwargs = kwargs.copy()
+            step_kwargs["num_inst"] = 1
+
+            for b_state in before_states:
+                # 檢查 termination
+                if b_state.addr in self.end_addrs:
+                    merged_results["found"].append(b_state)
+                    continue
+
+                # 執行單一指令
+                succ_stashes = simgr.step_state(b_state, **step_kwargs)
+
+                # 收集成功推動的 active states (None 代表 active)
+                stepped_states.extend(succ_stashes.get(None, []))
+
+                # 保留其他 stashes (如 deadended, found 等)
+                for stash_name, states in succ_stashes.items():
+                    if stash_name is not None:
+                        merged_results[stash_name].extend(states)
+
+            # 階段 3：對執行完指令的 successor states，做 inst_after 檢查
+            if "inst_after" in check_types:
+                after_results = self._process_events(stepped_states, "inst_after")
+                merged_results[None].extend(after_results)
+            else:
+                merged_results[None].extend(stepped_states)
+
+            return merged_results

@@ -82,9 +82,6 @@ class MemoryRegion:
         self.transfer = transfer
         self.name = name
 
-    def pre_inst(self, state):
-        pass
-
     def pre_read(self, state):
         addr = state.solver.eval(state.inspect.mem_read_address)
         offset = addr - self.start
@@ -203,6 +200,9 @@ class MMIOMemoryRegion(MemoryRegion):
         """
         return {}
 
+    def get_event_handlers(self, cpu, proj, specs):
+        return []
+
 
 class VariableMemoryRegion(MemoryRegion):
     pass
@@ -250,6 +250,14 @@ class BaseSpecs:
             r for r in self.MEMORY_REGIONS.values() if isinstance(r, MMIOMemoryRegion)
         ]
 
+    def get_peripheral_event_handlers(self, cpu, proj, specs):
+        handlers = []
+
+        for region in self.get_MMIOMemoryRegions():
+            handlers.extend(region.get_event_handlers(cpu=cpu, proj=proj, specs=specs))
+
+        return handlers
+
 
 class BaseCustomGlobals(angr.SimStatePlugin):
     """
@@ -264,3 +272,25 @@ class BaseCustomGlobals(angr.SimStatePlugin):
         new_plugin = super().copy(memo)
 
         return new_plugin
+
+
+class EventForkHandler:
+    def get_checkpoints(self):
+        """
+        Return:
+            {address: "inst_before"/"inst_after"}
+        """
+        return {}
+
+    def get_eligible_events(self, state):
+        """
+        Return:
+            [(event information, trigger conditions), ...]
+        """
+        return []
+
+    def trigger_event(self, state, event_info):
+        """
+        對 state 執行該事件的行為
+        """
+        pass
