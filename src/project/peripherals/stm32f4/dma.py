@@ -108,13 +108,11 @@ class DMA(MMIOMemoryRegion):
             self.cpu = cpu
             self.specs = specs
             self.dma = dma
-            self.checkpoints = defaultdict(set)
 
-            ckpt_addrs = self.cpu.get_explicit_memory_access_instruction_address(
-                proj, specs.get_MMIOMemoryRegions()
-            )
-            for ins_addr in ckpt_addrs:
-                self.checkpoints[ins_addr].add("inst_after")
+            self.checkpoints = self.cpu.interrupt_handler.get_checkpoints()
+            # TODO: 新增:
+            #   (1) PAR, M0AR register write 攔截，新增 extra_stop_point
+            #   (2) cache 操作指令
 
         def get_checkpoints(self):
             return self.checkpoints
@@ -134,11 +132,11 @@ class DMA(MMIOMemoryRegion):
                 case 1:  # I2C1_TX
                     i2c1_cr2 = utils.load(
                         state,
-                        self.spec.MEMORY_REGIONS["I2C1"].start + I2C.I2C_CR2.OFFSET,
+                        self.specs.MEMORY_REGIONS["I2C1"].start + I2C.I2C_CR2.OFFSET,
                     )
                     i2c1_sr1 = utils.load(
                         state,
-                        self.spec.MEMORY_REGIONS["I2C1"].start + I2C.I2C_SR1.OFFSET,
+                        self.specs.MEMORY_REGIONS["I2C1"].start + I2C.I2C_SR1.OFFSET,
                     )
 
                     if state.solver.is_true(

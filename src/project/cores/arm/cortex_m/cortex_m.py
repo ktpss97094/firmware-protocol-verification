@@ -30,9 +30,10 @@ class CortexM(ARM):
         cfg = proj.analyses.CFGFast(normalize=True, cross_references=True)
 
         event_handlers = []
-        event_handlers.append(
-            CortexM._InterruptHandler(cpu=self, proj=proj, cfg=cfg, specs=specs)
+        self.interrupt_handler = CortexM._InterruptHandler(
+            cpu=self, proj=proj, cfg=cfg, specs=specs
         )
+        event_handlers.append(self.interrupt_handler)
         event_handlers.extend(
             specs.get_peripheral_event_handlers(cpu=self, proj=proj, specs=specs)
         )

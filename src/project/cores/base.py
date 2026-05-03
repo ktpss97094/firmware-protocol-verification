@@ -77,6 +77,7 @@ engine_vex.SimEngineVRVEX._handle_stmt_StoreG = _patched_handle_stmt_StoreG
 class CPU:
     def __init__(self):
         self._mmio_rw_addrs = None
+        self._global_rw_addrs = None
 
     def normalize_address(self, addr):
         return addr
@@ -97,6 +98,32 @@ class CPU:
                             )
 
         return self._mmio_rw_addrs
+
+    def get_global_variable_access_instruction_address(self, proj):
+        if self._global_rw_addrs is not None:
+            return self._global_rw_addrs
+
+        self._global_rw_addrs = []
+
+        for addr, func in proj.kb.functions.items():
+            # 排除掉 SimProcedures 或只是用來對齊的空函數
+            if not func.is_simprocedure and not func.is_alignment:
+                try:
+                    proj.analyses.VariableRecoveryFast(func)
+                except Exception as e:
+                    print(f"Analyze {hex(addr)} error: {e}")
+        global_varmgr = proj.kb.variables["global"]
+        for var in global_varmgr.get_variables():
+            accesses = global_varmgr.get_variable_accesses(var)
+            for access in accesses:
+                ins_addr = access.location.ins_addr
+                if (
+                    access.access_type == VariableAccessSort.READ
+                    or access.access_type == VariableAccessSort.WRITE
+                ):
+                    self._global_rw_addrs.append(self.normalize_address(ins_addr))
+
+        return self._global_rw_addrs
 
     def get_interrupt_checkpoints(self, proj, cfg, mmio_regions):
         checkpoints = defaultdict(set)
@@ -133,23 +160,9 @@ class CPU:
                             pass
 
         # 3. Global Variable R/W 之前
-        for addr, func in proj.kb.functions.items():
-            # 排除掉 SimProcedures 或只是用來對齊的空函數
-            if not func.is_simprocedure and not func.is_alignment:
-                try:
-                    proj.analyses.VariableRecoveryFast(func)
-                except Exception as e:
-                    print(f"Analyze {hex(addr)} error: {e}")
-        global_varmgr = proj.kb.variables["global"]
-        for var in global_varmgr.get_variables():
-            accesses = global_varmgr.get_variable_accesses(var)
-            for access in accesses:
-                ins_addr = access.location.ins_addr
-                if (
-                    access.access_type == VariableAccessSort.READ
-                    or access.access_type == VariableAccessSort.WRITE
-                ):
-                    checkpoints[self.normalize_address(ins_addr)].add("inst_before")
+        global_rw_addrs = self.get_global_variable_access_instruction_address(proj)
+        for ins_addr in global_rw_addrs:
+            checkpoints[ins_addr].add("inst_before")
 
         # 4. MMIO R/W 之前
         mmio_rw_addrs = self.get_explicit_memory_access_instruction_address(
@@ -230,10 +243,9 @@ class CPU:
                             break
 
                     if not pruning:
-                        normal_state = check_state.copy()
-                        states.append(normal_state)
+                        final_states.append(check_state)
 
-                    # 只要有觸發事件（或狀態被切分），就中斷這輪 handler 輪詢，因為放入 worklist 的 states 會重新從第一個 handler 開始檢查。
+                    # 只要有觸發事件（或狀態被切分），就中斷這輪 handler 輪詢，因為放入 worklist 的 states 會重新從第一個 handler 開始檢查
                     break
 
                 if not handler_triggered:
@@ -274,13 +286,8 @@ class CPU:
                     merged_results["found"].append(b_state)
                     continue
 
-                # 執行單一指令
                 succ_stashes = simgr.step_state(b_state, **step_kwargs)
-
-                # 收集成功推動的 active states (None 代表 active)
                 stepped_states.extend(succ_stashes.get(None, []))
-
-                # 保留其他 stashes (如 deadended, found 等)
                 for stash_name, states in succ_stashes.items():
                     if stash_name is not None:
                         merged_results[stash_name].extend(states)

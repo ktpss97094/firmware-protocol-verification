@@ -279,6 +279,8 @@ def main(
             angr.options.COMPOSITE_SOLVER,
             angr.options.OPTIMIZE_IR,
             angr.options.UNICORN,
+            angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,
+            angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
         },
     )
 
