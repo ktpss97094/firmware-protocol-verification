@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from pathlib import Path
 
 import angr
 import claripy
@@ -29,16 +28,15 @@ class CortexM(ARM):
         # 要在所有的 hook 都完成後才執行
         cfg = proj.analyses.CFGFast(normalize=True, cross_references=True)
 
-        event_handlers = []
-        self.interrupt_handler = CortexM._InterruptHandler(
-            cpu=self, proj=proj, cfg=cfg, specs=specs
-        )
-        event_handlers.append(self.interrupt_handler)
-        event_handlers.extend(
-            specs.get_peripheral_event_handlers(cpu=self, proj=proj, specs=specs)
+        checkpoints_list = []
+        checkpoints_list.extend(self.set_handlers(proj=proj, cfg=cfg, specs=specs))
+        checkpoints_list.extend(
+            specs.set_handlers(cpu=self, proj=proj, cfg=cfg, specs=specs)
         )
         simgr.use_technique(
-            CortexM.ForkEventManager(event_handlers, end_addrs=specs.END_ADDRS)
+            CortexM.ForkEventManager(
+                checkpoints_list=checkpoints_list, end_addrs=specs.END_ADDRS
+            )
         )
 
         return cfg
@@ -137,27 +135,32 @@ class CortexM(ARM):
 
             self.successors.add_successor(self.state, pc, claripy.true(), "Ijk_Boring")
 
+    def get_interrupt_checkpoints(self, proj, cfg, specs, handler):
+        checkpoints = super().get_interrupt_checkpoints(proj, cfg, specs, handler)
+
+        checkpoints[0xFFFFFFF1][1].append(handler)
+        checkpoints[0xFFFFFFF9][1].append(handler)
+
+        return checkpoints
+
     class _InterruptHandler(EventForkHandler):
         def __init__(self, cpu, proj, cfg, specs):
             self.cpu = cpu
             self.specs = specs
 
             # checkpoints = {}
-            self.checkpoints = utils.process_cache_file(
-                self.specs.FIRMWARE_PATH,
-                Path(self.specs.FIRMWARE_PATH).with_suffix(".intrckpt"),
-                self.cpu.get_interrupt_checkpoints,
-                proj=proj,
-                cfg=cfg,
-                mmio_regions=specs.get_MMIOMemoryRegions(),
-            )
-            # self.checkpoints = self.get_interrupt_checkpoints(
-            #     proj, cfg, specs.get_MMIOMemoryRegions()
+            # self.checkpoints = utils.process_cache_file(
+            #     self.specs.FIRMWARE_PATH,
+            #     Path(self.specs.FIRMWARE_PATH).with_suffix(".intrckpt"),
+            #     self.cpu.get_interrupt_checkpoints,
+            #     proj=proj,
+            #     cfg=cfg,
+            #     specs=specs,
+            #     handler=self,
             # )
-            self.checkpoints[0xFFFFFFF1].add("inst_after")
-            self.checkpoints[0xFFFFFFF9].add("inst_after")
-            for end_addr in specs.END_ADDRS:
-                self.checkpoints[end_addr].add("inst_before")
+            self.checkpoints = self.cpu.get_interrupt_checkpoints(
+                proj=proj, cfg=cfg, specs=specs, handler=self
+            )
 
         def get_checkpoints(self):
             return self.checkpoints
@@ -181,6 +184,12 @@ class CortexM(ARM):
         def trigger_event(self, state, irq):
             self.cpu.excp_entry(state, irq)
             print(f"IRQ Injection | pc: {state.regs.pc} -> Branching into IRQ {irq}")
+
+    def set_handlers(self, proj, cfg, specs):
+        self.interrupt_handler = CortexM._InterruptHandler(
+            cpu=self, proj=proj, cfg=cfg, specs=specs
+        )
+        return [self.interrupt_handler.get_checkpoints()]
 
 
 class ARMv7M(CortexM):

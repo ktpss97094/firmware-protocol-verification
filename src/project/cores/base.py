@@ -125,8 +125,10 @@ class CPU:
 
         return self._global_rw_addrs
 
-    def get_interrupt_checkpoints(self, proj, cfg, mmio_regions):
-        checkpoints = defaultdict(set)
+    def get_interrupt_checkpoints(self, proj, cfg, specs, handler):
+        checkpoints = defaultdict(
+            lambda: ([], [])
+        )  # instruction address -> (before handlers, after handlers)
 
         for node in cfg.graph.nodes():
             if node.block is None:
@@ -142,7 +144,7 @@ class CPU:
                         ins_addr = block.instruction_addrs[
                             self._stmt_idx_to_inst_idx(block.vex, stmt_idx)
                         ]
-                        checkpoints[self.normalize_address(ins_addr)].add("inst_before")
+                        checkpoints[self.normalize_address(ins_addr)][0].append(handler)
                     except IndexError:
                         pass
                 # 2. Store-Conditional 之前
@@ -153,8 +155,8 @@ class CPU:
                             ins_addr = block.instruction_addrs[
                                 self._stmt_idx_to_inst_idx(block.vex, stmt_idx)
                             ]
-                            checkpoints[self.normalize_address(ins_addr)].add(
-                                "inst_before"
+                            checkpoints[self.normalize_address(ins_addr)][0].append(
+                                handler
                             )
                         except IndexError:
                             pass
@@ -162,14 +164,18 @@ class CPU:
         # 3. Global Variable R/W 之前
         global_rw_addrs = self.get_global_variable_access_instruction_address(proj)
         for ins_addr in global_rw_addrs:
-            checkpoints[ins_addr].add("inst_before")
+            checkpoints[ins_addr][0].append(handler)
 
         # 4. MMIO R/W 之前
         mmio_rw_addrs = self.get_explicit_memory_access_instruction_address(
-            proj, mmio_regions
+            proj, specs.get_MMIOMemoryRegions()
         )
         for ins_addr in mmio_rw_addrs:
-            checkpoints[ins_addr].add("inst_before")
+            checkpoints[ins_addr][0].append(handler)
+
+        # 5. End Addresses 之前
+        for end_addr in specs.END_ADDRS:
+            checkpoints[end_addr][0].append(handler)
 
         return checkpoints
 
@@ -185,28 +191,29 @@ class CPU:
         return curr_inst - 1 if curr_inst > 0 else 0
 
     class ForkEventManager(angr.ExplorationTechnique):
-        def __init__(self, handlers, end_addrs):
+        def __init__(self, checkpoints_list, end_addrs):
             super().__init__()
-            self.handlers = handlers
             self.end_addrs = end_addrs
 
-            self.checkpoints = defaultdict(set)
-            for handler in handlers:
-                for addr, when in handler.get_checkpoints().items():
-                    self.checkpoints[addr].update(when)
+            if not checkpoints_list:
+                self.checkpoints = defaultdict(lambda: ([], []))
+            else:
+                checkpoints_list.sort(key=len, reverse=True)
+                self.checkpoints = checkpoints_list[0]
+                for other_dict in checkpoints_list[1:]:
+                    for addr, (befores, afters) in other_dict.items():
+                        target_befores, target_afters = self.checkpoints[addr]
+                        target_befores.extend(befores)
+                        target_afters.extend(afters)
 
-        def _process_events(self, states, check_type):
+        def _process_events(self, states, handlers):
             final_states = []
 
             while states:
                 check_state = states.pop(0)
                 handler_triggered = False
 
-                # 輪詢每個註冊的 EventHandler
-                for handler in self.handlers:
-                    if check_type not in handler.get_checkpoints()[check_state.addr]:
-                        continue
-
+                for handler in handlers:
                     eligible_events = handler.get_eligible_events(check_state)
                     if not eligible_events:
                         continue
@@ -265,15 +272,12 @@ class CPU:
             if state.addr not in self.checkpoints:
                 return simgr.step_state(state, **kwargs)
 
-            check_types = self.checkpoints[state.addr]
             merged_results = defaultdict(list)
 
             # 階段 1: 執行前檢查
-            before_states = []
-            if "inst_before" in check_types:
-                before_states = self._process_events([state], "inst_before")
-            else:
-                before_states = [state]
+            before_states = self._process_events(
+                [state], self.checkpoints[state.addr][0]
+            )
 
             # 階段 2：對確認可以放行的 state，實際上推動一個 instruction
             stepped_states = []
@@ -293,10 +297,8 @@ class CPU:
                         merged_results[stash_name].extend(states)
 
             # 階段 3：對執行完指令的 successor states，做 inst_after 檢查
-            if "inst_after" in check_types:
-                after_results = self._process_events(stepped_states, "inst_after")
-                merged_results[None].extend(after_results)
-            else:
-                merged_results[None].extend(stepped_states)
+            merged_results[None].extend(
+                self._process_events(stepped_states, self.checkpoints[state.addr][1])
+            )
 
             return merged_results

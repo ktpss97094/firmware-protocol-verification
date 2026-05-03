@@ -104,12 +104,21 @@ class DMA(MMIOMemoryRegion):
         return output
 
     class _DMAHandler(EventForkHandler):
-        def __init__(self, cpu, proj, specs, dma):
+        def __init__(self, cpu, specs, dma):
             self.cpu = cpu
             self.specs = specs
             self.dma = dma
 
-            self.checkpoints = self.cpu.interrupt_handler.get_checkpoints()
+            self.checkpoints = defaultdict(lambda: ([], []))
+            interrupt_checkpoints = self.cpu.interrupt_handler.get_checkpoints()
+            for addr, (
+                before_handlers,
+                after_handlers,
+            ) in interrupt_checkpoints.items():
+                if before_handlers:
+                    self.checkpoints[addr][0].append(self)
+                if after_handlers:
+                    self.checkpoints[addr][1].append(self)
             # TODO: 新增:
             #   (1) PAR, M0AR register write 攔截，新增 extra_stop_point
             #   (2) cache 操作指令
@@ -185,5 +194,6 @@ class DMA(MMIOMemoryRegion):
                 utils.replace_bit(hisr, DMA.DMA_HISR.TCIF6.bit, 1),
             )
 
-    def get_event_handlers(self, cpu, proj, specs):
-        return [DMA._DMAHandler(cpu=cpu, proj=proj, specs=specs, dma=self)]
+    def set_handlers(self, cpu, proj, cfg, specs):
+        self.dma_handler = DMA._DMAHandler(cpu=cpu, specs=specs, dma=self)
+        return [self.dma_handler.get_checkpoints()]

@@ -200,7 +200,7 @@ class MMIOMemoryRegion(MemoryRegion):
         """
         return {}
 
-    def get_event_handlers(self, cpu, proj, specs):
+    def set_handlers(self, cpu, proj, cfg, specs):
         return []
 
 
@@ -250,13 +250,14 @@ class BaseSpecs:
             r for r in self.MEMORY_REGIONS.values() if isinstance(r, MMIOMemoryRegion)
         ]
 
-    def get_peripheral_event_handlers(self, cpu, proj, specs):
-        handlers = []
+    def set_handlers(self, cpu, proj, cfg, specs):
+        checkpoints_list = []
 
         for region in self.get_MMIOMemoryRegions():
-            handlers.extend(region.get_event_handlers(cpu=cpu, proj=proj, specs=specs))
-
-        return handlers
+            checkpoints_list.extend(
+                region.set_handlers(cpu=cpu, proj=proj, cfg=cfg, specs=specs)
+            )
+        return checkpoints_list
 
 
 class BaseCustomGlobals(angr.SimStatePlugin):
