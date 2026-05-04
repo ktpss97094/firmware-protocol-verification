@@ -122,7 +122,7 @@ def set_func_args_symbolic(state, prototype: SimTypeFunction, constraints: dict)
         arg_locs[index].set_value(state, new_val)
 
 
-def normalize_code_addr(proj, addr, target=None, is_executing_pc=False):
+def convert_thumb_mode(proj, addr, target=None, is_executing_pc=False):
     """
     處理 Thumb Mode 等情況
 
@@ -157,10 +157,7 @@ def get_symbol_addr(proj, symbol_name, is_variable):
 
     addr = sym.rebased_addr
 
-    if is_variable:
-        return addr
-
-    return normalize_code_addr(proj, addr)
+    return addr
 
 
 def get_constraint_info(state, constraint):

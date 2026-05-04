@@ -269,14 +269,14 @@ class CPU:
             return simgr.step(stash=stash, **kwargs)
 
         def step_state(self, simgr, state, **kwargs):
-            if state.addr not in self.checkpoints:
+            if state.addr & ~1 not in self.checkpoints:
                 return simgr.step_state(state, **kwargs)
 
             merged_results = defaultdict(list)
 
             # 階段 1: 執行前檢查
             before_states = self._process_events(
-                [state], self.checkpoints[state.addr][0]
+                [state], self.checkpoints[state.addr & ~1][0]
             )
 
             # 階段 2：對確認可以放行的 state，實際上推動一個 instruction
@@ -286,7 +286,7 @@ class CPU:
 
             for b_state in before_states:
                 # 檢查 termination
-                if b_state.addr in self.end_addrs:
+                if b_state.addr & ~1 in self.end_addrs:
                     merged_results["found"].append(b_state)
                     continue
 
@@ -298,7 +298,9 @@ class CPU:
 
             # 階段 3：對執行完指令的 successor states，做 inst_after 檢查
             merged_results[None].extend(
-                self._process_events(stepped_states, self.checkpoints[state.addr][1])
+                self._process_events(
+                    stepped_states, self.checkpoints[state.addr & ~1][1]
+                )
             )
 
             return merged_results

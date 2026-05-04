@@ -236,7 +236,7 @@ def main(
             regs[name] = val
 
         seen_indices.add(idx)
-    regs[avatar_target._arch.pc_name] = utils.normalize_code_addr(
+    regs[avatar_target._arch.pc_name] = utils.convert_thumb_mode(
         proj,
         regs[avatar_target._arch.pc_name],
         target=avatar_target,
