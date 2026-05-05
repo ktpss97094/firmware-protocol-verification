@@ -35,11 +35,15 @@ class CortexM(ARM):
         )
         simgr.use_technique(
             CortexM.ForkEventManager(
-                checkpoints_list=checkpoints_list, end_addrs=specs.END_ADDRS
+                cpu=self, checkpoints_list=checkpoints_list, end_addrs=specs.END_ADDRS
             )
         )
 
         return cfg
+
+    def normalize_address(self, addr):
+        # Cortex-M 永遠是 thumb mode
+        return addr & ~1
 
     def excp_entry(self, state, int_no):
         self._push_basic_frame(state)
@@ -138,8 +142,8 @@ class CortexM(ARM):
     def get_interrupt_checkpoints(self, proj, cfg, specs, handler):
         checkpoints = super().get_interrupt_checkpoints(proj, cfg, specs, handler)
 
-        checkpoints[0xFFFFFFF1][1].append(handler)
-        checkpoints[0xFFFFFFF9][1].append(handler)
+        checkpoints[self.normalize_address(0xFFFFFFF1)][1].append(handler)
+        checkpoints[self.normalize_address(0xFFFFFFF9)][1].append(handler)
 
         return checkpoints
 

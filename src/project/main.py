@@ -19,6 +19,7 @@ from project.types import (
     BaseCustomGlobals,
     BaseSpecs,
     CustomEngine,
+    DFSPickFirstSuccessor,
     MMIOMemoryRegion,
     VariableMemoryRegion,
     Violation,
@@ -340,7 +341,9 @@ def main(
     simgr.stashes["loopseer"] = []
     cfg = specs.CPU.setup(proj, specs, simgr)
 
-    if search == "dfs":
+    if debug:
+        simgr.use_technique(DFSPickFirstSuccessor())
+    elif search == "dfs":
         simgr.use_technique(angr.exploration_techniques.DFS())
     simgr.use_technique(
         angr.exploration_techniques.LoopSeer(

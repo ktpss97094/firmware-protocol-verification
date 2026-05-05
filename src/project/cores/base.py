@@ -161,6 +161,8 @@ class CPU:
                         except IndexError:
                             pass
 
+        # FIXME: shared memory region access 看起來沒有完全抓出
+
         # 3. Global Variable R/W 之前
         global_rw_addrs = self.get_global_variable_access_instruction_address(proj)
         for ins_addr in global_rw_addrs:
@@ -175,7 +177,7 @@ class CPU:
 
         # 5. End Addresses 之前
         for end_addr in specs.END_ADDRS:
-            checkpoints[end_addr][0].append(handler)
+            checkpoints[self.normalize_address(end_addr)][0].append(handler)
 
         return checkpoints
 
@@ -191,8 +193,9 @@ class CPU:
         return curr_inst - 1 if curr_inst > 0 else 0
 
     class ForkEventManager(angr.ExplorationTechnique):
-        def __init__(self, checkpoints_list, end_addrs):
+        def __init__(self, cpu, checkpoints_list, end_addrs):
             super().__init__()
+            self.cpu = cpu
             self.end_addrs = end_addrs
 
             if not checkpoints_list:
@@ -269,14 +272,14 @@ class CPU:
             return simgr.step(stash=stash, **kwargs)
 
         def step_state(self, simgr, state, **kwargs):
-            if state.addr & ~1 not in self.checkpoints:
+            if self.cpu.normalize_address(state.addr) not in self.checkpoints:
                 return simgr.step_state(state, **kwargs)
 
             merged_results = defaultdict(list)
 
             # 階段 1: 執行前檢查
             before_states = self._process_events(
-                [state], self.checkpoints[state.addr & ~1][0]
+                [state], self.checkpoints[self.cpu.normalize_address(state.addr)][0]
             )
 
             # 階段 2：對確認可以放行的 state，實際上推動一個 instruction
@@ -286,7 +289,7 @@ class CPU:
 
             for b_state in before_states:
                 # 檢查 termination
-                if b_state.addr & ~1 in self.end_addrs:
+                if self.cpu.normalize_address(b_state.addr) in self.end_addrs:
                     merged_results["found"].append(b_state)
                     continue
 
@@ -299,7 +302,8 @@ class CPU:
             # 階段 3：對執行完指令的 successor states，做 inst_after 檢查
             merged_results[None].extend(
                 self._process_events(
-                    stepped_states, self.checkpoints[state.addr & ~1][1]
+                    stepped_states,
+                    self.checkpoints[self.cpu.normalize_address(state.addr)][1],
                 )
             )
 
