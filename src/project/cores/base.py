@@ -1,4 +1,5 @@
 import logging
+from abc import ABC, abstractmethod
 from collections import defaultdict
 
 import angr
@@ -74,56 +75,10 @@ engine_vex.SimEngineVRVEX._handle_stmt_LoadG = _patched_handle_stmt_LoadG
 engine_vex.SimEngineVRVEX._handle_stmt_StoreG = _patched_handle_stmt_StoreG
 
 
-class CPU:
-    def __init__(self):
-        self._mmio_rw_addrs = None
-        self._global_rw_addrs = None
-
+class CPU(ABC):
+    @abstractmethod
     def normalize_address(self, addr):
         return addr
-
-    def get_explicit_memory_access_instruction_address(self, proj, mmio_regions):
-        if self._mmio_rw_addrs is not None:
-            return self._mmio_rw_addrs
-
-        self._mmio_rw_addrs = []
-
-        for dst_addr, xref_set in proj.kb.xrefs.xrefs_by_dst.items():
-            if any(mmio_region.in_region(dst_addr) for mmio_region in mmio_regions):
-                for xref in xref_set:
-                    if xref.ins_addr is not None:
-                        if xref.type == XRefType.Read or xref.type == XRefType.Write:
-                            self._mmio_rw_addrs.append(
-                                self.normalize_address(xref.ins_addr)
-                            )
-
-        return self._mmio_rw_addrs
-
-    def get_global_variable_access_instruction_address(self, proj):
-        if self._global_rw_addrs is not None:
-            return self._global_rw_addrs
-
-        self._global_rw_addrs = []
-
-        for addr, func in proj.kb.functions.items():
-            # 排除掉 SimProcedures 或只是用來對齊的空函數
-            if not func.is_simprocedure and not func.is_alignment:
-                try:
-                    proj.analyses.VariableRecoveryFast(func)
-                except Exception as e:
-                    print(f"Analyze {hex(addr)} error: {e}")
-        global_varmgr = proj.kb.variables["global"]
-        for var in global_varmgr.get_variables():
-            accesses = global_varmgr.get_variable_accesses(var)
-            for access in accesses:
-                ins_addr = access.location.ins_addr
-                if (
-                    access.access_type == VariableAccessSort.READ
-                    or access.access_type == VariableAccessSort.WRITE
-                ):
-                    self._global_rw_addrs.append(self.normalize_address(ins_addr))
-
-        return self._global_rw_addrs
 
     def get_interrupt_checkpoints(self, proj, cfg, specs, handler):
         checkpoints = defaultdict(
@@ -164,22 +119,44 @@ class CPU:
         # FIXME: shared memory region access 看起來沒有完全抓出
 
         # 3. Global Variable R/W 之前
-        global_rw_addrs = self.get_global_variable_access_instruction_address(proj)
-        for ins_addr in global_rw_addrs:
-            checkpoints[ins_addr][0].append(handler)
+        for addr, func in proj.kb.functions.items():
+            # 排除掉 SimProcedures 或只是用來對齊的空函數
+            if not func.is_simprocedure and not func.is_alignment:
+                try:
+                    proj.analyses.VariableRecoveryFast(func)
+                except Exception as e:
+                    print(f"Analyze {hex(addr)} error: {e}")
+        global_varmgr = proj.kb.variables["global"]
+        for var in global_varmgr.get_variables():
+            accesses = global_varmgr.get_variable_accesses(var)
+            for access in accesses:
+                ins_addr = access.location.ins_addr
+                if (
+                    access.access_type == VariableAccessSort.READ
+                    or access.access_type == VariableAccessSort.WRITE
+                ):
+                    checkpoints[self.normalize_address(ins_addr)][0].append(handler)
 
-        # 4. MMIO R/W 之前
-        mmio_rw_addrs = self.get_explicit_memory_access_instruction_address(
-            proj, specs.get_MMIOMemoryRegions()
-        )
-        for ins_addr in mmio_rw_addrs:
-            checkpoints[ins_addr][0].append(handler)
+        # 4. Explicit Memory R/W 之前
+        mmio_regions = specs.get_MMIOMemoryRegions()
+        for dst_addr, xref_set in proj.kb.xrefs.xrefs_by_dst.items():
+            if any(mmio_region.in_region(dst_addr) for mmio_region in mmio_regions):
+                for xref in xref_set:
+                    if xref.ins_addr is not None:
+                        if xref.type == XRefType.Read or xref.type == XRefType.Write:
+                            checkpoints[self.normalize_address(xref.ins_addr)][
+                                0
+                            ].append(handler)
 
         # 5. End Addresses 之前
         for end_addr in specs.END_ADDRS:
             checkpoints[self.normalize_address(end_addr)][0].append(handler)
 
         return checkpoints
+
+    @abstractmethod
+    def get_dma_synchronize_instruction_addresses(self):
+        pass
 
     def _stmt_idx_to_inst_idx(self, vex_block, stmt_idx):
         """

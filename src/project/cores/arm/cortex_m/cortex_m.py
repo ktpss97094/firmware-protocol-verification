@@ -147,6 +147,9 @@ class CortexM(ARM):
 
         return checkpoints
 
+    def get_dma_synchronize_instruction_addresses(self):
+        return set()
+
     class _InterruptHandler(EventForkHandler):
         def __init__(self, cpu, proj, cfg, specs):
             self.cpu = cpu

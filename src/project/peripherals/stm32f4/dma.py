@@ -119,9 +119,11 @@ class DMA(MMIOMemoryRegion):
                     self.checkpoints[addr][0].append(self)
                 if after_handlers:
                     self.checkpoints[addr][1].append(self)
-            # TODO: 新增:
-            #   (1) PAR, M0AR register write 攔截，新增 extra_stop_point
-            #   (2) cache 操作指令
+            part_dma_checkpoint_addrs = (
+                self.cpu.get_dma_synchronize_instruction_addresses()
+            )
+            for addr in part_dma_checkpoint_addrs:
+                self.checkpoints[addr][0].append(self)
 
         def get_checkpoints(self):
             return self.checkpoints
