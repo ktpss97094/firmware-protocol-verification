@@ -206,8 +206,11 @@ class Specs(BaseSpecs):
                 )
 
         self.END_ADDRS = [
-            utils.get_symbol_addr(
-                self.proj, "END_SYMBOLIC_EXECUTION", is_variable=False
+            utils.convert_thumb_mode(
+                self.proj,
+                utils.get_symbol_addr(
+                    self.proj, "END_SYMBOLIC_EXECUTION", is_variable=False
+                ),
             )
             # utils.get_symbol_addr(
             #     self.proj, "DEBUG_SYMBOLIC_EXECUTION", is_variable=False

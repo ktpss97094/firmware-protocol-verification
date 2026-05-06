@@ -1,5 +1,7 @@
 from collections import defaultdict
+from functools import partial
 
+import angr
 import claripy
 
 from project import utils
@@ -73,14 +75,7 @@ class DMA(MMIOMemoryRegion):
 
         match offset:
             case DMA.DMA_S6PAR.OFFSET | DMA.DMA_S6M0AR.OFFSET | DMA.DMA_S6M1AR.OFFSET:
-                xrefs = state.project.kb.xrefs.get_xrefs_by_dst(value)
-                if xrefs:
-                    for xref in xrefs:
-                        print(
-                            f"[+] 找到存取！指令位址: {hex(xref.ins_addr)}, 存取類型: {xref.type}"
-                        )
-                else:
-                    print("[-] 靜態分析未發現直接存取該位址的指令。")
+                pass
 
     def get_pending_irqs(self, state):
         s6cr = utils.load(state, self.start + DMA.DMA_S6CR.OFFSET)
@@ -123,33 +118,38 @@ class DMA(MMIOMemoryRegion):
         return output
 
     class _DMAHandler(EventForkHandler):
-        def __init__(self, cpu, specs, dma):
+        def __init__(self, cpu, state, cfg, specs, dma):
             self.cpu = cpu
             self.specs = specs
             self.dma = dma
 
-            self.checkpoints = defaultdict(lambda: ([], []))
-            interrupt_checkpoints = self.cpu.interrupt_handler.get_checkpoints()
-            for addr, (
-                before_handlers,
-                after_handlers,
-            ) in interrupt_checkpoints.items():
-                if before_handlers:
-                    self.checkpoints[addr][0].append(self)
-                if after_handlers:
-                    self.checkpoints[addr][1].append(self)
-            part_dma_checkpoint_addrs = (
-                self.cpu.get_dma_synchronize_instruction_addresses()
+            ckpts = self.cpu.get_static_interrupt_checkpoints(
+                proj=state.project, cfg=cfg, specs=specs
             )
-            for addr in part_dma_checkpoint_addrs:
-                self.checkpoints[addr][0].append(self)
+            for k, v in self.cpu.get_dma_synchronize_instruction_checkpoints():
+                ckpts[k] |= v
 
-        def get_checkpoints(self):
-            return self.checkpoints
+            def bp_action(state, when):
+                match when:
+                    case angr.BP_BEFORE:
+                        state.custom_globals.before_check_handlers.add(self)
+                    case angr.BP_AFTER:
+                        state.custom_globals.after_check_handlers.add(self)
+
+            for when, addrs in ckpts.items():
+                for addr in addrs:
+                    state.inspect.b(
+                        "instruction",
+                        when=when,
+                        instruction=addr,
+                        action=partial(bp_action, when=when),
+                    )
 
         def get_eligible_events(self, state):
             s6cr = utils.load(state, self.dma.start + DMA.DMA_S6CR.OFFSET)
             s6ndtr = utils.load(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET)
+            events_to_check = []
+            output = []
 
             # channel select
             match state.solver.eval(
@@ -164,10 +164,6 @@ class DMA(MMIOMemoryRegion):
                         state,
                         self.specs.MEMORY_REGIONS["I2C1"].start + I2C.I2C_CR2.OFFSET,
                     )
-                    i2c1_sr1 = utils.load(
-                        state,
-                        self.specs.MEMORY_REGIONS["I2C1"].start + I2C.I2C_SR1.OFFSET,
-                    )
 
                     if state.solver.is_true(
                         claripy.And(
@@ -181,9 +177,24 @@ class DMA(MMIOMemoryRegion):
                             > 0,
                         )
                     ):
-                        return [(None, [i2c1_sr1[I2C.I2C_SR1.TXE.bit] == 1])]
+                        events_to_check.extend(
+                            [
+                                (
+                                    self.specs.MEMORY_REGIONS["I2C1"].start
+                                    + I2C.I2C_SR1.OFFSET,
+                                    I2C.I2C_SR1.TXE.bit,
+                                )
+                            ]
+                        )
 
-            return []
+            for event_addr, event_bit in events_to_check:
+                event_val = utils.load(state, event_addr)[event_bit]
+                trigger_cond = event_val == 1
+
+                if state.solver.satisfiable(extra_constraints=[trigger_cond]):
+                    output.append((None, [trigger_cond]))
+
+            return output
 
         def trigger_event(self, state, event_info):
             s6m0ar = utils.load(state, self.dma.start + DMA.DMA_S6M0AR.OFFSET)
@@ -215,6 +226,7 @@ class DMA(MMIOMemoryRegion):
                 utils.replace_bit(hisr, DMA.DMA_HISR.TCIF6.bit, 1),
             )
 
-    def set_handlers(self, cpu, proj, cfg, specs):
-        self.dma_handler = DMA._DMAHandler(cpu=cpu, specs=specs, dma=self)
-        return [self.dma_handler.get_checkpoints()]
+    def set_handlers(self, cpu, state, cfg, specs):
+        self.dma_handler = DMA._DMAHandler(
+            cpu=cpu, state=state, cfg=cfg, specs=specs, dma=self
+        )

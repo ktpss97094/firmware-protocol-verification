@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from functools import partial
 
 import angr
 import claripy
@@ -14,27 +15,24 @@ from project.types import EventForkHandler
 class CortexM(ARM):
     VTOR_ADDR = None
 
-    def setup(self, proj, specs, simgr):
+    def setup(self, state, specs, simgr):
         # ARMv7-M Architecture Reference Manual B1.5.8 Exception return behavior
         # 實際上 processor 的行為是攔截到 write exception return value 到 pc 的時機做 exception return；但我的實作是讓 pc 成功 write exception return value 之後，把 pc 要執行的指令 hook 成 exception return 行為
-        proj.hook(
+        state.project.hook(
             0xFFFFFFF1, self._ExcpReturnProcedure(cpu=self)
         )  # return to handler mode, main stack, basic frame
-        proj.hook(
+        state.project.hook(
             0xFFFFFFF9, self._ExcpReturnProcedure(cpu=self)
         )  # return to thread mode, main stack, basic frame
         # TODO: return stack 為 process stack pointer (PSP) 時、frame type 為 extended 時
 
         # 要在所有的 hook 都完成後才執行
-        cfg = proj.analyses.CFGFast(normalize=True, cross_references=True)
+        cfg = state.project.analyses.CFGFast(normalize=True, cross_references=True)
 
-        checkpoints_list = []
-        checkpoints_list.extend(self.set_handlers(proj=proj, cfg=cfg, specs=specs))
-        checkpoints_list.extend(
-            specs.set_handlers(cpu=self, proj=proj, cfg=cfg, specs=specs)
-        )
+        self.set_handlers(state=state, cfg=cfg, specs=specs)
+        specs.set_handlers(cpu=self, state=state, cfg=cfg, specs=specs)
         self.fork_event_manager = CortexM.ForkEventManager(
-            cpu=self, checkpoints_list=checkpoints_list, end_addrs=specs.END_ADDRS
+            cpu=self, end_addrs=specs.END_ADDRS
         )
         simgr.use_technique(self.fork_event_manager)
 
@@ -138,19 +136,19 @@ class CortexM(ARM):
 
             self.successors.add_successor(self.state, pc, claripy.true(), "Ijk_Boring")
 
-    def get_interrupt_checkpoints(self, proj, cfg, specs, handler):
-        checkpoints = super().get_interrupt_checkpoints(proj, cfg, specs, handler)
+    def get_static_interrupt_checkpoints(self, proj, cfg, specs):
+        ckpts = super().get_static_interrupt_checkpoints(proj, cfg, specs)
 
-        checkpoints[self.normalize_address(0xFFFFFFF1)][1].append(handler)
-        checkpoints[self.normalize_address(0xFFFFFFF9)][1].append(handler)
+        ckpts[angr.BP_AFTER].add(0xFFFFFFF1)
+        ckpts[angr.BP_AFTER].add(0xFFFFFFF9)
 
-        return checkpoints
+        return ckpts
 
-    def get_dma_synchronize_instruction_addresses(self):
+    def _compute_dma_synchronize_instruction_checkpoints(self):
         return set()
 
     class _InterruptHandler(EventForkHandler):
-        def __init__(self, cpu, proj, cfg, specs):
+        def __init__(self, cpu, state, cfg, specs):
             self.cpu = cpu
             self.specs = specs
 
@@ -164,12 +162,27 @@ class CortexM(ARM):
             #     specs=specs,
             #     handler=self,
             # )
-            self.checkpoints = self.cpu.get_interrupt_checkpoints(
-                proj=proj, cfg=cfg, specs=specs, handler=self
+            ckpts = self.cpu.get_static_interrupt_checkpoints(
+                proj=state.project, cfg=cfg, specs=specs
             )
+            for k, v in self.cpu.get_dma_synchronize_instruction_checkpoints():
+                ckpts[k] |= v
 
-        def get_checkpoints(self):
-            return self.checkpoints
+            def bp_action(state, when):
+                match when:
+                    case angr.BP_BEFORE:
+                        state.custom_globals.before_check_handlers.add(self)
+                    case angr.BP_AFTER:
+                        state.custom_globals.after_check_handlers.add(self)
+
+            for when, addrs in ckpts.items():
+                for addr in addrs:
+                    state.inspect.b(
+                        "instruction",
+                        when=when,
+                        instruction=addr,
+                        action=partial(bp_action, when=when),
+                    )
 
         def get_eligible_events(self, state):
             # 收集所有 peripheral 的 pending IRQs
@@ -191,11 +204,10 @@ class CortexM(ARM):
             self.cpu.excp_entry(state, irq)
             print(f"IRQ Injection | pc: {state.regs.pc} -> Branching into IRQ {irq}")
 
-    def set_handlers(self, proj, cfg, specs):
+    def set_handlers(self, state, cfg, specs):
         self.interrupt_handler = CortexM._InterruptHandler(
-            cpu=self, proj=proj, cfg=cfg, specs=specs
+            cpu=self, state=state, cfg=cfg, specs=specs
         )
-        return [self.interrupt_handler.get_checkpoints()]
 
 
 class ARMv7M(CortexM):

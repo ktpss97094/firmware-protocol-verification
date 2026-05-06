@@ -216,8 +216,8 @@ class MMIOMemoryRegion(MemoryRegion):
         """
         return {}
 
-    def set_handlers(self, cpu, proj, cfg, specs):
-        return []
+    def set_handlers(self, cpu, state, cfg, specs):
+        return
 
 
 class VariableMemoryRegion(MemoryRegion):
@@ -266,14 +266,9 @@ class BaseSpecs:
             r for r in self.MEMORY_REGIONS.values() if isinstance(r, MMIOMemoryRegion)
         ]
 
-    def set_handlers(self, cpu, proj, cfg, specs):
-        checkpoints_list = []
-
+    def set_handlers(self, cpu, state, cfg, specs):
         for region in self.get_MMIOMemoryRegions():
-            checkpoints_list.extend(
-                region.set_handlers(cpu=cpu, proj=proj, cfg=cfg, specs=specs)
-            )
-        return checkpoints_list
+            region.set_handlers(cpu=cpu, state=state, cfg=cfg, specs=specs)
 
 
 class BaseCustomGlobals(angr.SimStatePlugin):
@@ -281,24 +276,21 @@ class BaseCustomGlobals(angr.SimStatePlugin):
     angr 的 globals 不會自己做 deepcopy，如果有必須要 deepcopy 的 globals (e.g., mutable object) 就要放 custom_globals
     """
 
-    def __init__(self):
+    def __init__(self, before_check_handlers=set(), after_check_handlers=set()):
         super().__init__()
+
+        self.before_check_handlers = before_check_handlers
+        self.after_check_handlers = after_check_handlers
 
     @angr.SimStatePlugin.memo
     def copy(self, memo):
-        new_plugin = super().copy(memo)
-
-        return new_plugin
+        return BaseCustomGlobals(
+            before_check_handlers=set(self.before_check_handlers),
+            after_check_handlers=set(self.after_check_handlers),
+        )
 
 
 class EventForkHandler:
-    def get_checkpoints(self):
-        """
-        Return:
-            {address: "inst_before"/"inst_after"}
-        """
-        return {}
-
     def get_eligible_events(self, state):
         """
         Return:

@@ -339,7 +339,7 @@ def main(
     simgr = proj.factory.simgr(state)
     simgr.stashes["violated"] = []
     simgr.stashes["loopseer"] = []
-    cfg = specs.CPU.setup(proj, specs, simgr)
+    cfg = specs.CPU.setup(state, specs, simgr)
 
     if debug:
         simgr.use_technique(DFSPickFirstSuccessor())
@@ -355,11 +355,7 @@ def main(
         )
     )
 
-    simgr.explore(
-        num_find=float("inf"),
-        step_func=explore_step_func,
-        # num_inst=1,
-    )
+    simgr.explore(num_find=float("inf"), step_func=explore_step_func, num_inst=1)
     # step_explore(simgr, proj, monitor_exploration=explore_step_func)
 
     print(simgr)

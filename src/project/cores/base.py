@@ -1,13 +1,12 @@
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from functools import cache
 
 import angr
 import angr.analyses.variable_recovery.engine_vex as engine_vex
 import claripy
 import pyvex
-from angr.knowledge_plugins.variables.variable_access import VariableAccessSort
-from angr.knowledge_plugins.xrefs.xref_types import XRefType
 
 logging.getLogger("angr.analyses.variable_recovery.engine_vex.SimEngineVRVEX").setLevel(
     logging.CRITICAL
@@ -80,10 +79,9 @@ class CPU(ABC):
     def normalize_address(self, addr):
         return addr
 
-    def get_interrupt_checkpoints(self, proj, cfg, specs, handler):
-        checkpoints = defaultdict(
-            lambda: ([], [])
-        )  # instruction address -> (before handlers, after handlers)
+    @cache
+    def get_static_interrupt_checkpoints(self, proj, cfg, specs):
+        ckpts = defaultdict(set)
 
         for node in cfg.graph.nodes():
             if node.block is None:
@@ -99,7 +97,7 @@ class CPU(ABC):
                         ins_addr = block.instruction_addrs[
                             self._stmt_idx_to_inst_idx(block.vex, stmt_idx)
                         ]
-                        checkpoints[self.normalize_address(ins_addr)][0].append(handler)
+                        ckpts[angr.BP_BEFORE].add(ins_addr)
                     except IndexError:
                         pass
                 # 2. Store-Conditional 之前
@@ -110,53 +108,23 @@ class CPU(ABC):
                             ins_addr = block.instruction_addrs[
                                 self._stmt_idx_to_inst_idx(block.vex, stmt_idx)
                             ]
-                            checkpoints[self.normalize_address(ins_addr)][0].append(
-                                handler
-                            )
+                            ckpts[angr.BP_BEFORE].add(ins_addr)
                         except IndexError:
                             pass
 
-        # FIXME: shared memory region access 看起來沒有完全抓出
-
-        # 3. Global Variable R/W 之前
-        for addr, func in proj.kb.functions.items():
-            # 排除掉 SimProcedures 或只是用來對齊的空函數
-            if not func.is_simprocedure and not func.is_alignment:
-                try:
-                    proj.analyses.VariableRecoveryFast(func)
-                except Exception as e:
-                    print(f"Analyze {hex(addr)} error: {e}")
-        global_varmgr = proj.kb.variables["global"]
-        for var in global_varmgr.get_variables():
-            accesses = global_varmgr.get_variable_accesses(var)
-            for access in accesses:
-                ins_addr = access.location.ins_addr
-                if (
-                    access.access_type == VariableAccessSort.READ
-                    or access.access_type == VariableAccessSort.WRITE
-                ):
-                    checkpoints[self.normalize_address(ins_addr)][0].append(handler)
-
-        # 4. Explicit Memory R/W 之前
-        mmio_regions = specs.get_MMIOMemoryRegions()
-        for dst_addr, xref_set in proj.kb.xrefs.xrefs_by_dst.items():
-            if any(mmio_region.in_region(dst_addr) for mmio_region in mmio_regions):
-                for xref in xref_set:
-                    if xref.ins_addr is not None:
-                        if xref.type == XRefType.Read or xref.type == XRefType.Write:
-                            checkpoints[self.normalize_address(xref.ins_addr)][
-                                0
-                            ].append(handler)
-
-        # 5. End Addresses 之前
+        # 3. End Addresses 之前
         for end_addr in specs.END_ADDRS:
-            checkpoints[self.normalize_address(end_addr)][0].append(handler)
+            ckpts[angr.BP_BEFORE].add(end_addr)
 
-        return checkpoints
+        return ckpts
 
     @abstractmethod
-    def get_dma_synchronize_instruction_addresses(self):
+    def _compute_dma_synchronize_instruction_checkpoints(self):
         pass
+
+    @cache
+    def get_dma_synchronize_instruction_checkpoints(self):
+        return self._compute_dma_synchronize_instruction_checkpoints()
 
     def _stmt_idx_to_inst_idx(self, vex_block, stmt_idx):
         """
@@ -170,27 +138,52 @@ class CPU(ABC):
         return curr_inst - 1 if curr_inst > 0 else 0
 
     class ForkEventManager(angr.ExplorationTechnique):
-        def __init__(self, cpu, checkpoints_list, end_addrs):
+        def __init__(self, cpu, end_addrs):
             super().__init__()
             self.cpu = cpu
             self.end_addrs = end_addrs
 
-            if not checkpoints_list:
-                self.checkpoints = defaultdict(lambda: ([], []))
-            else:
-                checkpoints_list.sort(key=len, reverse=True)
-                self.checkpoints = checkpoints_list[0]
-                for other_dict in checkpoints_list[1:]:
-                    for addr, (befores, afters) in other_dict.items():
-                        target_befores, target_afters = self.checkpoints[addr]
-                        target_befores.extend(befores)
-                        target_afters.extend(afters)
+        def step_state(self, simgr, state, **kwargs):
+            """
+            回傳值的 key None 表示 active
+            """
 
-        def _process_events(self, states, handlers):
-            final_states = []
+            merged_results = defaultdict(list)
 
-            while states:
-                check_state = states.pop(0)
+            succ_stashes = simgr.step_state(state, **kwargs)
+            for k, v in succ_stashes.items():
+                if k is not None:
+                    merged_results[k].extend(v)
+
+            check_items = []
+            before_state_appended = False
+            for active_state in succ_stashes.get(None, []):
+                if (
+                    not before_state_appended
+                    and active_state.custom_globals.before_check_handlers
+                ):
+                    check_items.append(
+                        (state, active_state.custom_globals.before_check_handlers)
+                    )
+                    before_state_appended = True
+
+                if active_state.custom_globals.after_check_handlers:
+                    check_items.append(
+                        (active_state, active_state.custom_globals.after_check_handlers)
+                    )
+            if not check_items:
+                if state.addr in self.end_addrs:
+                    return {"found": [state]}
+                merged_results[None].extend(succ_stashes.get(None, []))
+                return merged_results
+
+            # 清除標籤
+            for active_state in succ_stashes.get(None, []):
+                active_state.custom_globals.before_check_handlers = set()
+                active_state.custom_globals.after_check_handlers = set()
+
+            while check_items:
+                (check_state, handlers) = check_items.pop(0)
                 handler_triggered = False
 
                 for handler in handlers:
@@ -218,7 +211,7 @@ class CPU(ABC):
                             new_state.add_constraints(trig_cond)
 
                             handler.trigger_event(new_state, event_info)
-                            states.append(new_state)
+                            check_items.append((new_state, handlers))
 
                             neg_prev_conds.append(claripy.Not(trig_cond))
                             if not check_state.solver.satisfiable(
@@ -230,58 +223,18 @@ class CPU(ABC):
                             break
 
                     if not pruning:
-                        final_states.append(check_state)
+                        if check_state.addr in self.end_addrs:
+                            merged_results["found"].append(check_state)
+                        else:
+                            merged_results[None].append(check_state)
 
                     # 只要有觸發事件（或狀態被切分），就中斷這輪 handler 輪詢，因為放入 worklist 的 states 會重新從第一個 handler 開始檢查
                     break
 
                 if not handler_triggered:
-                    final_states.append(check_state)
-
-            return final_states
-
-        def step(self, simgr, stash="active", **kwargs):
-            # 將 checkpoints 加入 kwargs["extra_stop_points"]
-            new_extra_stop_points = set(kwargs.get("extra_stop_points", set()))
-            new_extra_stop_points.update(self.checkpoints.keys())
-            kwargs["extra_stop_points"] = new_extra_stop_points
-
-            return simgr.step(stash=stash, **kwargs)
-
-        def step_state(self, simgr, state, **kwargs):
-            if self.cpu.normalize_address(state.addr) not in self.checkpoints:
-                return simgr.step_state(state, **kwargs)
-
-            merged_results = defaultdict(list)
-
-            # 階段 1: 執行前檢查
-            before_states = self._process_events(
-                [state], self.checkpoints[self.cpu.normalize_address(state.addr)][0]
-            )
-
-            # 階段 2：對確認可以放行的 state，實際上推動一個 instruction
-            stepped_states = []
-            step_kwargs = kwargs.copy()
-            step_kwargs["num_inst"] = 1
-
-            for b_state in before_states:
-                # 檢查 termination
-                if self.cpu.normalize_address(b_state.addr) in self.end_addrs:
-                    merged_results["found"].append(b_state)
-                    continue
-
-                succ_stashes = simgr.step_state(b_state, **step_kwargs)
-                stepped_states.extend(succ_stashes.get(None, []))
-                for stash_name, states in succ_stashes.items():
-                    if stash_name is not None:
-                        merged_results[stash_name].extend(states)
-
-            # 階段 3：對執行完指令的 successor states，做 inst_after 檢查
-            merged_results[None].extend(
-                self._process_events(
-                    stepped_states,
-                    self.checkpoints[self.cpu.normalize_address(state.addr)][1],
-                )
-            )
+                    if check_state.addr in self.end_addrs:
+                        merged_results["found"].append(check_state)
+                    else:
+                        merged_results[None].append(check_state)
 
             return merged_results
