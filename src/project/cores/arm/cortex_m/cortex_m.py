@@ -33,11 +33,10 @@ class CortexM(ARM):
         checkpoints_list.extend(
             specs.set_handlers(cpu=self, proj=proj, cfg=cfg, specs=specs)
         )
-        simgr.use_technique(
-            CortexM.ForkEventManager(
-                cpu=self, checkpoints_list=checkpoints_list, end_addrs=specs.END_ADDRS
-            )
+        self.fork_event_manager = CortexM.ForkEventManager(
+            cpu=self, checkpoints_list=checkpoints_list, end_addrs=specs.END_ADDRS
         )
+        simgr.use_technique(self.fork_event_manager)
 
         return cfg
 

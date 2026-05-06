@@ -58,10 +58,29 @@ class DMA(MMIOMemoryRegion):
 
         M0A = BitsField(0, AccessType.RW, 0, size=32)  # Memory 0 address
 
+    class DMA_S6M1AR(BaseRegister):
+        OFFSET = 0x20 + 0x18 * 6
+
+        M1A = BitsField(0, AccessType.RW, 0, size=32)  # Memory 1 address
+
     class DMA_S6FCR(BaseRegister):
         OFFSET = 0x24 + 0x18 * 6
 
         FEIE = BitsField(7, AccessType.RW, 0)  # FE (FIFO error) interrupt enable
+
+    def post_write(self, state):
+        _, offset, value = super().post_write(state)
+
+        match offset:
+            case DMA.DMA_S6PAR.OFFSET | DMA.DMA_S6M0AR.OFFSET | DMA.DMA_S6M1AR.OFFSET:
+                xrefs = state.project.kb.xrefs.get_xrefs_by_dst(value)
+                if xrefs:
+                    for xref in xrefs:
+                        print(
+                            f"[+] 找到存取！指令位址: {hex(xref.ins_addr)}, 存取類型: {xref.type}"
+                        )
+                else:
+                    print("[-] 靜態分析未發現直接存取該位址的指令。")
 
     def get_pending_irqs(self, state):
         s6cr = utils.load(state, self.start + DMA.DMA_S6CR.OFFSET)

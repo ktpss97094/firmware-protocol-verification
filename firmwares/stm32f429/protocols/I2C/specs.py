@@ -18,7 +18,6 @@ from enum import Enum, auto
 import angr
 import archinfo
 import avatar2
-import claripy
 from angr.sim_type import (
     SimTypeChar,
     SimTypeFunction,
@@ -40,7 +39,7 @@ class Mode(Enum):
     DMA = auto()
 
 
-MODE = Mode.INTERRUPT
+MODE = Mode.DMA
 
 
 class I2C(STM32F4_I2C):
@@ -241,6 +240,13 @@ class Specs(BaseSpecs):
         )
 
         state.inspect.b(
+            "mem_write",
+            when=angr.BP_AFTER,
+            condition=self.MEMORY_REGIONS["DMA1"].in_region_write,
+            action=self.MEMORY_REGIONS["DMA1"].post_write,
+        )
+
+        state.inspect.b(
             "mem_read",
             when=angr.BP_BEFORE,
             condition=self.MEMORY_REGIONS["SysTickVariable"].in_region_read,
@@ -253,31 +259,31 @@ class Specs(BaseSpecs):
 
     def init_input(self, state):
         # size_range = (0, 2**16 - 1)
-        size_range = (0, 3)
+        # size_range = (0, 3)
 
         # addressing mode symbolic
-        addressing_mode = state.mem[
-            self.API_ARGS[0]
-        ].struct.I2C_HandleTypeDef.Init.AddressingMode
-        addressing_mode.store(
-            claripy.BVS("AddressingMode", addressing_mode.resolved.length)
-        )
+        # addressing_mode = state.mem[
+        #     self.API_ARGS[0]
+        # ].struct.I2C_HandleTypeDef.Init.AddressingMode
+        # addressing_mode.store(
+        #     claripy.BVS("AddressingMode", addressing_mode.resolved.length)
+        # )
 
         # address, size symbolic
-        utils.set_func_args_symbolic(
-            state, self.API_PROTOTYPE, {1: None, 3: size_range}
-        )
+        # utils.set_func_args_symbolic(
+        #     state, self.API_PROTOTYPE, {1: None, 3: size_range}
+        # )
 
         # data symbolic
-        element_size_bits = self.API_PROTOTYPE.args[2].pts_to.size
-        element_size_bytes = element_size_bits // 8
-        for idx in range(*size_range):
-            utils.store(
-                state,
-                self.API_ARGS[2] + (idx * element_size_bytes),
-                claripy.BVS(f"data[{idx}]", element_size_bits),
-                size=element_size_bytes,
-            )
+        # element_size_bits = self.API_PROTOTYPE.args[2].pts_to.size
+        # element_size_bytes = element_size_bits // 8
+        # for idx in range(*size_range):
+        #     utils.store(
+        #         state,
+        #         self.API_ARGS[2] + (idx * element_size_bytes),
+        #         claripy.BVS(f"data[{idx}]", element_size_bits),
+        #         size=element_size_bytes,
+        #     )
 
         # timeout symbolic
         match MODE:
