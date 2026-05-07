@@ -243,13 +243,6 @@ class Specs(BaseSpecs):
         )
 
         state.inspect.b(
-            "mem_write",
-            when=angr.BP_AFTER,
-            condition=self.MEMORY_REGIONS["DMA1"].in_region_write,
-            action=self.MEMORY_REGIONS["DMA1"].post_write,
-        )
-
-        state.inspect.b(
             "mem_read",
             when=angr.BP_BEFORE,
             condition=self.MEMORY_REGIONS["SysTickVariable"].in_region_read,

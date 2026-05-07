@@ -35,6 +35,12 @@ class DMA(MMIOMemoryRegion):
         OFFSET = 0x10 + 0x18 * 6
 
         CHSEL = BitsField(25, AccessType.RW, 0, size=3)  # Channel selection
+        DBM = BitsField(18, AccessType.RW, 0)  # Double buffer mode
+        PINCOS = BitsField(15, AccessType.RW, 0)  # Peripheral increment offset size
+        MSIZE = BitsField(13, AccessType.RW, 0, size=2)  # Memory data size
+        PSIZE = BitsField(11, AccessType.RW, 0, size=2)  # Peripheral data size
+        MINC = BitsField(10, AccessType.RW, 0)  # Memory increment mode
+        PINC = BitsField(9, AccessType.RW, 0)  # Peripheral increment mode
         TCIE = BitsField(4, AccessType.RW, 0)  # TC (transfer complete) interrupt enable
         HTIE = BitsField(3, AccessType.RW, 0)  # HT (half transfer) interrupt enable
         TEIE = BitsField(2, AccessType.RW, 0)  # TE (transfer error) interrupt enable
@@ -69,13 +75,6 @@ class DMA(MMIOMemoryRegion):
         OFFSET = 0x24 + 0x18 * 6
 
         FEIE = BitsField(7, AccessType.RW, 0)  # FE (FIFO error) interrupt enable
-
-    def post_write(self, state):
-        _, offset, value = super().post_write(state)
-
-        match offset:
-            case DMA.DMA_S6PAR.OFFSET | DMA.DMA_S6M0AR.OFFSET | DMA.DMA_S6M1AR.OFFSET:
-                pass
 
     def get_pending_irqs(self, state):
         s6cr = utils.load(state, self.start + DMA.DMA_S6CR.OFFSET)
@@ -144,6 +143,78 @@ class DMA(MMIOMemoryRegion):
                         instruction=addr,
                         action=partial(bp_action, when=when),
                     )
+
+            def in_src_dst_shared_region(state, addr):
+                regions = []
+                s6cr = utils.load(state, self.dma.start + DMA.DMA_S6CR.OFFSET)
+                s6ndtr = utils.load(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET)
+                s6m0ar = utils.load(state, self.dma.start + DMA.DMA_S6M0AR.OFFSET)
+                s6m1ar = utils.load(state, self.dma.start + DMA.DMA_S6M1AR.OFFSET)
+                s6par = utils.load(state, self.dma.start + DMA.DMA_S6PAR.OFFSET)
+                ndt = s6ndtr[
+                    DMA.DMA_S6NDTR.NDT.bit
+                    + DMA.DMA_S6NDTR.NDT.size
+                    - 1 : DMA.DMA_S6NDTR.NDT.bit
+                ]
+                msize_val = (
+                    1
+                    << s6cr[
+                        DMA.DMA_S6CR.MSIZE.bit
+                        + DMA.DMA_S6CR.MSIZE.size
+                        - 1 : DMA.DMA_S6CR.MSIZE.bit
+                    ]
+                )
+                psize_val = (
+                    1
+                    << s6cr[
+                        DMA.DMA_S6CR.PSIZE.bit
+                        + DMA.DMA_S6CR.PSIZE.size
+                        - 1 : DMA.DMA_S6CR.PSIZE.bit
+                    ]
+                )
+
+                if state.solver.is_true(s6cr[DMA.DMA_S6CR.EN.bit] == 1):
+                    if state.solver.is_true(s6cr[DMA.DMA_S6CR.MINC.bit] == 1):
+                        regions.append((s6m0ar, ndt * psize_val))
+
+                        if state.solver.is_true(s6cr[DMA.DMA_S6CR.DBM.bit] == 1):
+                            regions.append((s6m1ar, ndt * psize_val))
+                    else:
+                        regions.append((s6m0ar, msize_val))
+
+                        if state.solver.is_true(s6cr[DMA.DMA_S6CR.DBM.bit] == 1):
+                            regions.append((s6m1ar, msize_val))
+
+                if state.solver.is_true(s6cr[DMA.DMA_S6CR.EN.bit] == 1):
+                    if state.solver.is_true(s6cr[DMA.DMA_S6CR.PINC.bit] == 1):
+                        if state.solver.is_true(s6cr[DMA.DMA_S6CR.PINCOS.bit] == 1):
+                            regions.append((s6par, ndt * 4))
+                        else:
+                            regions.append((s6par, ndt * psize_val))
+                    else:
+                        regions.append((s6par, psize_val))
+
+                for start, size in regions:
+                    if start <= addr < start + size:
+                        return True
+                return False
+
+            state.inspect.b(
+                "mem_read",
+                when=angr.BP_BEFORE,
+                condition=partial(
+                    in_src_dst_shared_region,
+                    addr=state.solver.eval(state.inspect.mem_read_address),
+                ),
+            )
+            state.inspect.b(
+                "mem_write",
+                when=angr.BP_BEFORE,
+                condition=partial(
+                    in_src_dst_shared_region,
+                    addr=state.solver.eval(state.inspect.mem_write_address),
+                ),
+            )
 
         def get_eligible_events(self, state):
             s6cr = utils.load(state, self.dma.start + DMA.DMA_S6CR.OFFSET)
