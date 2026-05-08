@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
+from functools import partial
+from typing import Any, Callable, Optional
 
 import angr
 import archinfo
@@ -19,6 +21,7 @@ from angr.engines.vex import (
 )
 from angr.errors import SimEngineError
 from angr.exploration_techniques import DFS
+from angr.sim_state import SimState
 
 
 class CustomEngine(
@@ -212,9 +215,9 @@ class MMIOMemoryRegion(MemoryRegion):
     def get_pending_irqs(self, state):
         """
         回傳此 peripheral 目前可能觸發的 IRQ
-        格式: {irq_number: [(trigger_var, trigger_cond), ...]}
+        格式: [(trigger condition, kwargs), ...]
         """
-        return {}
+        return []
 
     def set_handlers(self, cpu, state, cfg, specs):
         return
@@ -266,6 +269,11 @@ class BaseSpecs:
             r for r in self.MEMORY_REGIONS.values() if isinstance(r, MMIOMemoryRegion)
         ]
 
+    def get_DMAs(self):
+        from project.cores.base import BaseDMA
+
+        return [r for r in self.MEMORY_REGIONS.values() if isinstance(r, BaseDMA)]
+
     def set_handlers(self, cpu, state, cfg, specs):
         for region in self.get_MMIOMemoryRegions():
             region.set_handlers(cpu=cpu, state=state, cfg=cfg, specs=specs)
@@ -276,30 +284,86 @@ class BaseCustomGlobals(angr.SimStatePlugin):
     angr 的 globals 不會自己做 deepcopy，如果有必須要 deepcopy 的 globals (e.g., mutable object) 就要放 custom_globals
     """
 
-    def __init__(self, before_check_handlers=set(), after_check_handlers=set()):
+    def __init__(
+        self,
+        before_check_handlers=set(),
+        after_check_handlers=set(),
+        prev_after_check_handlers=set(),
+    ):
         super().__init__()
 
         self.before_check_handlers = before_check_handlers
         self.after_check_handlers = after_check_handlers
+        self.prev_after_check_handlers = prev_after_check_handlers
 
     @angr.SimStatePlugin.memo
     def copy(self, memo):
-        return BaseCustomGlobals(
-            before_check_handlers=set(self.before_check_handlers),
-            after_check_handlers=set(self.after_check_handlers),
-        )
+        return BaseCustomGlobals()
 
 
 class EventForkHandler:
+    def get_checkpoints(self):
+        return set()
+
     def get_eligible_events(self, state):
         """
         Return:
-            [(event information, trigger conditions), ...]
+            [(trigger conditions, handler kwargs), ...]
         """
         return []
 
-    def trigger_event(self, state, event_info):
+    def trigger_event(self, state, **kwargs):
         """
         對 state 執行該事件的行為
         """
         pass
+
+
+class BPConfig:
+    def __init__(
+        self,
+        event_type: str,
+        when: str = angr.BP_BEFORE,
+        enabled: bool = True,
+        condition: Optional[Callable[[SimState], bool]] = None,
+        **kwargs: Any,
+    ):
+        self.event_type = event_type
+        self.when = when
+        self.enabled = enabled
+        self.condition = condition
+        self.action = self._bp_action
+        self.kwargs = kwargs
+
+    def __eq__(self, other):
+        if not isinstance(other, BPConfig):
+            return False
+        return (
+            self.event_type == other.event_type
+            and self.when == other.when
+            and self.enabled == other.enabled
+            and self.kwargs == other.kwargs
+        )
+
+    def __hash__(self):
+        kwargs_signature = tuple(sorted(self.kwargs.items()))
+
+        return hash((self.event_type, self.when, self.enabled, kwargs_signature))
+
+    def apply_to(self, state: SimState, handler: EventForkHandler):
+        state.inspect.b(
+            self.event_type,
+            when=self.when,
+            enabled=self.enabled,
+            condition=self.condition,
+            action=partial(self.action, handler=handler),
+            **self.kwargs,
+        )
+
+    def _bp_action(self, state, handler):
+        match self.when:
+            case angr.BP_BEFORE:
+                if handler not in state.custom_globals.prev_after_check_handlers:
+                    state.custom_globals.before_check_handlers.add(handler)
+            case angr.BP_AFTER:
+                state.custom_globals.after_check_handlers.add(handler)

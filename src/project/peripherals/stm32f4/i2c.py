@@ -1,5 +1,3 @@
-from collections import defaultdict
-
 import claripy
 
 from project import utils
@@ -602,7 +600,7 @@ class I2C(MMIOMemoryRegion):
     def get_pending_irqs(self, state):
         cr2 = utils.load(state, self.start + I2C.I2C_CR2.OFFSET)
         events_to_check = []
-        output = defaultdict(list)
+        output = []
 
         if state.solver.is_true(cr2[I2C.I2C_CR2.ITEVTEN.bit] == 1):
             events_to_check.extend(
@@ -641,6 +639,6 @@ class I2C(MMIOMemoryRegion):
             trigger_cond = event_val == 1
 
             if state.solver.satisfiable(extra_constraints=[trigger_cond]):
-                output[irq_num].append(trigger_cond)
+                output.append((trigger_cond, {"irq": irq_num}))
 
         return output

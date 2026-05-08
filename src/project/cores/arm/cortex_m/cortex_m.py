@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import warnings
 from collections import defaultdict
-from functools import partial
+from functools import cache
 
 import angr
 import claripy
@@ -9,7 +10,7 @@ import claripy
 from project import utils
 from project.cores.arm.arm import ARM
 from project.cores.arm.cortex_m.nvic import NVIC
-from project.types import EventForkHandler
+from project.types import BPConfig, EventForkHandler
 
 
 class CortexM(ARM):
@@ -29,8 +30,11 @@ class CortexM(ARM):
         # 要在所有的 hook 都完成後才執行
         cfg = state.project.analyses.CFGFast(normalize=True, cross_references=True)
 
-        self.set_handlers(state=state, cfg=cfg, specs=specs)
+        self.initial_sp = self._compute_initial_sp(state)
+        self.stack_size = self._compute_stack_size(state)
+
         specs.set_handlers(cpu=self, state=state, cfg=cfg, specs=specs)
+        self.set_handlers(state=state, cfg=cfg, specs=specs)
         self.fork_event_manager = CortexM.ForkEventManager(
             cpu=self, end_addrs=specs.END_ADDRS
         )
@@ -106,6 +110,33 @@ class CortexM(ARM):
             return state.solver.eval(utils.load(state, self.VTOR_ADDR)) & 0xFFFFFF80
         return 0x00000000
 
+    def _compute_initial_sp(self, state):
+        """
+        ArchARMCortexM 的 initial_sp 是預設值，實際上是根據 firmware linker script 決定，會被放在 IVT 開頭
+        """
+
+        return state.project.loader.memory.unpack_word(
+            state.project.loader.main_object.min_addr
+        )
+
+    def _compute_stack_size(self, state):
+        limit_symbols = ["__StackLimit", "_estack_limit", "__stack_limit", "_ebss"]
+
+        stack_limit = None
+        for sym_name in limit_symbols:
+            sym = state.project.loader.find_symbol(sym_name)
+            if sym is not None:
+                stack_limit = sym.rebased_addr
+                break
+
+        if stack_limit is not None:
+            return self._compute_initial_sp(state) - stack_limit
+        else:
+            warnings.warn(
+                f"Cannot find stack limit symbol, using default stack size {state.arch.stack_size}"
+            )
+            return state.arch.stack_size
+
     def _sort_irqs(self, irqs):
         # 1. trigger condition 為 concrete true 的放到前面
         for _, _, trig_conds in irqs:
@@ -139,8 +170,8 @@ class CortexM(ARM):
     def get_static_interrupt_checkpoints(self, proj, cfg, specs):
         ckpts = super().get_static_interrupt_checkpoints(proj, cfg, specs)
 
-        ckpts[angr.BP_AFTER].add(0xFFFFFFF1)
-        ckpts[angr.BP_AFTER].add(0xFFFFFFF9)
+        ckpts.add(BPConfig("instruction", when=angr.BP_AFTER, instruction=0xFFFFFFF1))
+        ckpts.add(BPConfig("instruction", when=angr.BP_AFTER, instruction=0xFFFFFFF9))
 
         return ckpts
 
@@ -162,47 +193,98 @@ class CortexM(ARM):
             #     specs=specs,
             #     handler=self,
             # )
-            ckpts = self.cpu.get_static_interrupt_checkpoints(
-                proj=state.project, cfg=cfg, specs=specs
+
+            for ckpt in self.get_checkpoints(state, cfg, specs):
+                ckpt.apply_to(state, handler=self)
+
+        @cache
+        def get_checkpoints(self, state, cfg, specs):
+            ckpts = set()
+
+            ckpts.update(
+                self.cpu.get_static_interrupt_checkpoints(
+                    proj=state.project, cfg=cfg, specs=specs
+                )
             )
-            for k, v in self.cpu.get_dma_synchronize_instruction_checkpoints():
-                ckpts[k] |= v
 
-            def bp_action(state, when):
-                match when:
-                    case angr.BP_BEFORE:
-                        state.custom_globals.before_check_handlers.add(self)
-                    case angr.BP_AFTER:
-                        state.custom_globals.after_check_handlers.add(self)
+            # globally accessible regions
+            ckpts.add(
+                BPConfig(
+                    "mem_read",
+                    when=angr.BP_BEFORE,
+                    condition=self.in_globally_accessible_region_read,
+                )
+            )
+            ckpts.add(
+                BPConfig(
+                    "mem_write",
+                    when=angr.BP_BEFORE,
+                    condition=self.in_globally_accessible_region_write,
+                )
+            )
 
-            for when, addrs in ckpts.items():
-                for addr in addrs:
-                    state.inspect.b(
-                        "instruction",
-                        when=when,
-                        instruction=addr,
-                        action=partial(bp_action, when=when),
-                    )
+            # DMA
+            for dma in specs.get_DMAs():
+                ckpts.update(dma.dma_handler.get_checkpoints())
+
+            return ckpts
 
         def get_eligible_events(self, state):
             # 收集所有 peripheral 的 pending IRQs
-            pending_irqs = defaultdict(list)  # {irq: trigger condition, ...}
+            pending_irqs = defaultdict(list)  # {irq: trigger conditions, ...}
             for region in self.specs.get_MMIOMemoryRegions():
-                for irq, trig_conds in region.get_pending_irqs(state).items():
-                    pending_irqs[irq].extend(trig_conds)
+                for trig_cond, kwargs in region.get_pending_irqs(state):
+                    irq = kwargs["irq"]
+                    pending_irqs[irq].append(trig_cond)
 
             # 剔除低於目前 priority 的 IRQ，並根據 priority 排序 IRQ
-            eligible_irqs = []  # [(priority, irq, trigger conditions), ...]
+            eligible_irqs = []
             for irq, trig_conds in pending_irqs.items():
                 prio = NVIC.get_irq_priority(state, irq)
                 if prio < state.globals.get("current_priority", 256):
                     eligible_irqs.append((prio, irq, trig_conds))
             self.cpu._sort_irqs(eligible_irqs)
-            return [(irq, trig_conds) for _, irq, trig_conds in eligible_irqs]
+            return [
+                (trig_cond, {"irq": irq})
+                for _, irq, trig_conds in eligible_irqs
+                for trig_cond in trig_conds
+            ]
 
         def trigger_event(self, state, irq):
-            self.cpu.excp_entry(state, irq)
             print(f"IRQ Injection | pc: {state.regs.pc} -> Branching into IRQ {irq}")
+            self.cpu.excp_entry(state, irq)
+
+        def in_globally_accessible_region(self, state, addr):
+            # stack 排除
+            if (
+                (self.cpu.initial_sp - self.cpu.stack_size)
+                <= addr
+                < self.cpu.initial_sp
+            ):
+                return False
+
+            # read-only 區域排除
+            obj = state.project.loader.find_object_containing(addr)
+            if obj is not None:
+                segment = obj.find_segment_containing(addr)
+                if segment is not None and not segment.is_writable:
+                    return False
+
+                section = obj.find_section_containing(addr)
+                if section is not None and not section.is_writable:
+                    return False
+
+            return True
+
+        def in_globally_accessible_region_read(self, state):
+            return self.in_globally_accessible_region(
+                state, state.solver.eval(state.inspect.mem_read_address)
+            )
+
+        def in_globally_accessible_region_write(self, state):
+            return self.in_globally_accessible_region(
+                state, state.solver.eval(state.inspect.mem_write_address)
+            )
 
     def set_handlers(self, state, cfg, specs):
         self.interrupt_handler = CortexM._InterruptHandler(

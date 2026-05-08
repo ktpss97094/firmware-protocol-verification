@@ -1,21 +1,21 @@
-from collections import defaultdict
-from functools import partial
+from functools import cache
 
 import angr
 import claripy
 
 from project import utils
+from project.cores.base import BaseDMA
 from project.peripherals.stm32f4.i2c import I2C
 from project.types import (
     AccessType,
     BaseRegister,
     BitsField,
+    BPConfig,
     EventForkHandler,
-    MMIOMemoryRegion,
 )
 
 
-class DMA(MMIOMemoryRegion):
+class DMA(BaseDMA):
     IRQ_NUMBERS = [11, 12, 13, 14, 15, 16, 17]  # DMA1_Stream0 to DMA1_Stream6
 
     class DMA_HISR(BaseRegister):
@@ -80,7 +80,7 @@ class DMA(MMIOMemoryRegion):
         s6cr = utils.load(state, self.start + DMA.DMA_S6CR.OFFSET)
         s6fcr = utils.load(state, self.start + DMA.DMA_S6FCR.OFFSET)
         events_to_check = []
-        output = defaultdict(list)
+        output = []
 
         if state.solver.is_true(s6cr[DMA.DMA_S6CR.HTIE.bit] == 1):
             events_to_check.extend(
@@ -112,7 +112,7 @@ class DMA(MMIOMemoryRegion):
             trigger_cond = event_val == 1
 
             if state.solver.satisfiable(extra_constraints=[trigger_cond]):
-                output[irq_num].append(trigger_cond)
+                output.append((trigger_cond, {"irq": irq_num}))
 
         return output
 
@@ -122,99 +122,32 @@ class DMA(MMIOMemoryRegion):
             self.specs = specs
             self.dma = dma
 
-            ckpts = self.cpu.get_static_interrupt_checkpoints(
-                proj=state.project, cfg=cfg, specs=specs
-            )
-            for k, v in self.cpu.get_dma_synchronize_instruction_checkpoints():
-                ckpts[k] |= v
+            for ckpt in self.get_checkpoints():
+                ckpt.apply_to(state, handler=self)
 
-            def bp_action(state, when):
-                match when:
-                    case angr.BP_BEFORE:
-                        state.custom_globals.before_check_handlers.add(self)
-                    case angr.BP_AFTER:
-                        state.custom_globals.after_check_handlers.add(self)
+        @cache
+        def get_checkpoints(self):
+            ckpts = set()
 
-            for when, addrs in ckpts.items():
-                for addr in addrs:
-                    state.inspect.b(
-                        "instruction",
-                        when=when,
-                        instruction=addr,
-                        action=partial(bp_action, when=when),
-                    )
+            # end addresses
+            ckpts.update(self.cpu.get_end_addrs_ckpts(self.specs.END_ADDRS))
 
-            def in_src_dst_shared_region(state, addr):
-                regions = []
-                s6cr = utils.load(state, self.dma.start + DMA.DMA_S6CR.OFFSET)
-                s6ndtr = utils.load(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET)
-                s6m0ar = utils.load(state, self.dma.start + DMA.DMA_S6M0AR.OFFSET)
-                s6m1ar = utils.load(state, self.dma.start + DMA.DMA_S6M1AR.OFFSET)
-                s6par = utils.load(state, self.dma.start + DMA.DMA_S6PAR.OFFSET)
-                ndt = s6ndtr[
-                    DMA.DMA_S6NDTR.NDT.bit
-                    + DMA.DMA_S6NDTR.NDT.size
-                    - 1 : DMA.DMA_S6NDTR.NDT.bit
-                ]
-                msize_val = (
-                    1
-                    << s6cr[
-                        DMA.DMA_S6CR.MSIZE.bit
-                        + DMA.DMA_S6CR.MSIZE.size
-                        - 1 : DMA.DMA_S6CR.MSIZE.bit
-                    ]
+            # DMA synchronize instructions
+            ckpts.update(self.cpu.get_dma_synchronize_instruction_checkpoints())
+
+            # memory regions
+            ckpts.add(
+                BPConfig(
+                    "mem_read", when=angr.BP_BEFORE, condition=self._bp_cond_mem_read
                 )
-                psize_val = (
-                    1
-                    << s6cr[
-                        DMA.DMA_S6CR.PSIZE.bit
-                        + DMA.DMA_S6CR.PSIZE.size
-                        - 1 : DMA.DMA_S6CR.PSIZE.bit
-                    ]
+            )
+            ckpts.add(
+                BPConfig(
+                    "mem_write", when=angr.BP_BEFORE, condition=self._bp_cond_mem_write
                 )
-
-                if state.solver.is_true(s6cr[DMA.DMA_S6CR.EN.bit] == 1):
-                    if state.solver.is_true(s6cr[DMA.DMA_S6CR.MINC.bit] == 1):
-                        regions.append((s6m0ar, ndt * psize_val))
-
-                        if state.solver.is_true(s6cr[DMA.DMA_S6CR.DBM.bit] == 1):
-                            regions.append((s6m1ar, ndt * psize_val))
-                    else:
-                        regions.append((s6m0ar, msize_val))
-
-                        if state.solver.is_true(s6cr[DMA.DMA_S6CR.DBM.bit] == 1):
-                            regions.append((s6m1ar, msize_val))
-
-                if state.solver.is_true(s6cr[DMA.DMA_S6CR.EN.bit] == 1):
-                    if state.solver.is_true(s6cr[DMA.DMA_S6CR.PINC.bit] == 1):
-                        if state.solver.is_true(s6cr[DMA.DMA_S6CR.PINCOS.bit] == 1):
-                            regions.append((s6par, ndt * 4))
-                        else:
-                            regions.append((s6par, ndt * psize_val))
-                    else:
-                        regions.append((s6par, psize_val))
-
-                for start, size in regions:
-                    if start <= addr < start + size:
-                        return True
-                return False
-
-            state.inspect.b(
-                "mem_read",
-                when=angr.BP_BEFORE,
-                condition=partial(
-                    in_src_dst_shared_region,
-                    addr=state.solver.eval(state.inspect.mem_read_address),
-                ),
             )
-            state.inspect.b(
-                "mem_write",
-                when=angr.BP_BEFORE,
-                condition=partial(
-                    in_src_dst_shared_region,
-                    addr=state.solver.eval(state.inspect.mem_write_address),
-                ),
-            )
+
+            return ckpts
 
         def get_eligible_events(self, state):
             s6cr = utils.load(state, self.dma.start + DMA.DMA_S6CR.OFFSET)
@@ -263,11 +196,11 @@ class DMA(MMIOMemoryRegion):
                 trigger_cond = event_val == 1
 
                 if state.solver.satisfiable(extra_constraints=[trigger_cond]):
-                    output.append((None, [trigger_cond]))
+                    output.append((trigger_cond, {}))
 
             return output
 
-        def trigger_event(self, state, event_info):
+        def trigger_event(self, state):
             s6m0ar = utils.load(state, self.dma.start + DMA.DMA_S6M0AR.OFFSET)
             s6par = utils.load(state, self.dma.start + DMA.DMA_S6PAR.OFFSET)
             s6ndtr = utils.load(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET)
@@ -295,6 +228,77 @@ class DMA(MMIOMemoryRegion):
                 state,
                 self.dma.start + DMA.DMA_HISR.OFFSET,
                 utils.replace_bit(hisr, DMA.DMA_HISR.TCIF6.bit, 1),
+            )
+
+        def _bp_cond_mem_op(self, state, addr):
+            # 1. DMA MMIO
+            if self.dma.in_region(addr):
+                return True
+
+            # 2. DMA source/destination region
+            regions = []
+            s6cr = utils.load(state, self.dma.start + DMA.DMA_S6CR.OFFSET)
+            s6ndtr = utils.load(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET)
+            s6m0ar = utils.load(state, self.dma.start + DMA.DMA_S6M0AR.OFFSET)
+            s6m1ar = utils.load(state, self.dma.start + DMA.DMA_S6M1AR.OFFSET)
+            s6par = utils.load(state, self.dma.start + DMA.DMA_S6PAR.OFFSET)
+            ndt = s6ndtr[
+                DMA.DMA_S6NDTR.NDT.bit
+                + DMA.DMA_S6NDTR.NDT.size
+                - 1 : DMA.DMA_S6NDTR.NDT.bit
+            ]
+            msize_val = (
+                1
+                << s6cr[
+                    DMA.DMA_S6CR.MSIZE.bit
+                    + DMA.DMA_S6CR.MSIZE.size
+                    - 1 : DMA.DMA_S6CR.MSIZE.bit
+                ]
+            )
+            psize_val = (
+                1
+                << s6cr[
+                    DMA.DMA_S6CR.PSIZE.bit
+                    + DMA.DMA_S6CR.PSIZE.size
+                    - 1 : DMA.DMA_S6CR.PSIZE.bit
+                ]
+            )
+
+            if state.solver.is_true(s6cr[DMA.DMA_S6CR.EN.bit] == 1):
+                if state.solver.is_true(s6cr[DMA.DMA_S6CR.MINC.bit] == 1):
+                    regions.append((s6m0ar, ndt * psize_val))
+
+                    if state.solver.is_true(s6cr[DMA.DMA_S6CR.DBM.bit] == 1):
+                        regions.append((s6m1ar, ndt * psize_val))
+                else:
+                    regions.append((s6m0ar, msize_val))
+
+                    if state.solver.is_true(s6cr[DMA.DMA_S6CR.DBM.bit] == 1):
+                        regions.append((s6m1ar, msize_val))
+
+            if state.solver.is_true(s6cr[DMA.DMA_S6CR.EN.bit] == 1):
+                if state.solver.is_true(s6cr[DMA.DMA_S6CR.PINC.bit] == 1):
+                    if state.solver.is_true(s6cr[DMA.DMA_S6CR.PINCOS.bit] == 1):
+                        regions.append((s6par, ndt * 4))
+                    else:
+                        regions.append((s6par, ndt * psize_val))
+                else:
+                    regions.append((s6par, psize_val))
+
+            for start, size in regions:
+                if start <= addr < start + size:
+                    return True
+
+            return False
+
+        def _bp_cond_mem_read(self, state):
+            return self._bp_cond_mem_op(
+                state, state.solver.eval(state.inspect.mem_read_address)
+            )
+
+        def _bp_cond_mem_write(self, state):
+            return self._bp_cond_mem_op(
+                state, state.solver.eval(state.inspect.mem_write_address)
             )
 
     def set_handlers(self, cpu, state, cfg, specs):

@@ -39,7 +39,7 @@ class Mode(Enum):
     DMA = auto()
 
 
-MODE = Mode.DMA
+MODE = Mode.INTERRUPT
 
 
 class I2C(STM32F4_I2C):
