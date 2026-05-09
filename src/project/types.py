@@ -22,6 +22,7 @@ from angr.engines.vex import (
 from angr.errors import SimEngineError
 from angr.exploration_techniques import DFS
 from angr.sim_state import SimState
+from angr.state_plugins.plugin import SimStatePlugin
 
 
 class CustomEngine(
@@ -279,26 +280,37 @@ class BaseSpecs:
             region.set_handlers(cpu=cpu, state=state, cfg=cfg, specs=specs)
 
 
-class BaseCustomGlobals(angr.SimStatePlugin):
+class BaseCustomGlobals(SimStatePlugin):
     """
     angr 的 globals 不會自己做 deepcopy，如果有必須要 deepcopy 的 globals (e.g., mutable object) 就要放 custom_globals
     """
 
     def __init__(
         self,
-        before_check_handlers=set(),
-        after_check_handlers=set(),
-        prev_after_check_handlers=set(),
+        before_check_handlers=None,
+        after_check_handlers=None,
+        prev_after_check_handlers=None,
     ):
         super().__init__()
 
-        self.before_check_handlers = before_check_handlers
-        self.after_check_handlers = after_check_handlers
-        self.prev_after_check_handlers = prev_after_check_handlers
+        self.before_check_handlers = (
+            set() if before_check_handlers is None else before_check_handlers
+        )
+        self.after_check_handlers = (
+            set() if after_check_handlers is None else after_check_handlers
+        )
+        self.prev_after_check_handlers = (
+            set() if prev_after_check_handlers is None else prev_after_check_handlers
+        )
 
-    @angr.SimStatePlugin.memo
     def copy(self, memo):
-        return BaseCustomGlobals()
+        o = super().copy(memo)
+
+        o.before_check_handlers = set()
+        o.after_check_handlers = set()
+        o.prev_after_check_handlers = set()
+
+        return o
 
 
 class EventForkHandler:

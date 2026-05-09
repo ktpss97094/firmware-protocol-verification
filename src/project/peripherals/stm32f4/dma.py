@@ -232,7 +232,7 @@ class DMA(BaseDMA):
 
         def _bp_cond_mem_op(self, state, addr):
             # 1. DMA MMIO
-            if self.dma.in_region(addr):
+            if self.dma.in_region(state.solver.eval(addr)):
                 return True
 
             # 2. DMA source/destination region
@@ -264,6 +264,10 @@ class DMA(BaseDMA):
                 ]
             )
 
+            ndt = ndt.zero_extend(state.arch.bits - ndt.size())
+            msize_val = msize_val.zero_extend(state.arch.bits - msize_val.size())
+            psize_val = psize_val.zero_extend(state.arch.bits - psize_val.size())
+
             if state.solver.is_true(s6cr[DMA.DMA_S6CR.EN.bit] == 1):
                 if state.solver.is_true(s6cr[DMA.DMA_S6CR.MINC.bit] == 1):
                     regions.append((s6m0ar, ndt * psize_val))
@@ -286,20 +290,18 @@ class DMA(BaseDMA):
                     regions.append((s6par, psize_val))
 
             for start, size in regions:
-                if start <= addr < start + size:
+                if state.solver.satisfiable(
+                    extra_constraints=[start <= addr, addr < start + size]
+                ):
                     return True
 
             return False
 
         def _bp_cond_mem_read(self, state):
-            return self._bp_cond_mem_op(
-                state, state.solver.eval(state.inspect.mem_read_address)
-            )
+            return self._bp_cond_mem_op(state, state.inspect.mem_read_address)
 
         def _bp_cond_mem_write(self, state):
-            return self._bp_cond_mem_op(
-                state, state.solver.eval(state.inspect.mem_write_address)
-            )
+            return self._bp_cond_mem_op(state, state.inspect.mem_write_address)
 
     def set_handlers(self, cpu, state, cfg, specs):
         self.dma_handler = DMA._DMAHandler(
