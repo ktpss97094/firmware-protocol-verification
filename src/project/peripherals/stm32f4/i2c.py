@@ -433,15 +433,6 @@ class I2C(MMIOMemoryRegion):
         TRA = BitsField(2, AccessType.R, 0)
         MSL = BitsField(0, AccessType.R, 0)
 
-    def pre_write(self, state):
-        addr, offset, value = super().pre_write(state)
-
-        orig_value = utils.load(state, addr)
-
-        state.inspect.mem_write_expr = self.mask_pre_write(offset, orig_value, value)
-
-        return addr, offset, state.inspect.mem_write_expr
-
     def post_read(self, state):
         _, offset, readout_value = super().post_read(state)
 
@@ -502,6 +493,8 @@ class I2C(MMIOMemoryRegion):
         utils.store(state, self.start + I2C.I2C_SR2.OFFSET, new_sr2)
 
         state.inspect.mem_read_expr = self.mask_post_read(offset, readout_value)
+
+        return _, offset, state.inspect.mem_read_expr
 
     def post_write(self, state):
         _, offset, value = super().post_write(state)
@@ -596,6 +589,8 @@ class I2C(MMIOMemoryRegion):
         utils.store(state, self.start + I2C.I2C_CR1.OFFSET, new_cr1)
         utils.store(state, self.start + I2C.I2C_SR1.OFFSET, new_sr1)
         utils.store(state, self.start + I2C.I2C_SR2.OFFSET, new_sr2)
+
+        return _, offset, value
 
     def get_pending_irqs(self, state):
         cr2 = utils.load(state, self.start + I2C.I2C_CR2.OFFSET)

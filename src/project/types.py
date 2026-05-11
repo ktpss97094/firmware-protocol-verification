@@ -24,6 +24,8 @@ from angr.exploration_techniques import DFS
 from angr.sim_state import SimState
 from angr.state_plugins.plugin import SimStatePlugin
 
+from project import utils
+
 
 class CustomEngine(
     SimEngineFailure,
@@ -178,6 +180,14 @@ class MMIOMemoryRegion(MemoryRegion):
 
                 self._access_masks[value.OFFSET] = (mask_rw, mask_r, mask_w, mask_rc_w0)
                 self._rst_vals[value.OFFSET] = rst_val
+
+    def pre_write(self, state):
+        addr, offset, value = super().pre_write(state)
+
+        orig_value = utils.load(state, addr)
+        state.inspect.mem_write_expr = self.mask_pre_write(offset, orig_value, value)
+
+        return addr, offset, state.inspect.mem_write_expr
 
     def mask_pre_write(self, offset, orig_val, write_val):
         masks = self._access_masks.get(offset)

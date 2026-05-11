@@ -1,0 +1,9 @@
+root = true
+
+[**/stm32f4xx-hal-driver/**/*.{c,h}]
+indent_style = space
+indent_size = 2
+
+[**/stm32_bitbang_i2c/**/*.{c,h}]
+indent_style = space
+indent_size = 2

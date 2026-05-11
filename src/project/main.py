@@ -139,6 +139,7 @@ def explore_step_func(simgr):
     print(
         f"Step: Active={len(simgr.active)}, Found={found_cnt}, Violated={violated_cnt}"
     )
+    # print(f"pc: {[hex(state.solver.eval(state.regs.pc)) for state in simgr.active]}")
 
     return simgr
 
