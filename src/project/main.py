@@ -19,6 +19,7 @@ from project.types import (
     BaseCustomGlobals,
     BaseSpecs,
     CustomEngine,
+    CustomLoopSeer,
     DFSPickFirstSuccessor,
     MMIOMemoryRegion,
     VariableMemoryRegion,
@@ -347,7 +348,7 @@ def main(
     elif search == "dfs":
         simgr.use_technique(angr.exploration_techniques.DFS())
     simgr.use_technique(
-        angr.exploration_techniques.LoopSeer(
+        CustomLoopSeer(
             cfg=cfg,
             functions=Specs.BOUND_LOOP_FUNCTIONS,
             bound=Specs.LOOP_BOUND,
