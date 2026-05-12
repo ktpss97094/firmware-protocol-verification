@@ -24,6 +24,7 @@
 #include "utils.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 #include "stm32_sw_i2c.h"
 #include "dwt_stm32_delay.h"
 /* USER CODE END Includes */
@@ -101,15 +102,9 @@ int main(void)
   // }
 
   uint8_t data[256];
-  // char message[256];
-  // int msg_len;
 
-  I2C_transmit(0x68 << 1, data, 1);
-  // I2C_receive(0x68 << 1, &reg, &data, 1, 1);
+  bool result = I2C_transmit(0x68 << 1, data, 1);
   SYMBOL_MARKER("END_SYMBOLIC_EXECUTION");
-
-  // sprintf(message, "Register 0x75 data: 0x%02x\r\n", data);
-  // HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
   /* USER CODE END 3 */
 }
 

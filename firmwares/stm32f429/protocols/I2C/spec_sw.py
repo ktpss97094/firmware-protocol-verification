@@ -1,7 +1,11 @@
 r"""
 read_back_verification
 1. Trigger: write BSRR
-    Condition: BRy = 1 \implies arbitration_lost = 0
+    Condition: BRy (SDA) = 1 \implies arbitration_lost = 0
+    > I2C specification §3.1.8: The first time a controller tries to send a HIGH, but detects that the SDA level is LOW, the controller knows that it has lost the arbitration and turns off its SDA output driver.
+2. Trigger write BSRR
+    Condition: BRy (SCL) = 1 \implies (arbitration_lost_byte_end = 1 \implies arbitration_lost = 0)
+    > I2C specification §3.1.8: A controller that loses the arbitration can generate clock pulses until the end of the byte in which it loses the arbitration and must restart its transaction when the bus is free.
 """
 
 import angr
@@ -34,7 +38,16 @@ class GPIO(STM32F4_GPIO):
                         state.i2c_bus.arbitration_lost,
                     ]
                 ):
-                    raise Violation("read_back_verification")
+                    raise Violation("read_back_verification (spec 1)")
+
+                # --- Spec 2 ---
+                if state.solver.satisfiable(
+                    extra_constraints=[
+                        value[GPIO.GPIO_BSRR.BR13.bit] == 1,
+                        state.i2c_bus.arbitration_lost_byte_end,
+                    ]
+                ):
+                    raise Violation("read_back_verification (spec 2)")
 
         return _, offset, value
 
@@ -49,18 +62,22 @@ class GPIO(STM32F4_GPIO):
         match offset:
             case GPIO.GPIO_BSRR.OFFSET:
                 if state.solver.is_true(
-                    claripy.And(state.i2c_bus.prev_scl_out == 1, scl_out == 0)
-                ):  # SCL falling edge
-                    # state.i2c_bus.ext_sda = state.i2c_bus.produce_external_sda()
-                    pass
-                elif state.solver.is_true(
                     claripy.And(state.i2c_bus.prev_scl_out == 0, scl_out == 1)
                 ):  # SCL rising edge
+                    state.i2c_bus.bit_count = (state.i2c_bus.bit_count + 1) % 9
+
                     state.i2c_bus.arbitration_lost = claripy.Or(
                         state.i2c_bus.arbitration_lost,
                         claripy.And(
                             sda_out == 1, idr[GPIO.GPIO_IDR.IDR15.bit] == 0
                         ),  # 先前 SDA 輸出 1，但實際讀到的是 0
+                    )
+
+                    state.i2c_bus.arbitration_lost_byte_end = claripy.Or(
+                        state.i2c_bus.arbitration_lost_byte_end,
+                        claripy.And(
+                            state.i2c_bus.arbitration_lost, state.i2c_bus.bit_count == 0
+                        ),
                     )
 
                 state.i2c_bus.prev_scl_out = scl_out
