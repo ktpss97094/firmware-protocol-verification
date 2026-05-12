@@ -1,6 +1,3 @@
-> [!WARNING]
-> If the firmware under verification is compiled with optimization enabled, it may cause symbol recognition failures and may lead to incorrect verification results.
-
 ## Prerequisite
 
 1. Install [uv](https://github.com/astral-sh/uv)

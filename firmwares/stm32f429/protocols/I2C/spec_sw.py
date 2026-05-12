@@ -152,22 +152,22 @@ class Specs(BaseSpecs):
         )
 
     def init_input(self, state):
-        # size_range = (0, 3)
+        size_range = (0, 2)
 
-        # # address, size symbolic
-        # utils.set_func_args_symbolic(
-        #     state, self.API_PROTOTYPE, {0: None, 3: size_range}
-        # )
+        # address, size symbolic
+        utils.set_func_args_symbolic(
+            state, self.API_PROTOTYPE, {0: None, 2: size_range}
+        )
 
-        # # data symbolic
-        # element_size_bits = self.API_PROTOTYPE.args[1].pts_to.size
-        # element_size_bytes = element_size_bits // 8
-        # for idx in range(*size_range):
-        #     utils.store(
-        #         state,
-        #         self.API_ARGS[2] + (idx * element_size_bytes),
-        #         claripy.BVS(f"data[{idx}]", element_size_bits),
-        #         size=element_size_bytes,
-        #     )
+        # data symbolic
+        element_size_bits = self.API_PROTOTYPE.args[1].pts_to.size
+        element_size_bytes = element_size_bits // 8
+        for idx in range(*size_range):
+            utils.store(
+                state,
+                self.API_ARGS[2] + (idx * element_size_bytes),
+                claripy.BVS(f"data[{idx}]", element_size_bits),
+                size=element_size_bytes,
+            )
 
         I2CBus.register_default("i2c_bus")

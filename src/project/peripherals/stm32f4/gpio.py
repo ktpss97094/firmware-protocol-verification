@@ -45,6 +45,15 @@ class GPIO(MMIOMemoryRegion):
                     new_odr = utils.replace_bit(new_odr, GPIO.GPIO_BSRR.BS15.bit, 1)
 
                 # 更新 IDR
+                real_scl = claripy.If(
+                    claripy.And(
+                        new_odr[GPIO.GPIO_ODR.ODR13.bit] == 1,
+                        claripy.BVS("external_scl", 1) == 1,
+                    ),
+                    claripy.BVV(1, 1),
+                    claripy.BVV(0, 1),
+                )  # wired-and
+                new_idr = utils.replace_bit(new_idr, GPIO.GPIO_IDR.IDR13.bit, real_scl)
                 real_sda = claripy.If(
                     claripy.And(
                         new_odr[GPIO.GPIO_ODR.ODR15.bit] == 1,

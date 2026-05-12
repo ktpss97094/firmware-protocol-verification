@@ -160,6 +160,16 @@ def get_symbol_addr(proj, symbol_name, is_variable):
     return addr
 
 
+def get_func_addrs(cfg, funcs: list[str]) -> list[int]:
+    func_addrs = []
+
+    for func in cfg.kb.functions.values():
+        if func.name in funcs:
+            func_addrs.append(func.addr)
+
+    return func_addrs
+
+
 def get_constraint_info(state, constraint):
     def get_bit_extract_info(constraint):
         if constraint.op == "Extract":

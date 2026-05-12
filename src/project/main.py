@@ -350,7 +350,9 @@ def main(
     simgr.use_technique(
         CustomLoopSeer(
             cfg=cfg,
-            functions=Specs.BOUND_LOOP_FUNCTIONS,
+            functions=utils.get_func_addrs(
+                cfg, Specs.BOUND_LOOP_FUNCTIONS
+            ),  # functions 參數雖然可以直接指定 function 名稱字串，但當 function 是定義成 static，依照 LoopSeer 的實作只會找到第一個符合的
             bound=Specs.LOOP_BOUND,
             bound_reached=LoopSeer_bound_reached_handler,
             discard_stash="loopseer",
