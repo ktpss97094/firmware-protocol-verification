@@ -83,7 +83,6 @@ int main(void)
   /* USER CODE BEGIN SysInit */
   I2C_init();
   DWT_Delay_Init();
-  DWT_Delay_us(1000);
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */

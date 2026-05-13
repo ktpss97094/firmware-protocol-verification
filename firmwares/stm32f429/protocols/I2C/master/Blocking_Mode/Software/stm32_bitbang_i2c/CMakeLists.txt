@@ -1,4 +1,4 @@
-project(i2c_master_blocking_sw_bitbang)
+project(i2c_master_blocking_sw_bitbang C)
 
 add_firmware(${PROJECT_NAME})
 

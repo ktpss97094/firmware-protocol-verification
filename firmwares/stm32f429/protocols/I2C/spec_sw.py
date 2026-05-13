@@ -4,7 +4,7 @@ read_back_verification
     Condition: BRy (SDA) = 1 \implies arbitration_lost = 0
     > I2C specification §3.1.8: The first time a controller tries to send a HIGH, but detects that the SDA level is LOW, the controller knows that it has lost the arbitration and turns off its SDA output driver.
 2. Trigger write BSRR
-    Condition: BRy (SCL) = 1 \implies (arbitration_lost_byte_end = 1 \implies arbitration_lost = 0)
+    Condition: BRy (SCL) = 1 \implies arbitration_lost_byte_end = 0
     > I2C specification §3.1.8: A controller that loses the arbitration can generate clock pulses until the end of the byte in which it loses the arbitration and must restart its transaction when the bus is free.
 """
 
