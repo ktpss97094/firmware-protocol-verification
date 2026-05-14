@@ -99,7 +99,7 @@ class Specs(BaseSpecs):
     ANGR_ARCH = archinfo.ArchARMCortexM(endness=archinfo.Endness.LE)
 
     # --- Parameters ---
-    LOOP_BOUND = 1
+    LOOP_BOUND = 0
     BOUND_LOOP_FUNCTIONS = ["DWT_Delay_us"]
 
     # --- Constants ---
@@ -169,7 +169,7 @@ class Specs(BaseSpecs):
         )
 
     def init_input(self, state):
-        size_range = (0, 2)
+        size_range = (0, 0)
 
         # address, size symbolic
         utils.set_func_args_symbolic(
@@ -182,7 +182,7 @@ class Specs(BaseSpecs):
         for idx in range(*size_range):
             utils.store(
                 state,
-                self.API_ARGS[2] + (idx * element_size_bytes),
+                self.API_ARGS[1] + (idx * element_size_bytes),
                 claripy.BVS(f"data[{idx}]", element_size_bits),
                 size=element_size_bytes,
             )
