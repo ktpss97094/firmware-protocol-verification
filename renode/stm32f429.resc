@@ -1,6 +1,6 @@
 mach create
 machine LoadPlatformDescription @platforms/cpus/stm32f429.repl
-machine LoadPlatformDescriptionFromString "dummy: Mocks.DummyI2CSlave @ i2c1 0x68"
+# machine LoadPlatformDescriptionFromString "dummy: Mocks.DummyI2CSlave @ i2c1 0x68"
 
 sysbus LoadELF @../firmwares/stm32f429/build/protocols/I2C/master/Blocking_Mode/Hardware/stm32f4xx-hal-driver/firmware.elf
 
