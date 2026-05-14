@@ -169,7 +169,7 @@ class Specs(BaseSpecs):
         )
 
     def init_input(self, state):
-        size_range = (0, 0)
+        size_range = (0, 2)
 
         # address, size symbolic
         utils.set_func_args_symbolic(

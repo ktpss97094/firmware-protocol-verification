@@ -336,6 +336,12 @@ def main(
     if not hasattr(state, "custom_globals"):
         BaseCustomGlobals.register_default("custom_globals")
 
+    # 關閉 renode
+    if renode:
+        try:
+            avatar_target.protocols.execution.console_command("monitor quit")
+        except Exception as e:
+            logger.warning(f"Failed to quit renode: {e}")
     avatar.shutdown()
 
     simgr = proj.factory.simgr(state)
