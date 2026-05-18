@@ -1,19 +1,13 @@
-project(i2c_master_blocking_sw_bitbang C)
+project(i2c_master_blocking_sw_stm32bitbangi2c C ASM)
+
+file(GLOB CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/*.c")
+add_executable(${PROJECT_NAME} ${CORE_SOURCES})
+
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    stm32_bitbang_i2c
+    "-T${CMAKE_CURRENT_SOURCE_DIR}/STM32F429XX_FLASH.ld"
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc")
 
 add_firmware(${PROJECT_NAME})
-
-target_include_directories(${PROJECT_NAME} PRIVATE 
-    "${LIB_DIR}/stm32_bitbang_i2c"
-)
-
-target_compile_definitions(${PROJECT_NAME} PRIVATE 
-    STM32F4
-)
-
-file(GLOB BITBANG_SOURCES 
-    CONFIGURE_DEPENDS 
-    "${LIB_DIR}/stm32_bitbang_i2c/*.c"
-)
-target_sources(${PROJECT_NAME} PRIVATE 
-    ${BITBANG_SOURCES}
-)
