@@ -1,12 +1,14 @@
 cmake_minimum_required(VERSION 3.15)
 project(firmware)
 
+include(ExternalProject)
+
 set(LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib")
 set(MCU_FLAGS -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 --specs=nosys.specs)
 
-add_library(cortex_m4_compile INTERFACE)
-target_compile_options(cortex_m4_compile INTERFACE ${MCU_FLAGS} -Wall -g)
-target_link_options(cortex_m4_compile INTERFACE ${MCU_FLAGS})
+add_library(cortex_m4_flags INTERFACE)
+target_compile_options(cortex_m4_flags INTERFACE ${MCU_FLAGS} -Wall -g)
+target_link_options(cortex_m4_flags INTERFACE ${MCU_FLAGS})
 
 add_library(cmsis INTERFACE)
 target_include_directories(cmsis INTERFACE
@@ -26,7 +28,7 @@ target_include_directories(stm32f4xx_hal INTERFACE
     "${LIB_DIR}/stm32f4xx-hal-driver/Inc"
 )
 target_compile_definitions(stm32f4xx_hal INTERFACE USE_HAL_DRIVER)
-target_link_libraries(stm32f4xx_hal INTERFACE cortex_m4_compile cmsis)
+target_link_libraries(stm32f4xx_hal INTERFACE cortex_m4_flags cmsis)
 
 add_library(stm32_bitbang_i2c INTERFACE)
 target_include_directories(stm32_bitbang_i2c INTERFACE "${LIB_DIR}/stm32_bitbang_i2c")
@@ -35,7 +37,25 @@ target_sources(stm32_bitbang_i2c INTERFACE ${STM32_BITBANG_I2C_SOURCES})
 target_compile_definitions(stm32_bitbang_i2c INTERFACE STM32F4)
 target_link_libraries(stm32_bitbang_i2c INTERFACE stm32f4xx_hal)
 
-# add_library(libopencm3 STATIC)
+ExternalProject_Add(
+    libopencm3_build
+    PREFIX "${CMAKE_BINARY_DIR}/libopencm3"
+    SOURCE_DIR "${LIB_DIR}/libopencm3"
+    BUILD_IN_SOURCE 1
+    CONFIGURE_COMMAND ""
+    BUILD_COMMAND make TARGETS=stm32/f4
+    INSTALL_COMMAND ""
+    BUILD_BYPRODUCTS "${LIB_DIR}/libopencm3/lib/libopencm3_stm32f4.a"
+)
+add_library(libopencm3 STATIC IMPORTED GLOBAL)
+add_dependencies(libopencm3 libopencm3_build)
+set_target_properties(libopencm3 PROPERTIES
+    IMPORTED_LOCATION "${LIB_DIR}/libopencm3/lib/libopencm3_stm32f4.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${LIB_DIR}/libopencm3/include"
+    INTERFACE_LINK_OPTIONS "-L${LIB_DIR}/libopencm3/lib"
+    INTERFACE_COMPILE_DEFINITIONS "STM32F4"
+)
+target_link_libraries(libopencm3 INTERFACE cortex_m4_flags)
 
 function(add_firmware TARGET_NAME)
     set_target_properties(${TARGET_NAME} PROPERTIES 
@@ -59,6 +79,7 @@ function(add_firmware TARGET_NAME)
 endfunction()
 
 add_subdirectory(protocols/I2C/master/Blocking_Mode/Hardware/stm32f4xx-hal-driver)
+add_subdirectory(protocols/I2C/master/Blocking_Mode/Hardware/libopencm3)
 add_subdirectory(protocols/I2C/master/Blocking_Mode/Software/stm32_bitbang_i2c)
 add_subdirectory(protocols/I2C/master/Interrupt_Mode/stm32f4xx-hal-driver)
 add_subdirectory(protocols/I2C/master/DMA_Mode/stm32f4xx-hal-driver)
