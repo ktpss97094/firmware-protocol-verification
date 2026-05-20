@@ -19,3 +19,9 @@ uv sync
 ```sh
 uv run verify <spec file>
 ```
+
+## angr-management
+
+可協助找 loop entry block address
+1. 可視覺化顯示 control-flow graph
+2. 按 Tab 可切換 assembly 與 disassembly 對照

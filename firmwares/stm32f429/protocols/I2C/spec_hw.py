@@ -6,11 +6,6 @@ read_back_verification
     Condition: MSL = 1 \implies ARLO = 0
 3. Trigger: write CR1
     Condition: STOP = 1 \implies (MSL = 1 \implies ARLO = 0)
-
-Symbolic:
-uwTick
-SR1 (START, SB, ADD10 (10-bit 時), AF, ARLO, ADDR, TxE, BTF)
-CR1 STOP
 """
 
 from enum import Enum, auto
@@ -34,13 +29,18 @@ from project.peripherals.stm32f4.i2c import I2C as STM32F4_I2C
 from project.types import BaseSpecs, MemoryRegion, MMIOMemoryRegion, Violation
 
 
-class Mode(Enum):
+class STM32F4XX_HAL(Enum):
     BLOCKING = auto()
     INTERRUPT = auto()
     DMA = auto()
 
 
-MODE = Mode.BLOCKING
+class OPENCM3(Enum):
+    BLOCKING = auto()
+
+
+type FirmwareMode = STM32F4XX_HAL | OPENCM3
+MODE: FirmwareMode = STM32F4XX_HAL.BLOCKING
 
 
 class I2C(STM32F4_I2C):
@@ -88,20 +88,25 @@ class I2C(STM32F4_I2C):
 class Specs(BaseSpecs):
     # --- Paths ---
     match MODE:
-        case Mode.BLOCKING:
+        case STM32F4XX_HAL.BLOCKING:
             FIRMWARE_PATH = str(
                 config.PROJECT_ROOT
                 / "firmwares/stm32f429/build/protocols/I2C/master/Blocking_Mode/Hardware/stm32f4xx-hal-driver/firmware.elf"
             )
-        case Mode.INTERRUPT:
+        case STM32F4XX_HAL.INTERRUPT:
             FIRMWARE_PATH = str(
                 config.PROJECT_ROOT
                 / "firmwares/stm32f429/build/protocols/I2C/master/Interrupt_Mode/stm32f4xx-hal-driver/firmware.elf"
             )
-        case Mode.DMA:
+        case STM32F4XX_HAL.DMA:
             FIRMWARE_PATH = str(
                 config.PROJECT_ROOT
                 / "firmwares/stm32f429/build/protocols/I2C/master/DMA_Mode/stm32f4xx-hal-driver/firmware.elf"
+            )
+        case OPENCM3.BLOCKING:
+            FIRMWARE_PATH = str(
+                config.PROJECT_ROOT
+                / "firmwares/stm32f429/build/protocols/I2C/master/Blocking_Mode/Hardware/libopencm3/firmware.elf"
             )
     OPENOCD_INTERFACE_SCRIPT_PATH = "/usr/share/openocd/scripts/interface/stlink.cfg"
     OPENOCD_TARGET_SCRIPT_PATH = "/usr/share/openocd/scripts/target/stm32f4x.cfg"
@@ -111,19 +116,12 @@ class Specs(BaseSpecs):
     ANGR_ARCH = archinfo.ArchARMCortexM(endness=archinfo.Endness.LE)
 
     # --- Parameters ---
-    LOOP_BOUND = 2
-    BOUND_LOOP_FUNCTIONS = [
-        "I2C_WaitOnFlagUntilTimeout",
-        "I2C_WaitOnMasterAddressFlagUntilTimeout",
-        "I2C_WaitOnTXEFlagUntilTimeout",
-        "I2C_WaitOnBTFFlagUntilTimeout",
-    ]
+    match MODE:
+        case STM32F4XX_HAL():
+            BOUND_LOOPS = {0x800AF79: 2, 0x800B0BD: 2, 0x800B181: 2, 0x800B211: 2}
 
-    # --- Constants ---
-    """
-    Warning:
-        不要繼承 IntEnum，因為 claripy 可能因為還沒支援 Bit Vector 與 IntEnum 的值比較，故會與 integer 行為有差異
-    """
+        case OPENCM3():
+            BOUND_LOOPS = {0x8000453: 1, 0x8000461: 1, 0x8000485: 1, 0x8000497: 1}
 
     def _define_specs(self):
         self.MEMORY_REGIONS = {
@@ -146,66 +144,86 @@ class Specs(BaseSpecs):
                 start=0xE000E100, size=0xC00, spec=self, name="NVIC"
             ),
             "DMA1": DMA(start=0x40026000, size=0x400, spec=self, name="DMA1"),
-            "SysTickVariable": SysTickVariable(
-                start=utils.get_symbol_addr(self.proj, "uwTick", is_variable=True),
-                size=0x4,
-                spec=self,
-                name="SysTickVariable",
-            ),
         }
-
-        I2C_InitTypeDef = angr.types.parse_type("""
-            struct I2C_InitTypeDef {
-                uint32_t ClockSpeed;
-                uint32_t DutyCycle;
-                uint32_t OwnAddress1;
-                uint32_t AddressingMode;
-            }
-            """)
-        angr.types.register_types(I2C_InitTypeDef)
-        I2C_HandleTypeDef = angr.types.parse_type("""
-            struct I2C_HandleTypeDef {
-                void *Instance;
-                struct I2C_InitTypeDef Init;
-            }
-            """)
-        angr.types.register_types(I2C_HandleTypeDef)
+        match MODE:
+            case STM32F4XX_HAL():
+                self.MEMORY_REGIONS["SysTickVariable"] = SysTickVariable(
+                    start=utils.get_symbol_addr(self.proj, "uwTick", is_variable=True),
+                    size=0x4,
+                    spec=self,
+                    name="SysTickVariable",
+                )
 
         match MODE:
-            case Mode.BLOCKING:
+            case STM32F4XX_HAL.BLOCKING:
                 self.BEGIN_ADDR = utils.get_symbol_addr(
                     self.proj, "HAL_I2C_Master_Transmit", is_variable=False
                 )
-            case Mode.INTERRUPT:
+            case STM32F4XX_HAL.INTERRUPT:
                 self.BEGIN_ADDR = utils.get_symbol_addr(
                     self.proj, "HAL_I2C_Master_Transmit_IT", is_variable=False
                 )
-            case Mode.DMA:
+            case STM32F4XX_HAL.DMA:
                 self.BEGIN_ADDR = utils.get_symbol_addr(
                     self.proj, "HAL_I2C_Master_Transmit_DMA", is_variable=False
                 )
+            case OPENCM3.BLOCKING:
+                self.BEGIN_ADDR = utils.get_symbol_addr(
+                    self.proj, "i2c_transfer7", is_variable=False
+                )
 
         match MODE:
-            case Mode.BLOCKING:
+            case STM32F4XX_HAL():
+                I2C_InitTypeDef = angr.types.parse_type("""
+                    struct I2C_InitTypeDef {
+                        uint32_t ClockSpeed;
+                        uint32_t DutyCycle;
+                        uint32_t OwnAddress1;
+                        uint32_t AddressingMode;
+                    }
+                    """)
+                angr.types.register_types(I2C_InitTypeDef)
+                I2C_HandleTypeDef = angr.types.parse_type("""
+                    struct I2C_HandleTypeDef {
+                        void *Instance;
+                        struct I2C_InitTypeDef Init;
+                    }
+                    """)
+                angr.types.register_types(I2C_HandleTypeDef)
+                match MODE:
+                    case STM32F4XX_HAL.BLOCKING:
+                        self.API_PROTOTYPE = SimTypeFunction(
+                            args=[
+                                SimTypePointer(I2C_HandleTypeDef),
+                                SimTypeShort(signed=False),
+                                SimTypePointer(SimTypeChar(signed=False)),
+                                SimTypeShort(signed=False),
+                                SimTypeInt(signed=False),
+                            ],
+                            returnty=SimTypeInt(signed=False),
+                        )
+                    case STM32F4XX_HAL.INTERRUPT | STM32F4XX_HAL.DMA:
+                        self.API_PROTOTYPE = SimTypeFunction(
+                            args=[
+                                SimTypePointer(I2C_HandleTypeDef),
+                                SimTypeShort(signed=False),
+                                SimTypePointer(SimTypeChar(signed=False)),
+                                SimTypeShort(signed=False),
+                            ],
+                            returnty=SimTypeInt(signed=False),
+                        )
+
+            case OPENCM3():
                 self.API_PROTOTYPE = SimTypeFunction(
                     args=[
-                        SimTypePointer(I2C_HandleTypeDef),
+                        SimTypeInt(signed=False),
                         SimTypeShort(signed=False),
                         SimTypePointer(SimTypeChar(signed=False)),
-                        SimTypeShort(signed=False),
+                        SimTypeInt(signed=False),
+                        SimTypePointer(SimTypeChar(signed=False)),
                         SimTypeInt(signed=False),
                     ],
-                    returnty=SimTypeInt(signed=False),
-                )
-            case Mode.INTERRUPT | Mode.DMA:
-                self.API_PROTOTYPE = SimTypeFunction(
-                    args=[
-                        SimTypePointer(I2C_HandleTypeDef),
-                        SimTypeShort(signed=False),
-                        SimTypePointer(SimTypeChar(signed=False)),
-                        SimTypeShort(signed=False),
-                    ],
-                    returnty=SimTypeInt(signed=False),
+                    returnty=None,
                 )
 
         self.END_ADDRS = [
@@ -245,12 +263,14 @@ class Specs(BaseSpecs):
             action=self.MEMORY_REGIONS["I2C1"].post_write,
         )
 
-        state.inspect.b(
-            "mem_read",
-            when=angr.BP_BEFORE,
-            condition=self.MEMORY_REGIONS["SysTickVariable"].in_region_read,
-            action=self.MEMORY_REGIONS["SysTickVariable"].post_read,
-        )
+        match MODE:
+            case STM32F4XX_HAL():
+                state.inspect.b(
+                    "mem_read",
+                    when=angr.BP_BEFORE,
+                    condition=self.MEMORY_REGIONS["SysTickVariable"].in_region_read,
+                    action=self.MEMORY_REGIONS["SysTickVariable"].post_read,
+                )
 
         # state.inspect.b(
         #     "instruction", instruction=self.DEBUG_FUNC_ADDR, action=utils.stop_and_debug
@@ -261,12 +281,14 @@ class Specs(BaseSpecs):
         size_range = (0, 3)
 
         # addressing mode symbolic
-        addressing_mode = state.mem[
-            self.API_ARGS[0]
-        ].struct.I2C_HandleTypeDef.Init.AddressingMode
-        addressing_mode.store(
-            claripy.BVS("AddressingMode", addressing_mode.resolved.length)
-        )
+        match MODE:
+            case STM32F4XX_HAL():
+                addressing_mode = state.mem[
+                    self.API_ARGS[0]
+                ].struct.I2C_HandleTypeDef.Init.AddressingMode
+                addressing_mode.store(
+                    claripy.BVS("AddressingMode", addressing_mode.resolved.length)
+                )
 
         # address, size symbolic
         utils.set_func_args_symbolic(
@@ -286,5 +308,5 @@ class Specs(BaseSpecs):
 
         # timeout symbolic
         match MODE:
-            case Mode.BLOCKING:
+            case STM32F4XX_HAL.BLOCKING:
                 utils.set_func_args_symbolic(state, self.API_PROTOTYPE, {4: None})

@@ -343,8 +343,7 @@ class VariableMemoryRegion(MemoryRegion):
 
 
 class BaseSpecs:
-    LOOP_BOUND = 10
-    BOUND_LOOP_FUNCTIONS = []
+    BOUND_LOOPS = {}
 
     def __init__(self, proj):
         super().__init__()

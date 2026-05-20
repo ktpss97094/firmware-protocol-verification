@@ -46,6 +46,7 @@ ExternalProject_Add(
     BUILD_COMMAND make TARGETS=stm32/f4
     INSTALL_COMMAND ""
     BUILD_BYPRODUCTS "${LIB_DIR}/libopencm3/lib/libopencm3_stm32f4.a"
+    BUILD_ALWAYS 1
 )
 add_library(libopencm3 STATIC IMPORTED GLOBAL)
 add_dependencies(libopencm3 libopencm3_build)

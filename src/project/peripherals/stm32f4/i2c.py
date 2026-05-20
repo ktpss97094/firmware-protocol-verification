@@ -67,6 +67,17 @@ class I2C(MMIOMemoryRegion):
                     ),
                 )
 
+                # (BUSY) cleared by hardware on detection of a Stop condition
+                sr2 = utils.replace_bit(
+                    sr2,
+                    I2C.I2C_SR2.BUSY.bit,
+                    claripy.If(
+                        cr1[cls.STOP.bit] == 0,
+                        claripy.BVV(0, 1),
+                        sr2[I2C.I2C_SR2.BUSY.bit],
+                    ),
+                )
+
             return cr1, sr1, sr2
 
     class I2C_CR2(BaseRegister):
@@ -320,7 +331,7 @@ class I2C(MMIOMemoryRegion):
             return sr1
 
         @classmethod
-        def update_ADDR(cls, i2c, state, sr1, cr1, force=False, value=None):
+        def update_ADDR(cls, i2c, state, sr1, cr1, sr2, force=False, value=None):
             if force or not state.solver.unique(sr1[cls.ADDR.bit]):
                 # if force or sr1[cls.ADDR.bit].symbolic:
                 if value is None:
@@ -334,6 +345,40 @@ class I2C(MMIOMemoryRegion):
                 #     cr1[I2C.I2C_CR1.PE.bit] == 0, claripy.BVV(0, 1), value
                 # )
                 sr1 = utils.replace_bit(sr1, cls.ADDR.bit, value)
+
+                state.globals["is_address_phase"] = claripy.If(
+                    sr1[cls.ADDR.bit] == 1,
+                    claripy.false(),
+                    state.globals["is_address_phase"],
+                )
+
+                # (TRA) This bit is set depending on the R/W bit of the address byte, at the end of total address phase
+                if "R/W" in state.globals:
+                    sr2 = utils.replace_bit(
+                        sr2,
+                        I2C.I2C_SR2.TRA.bit,
+                        claripy.If(
+                            sr1[cls.ADDR.bit] == 1,
+                            ~state.globals["R/W"],
+                            sr2[I2C.I2C_SR2.TRA.bit],
+                        ),
+                    )
+
+                # (TxE) Set when DR is empty in transmission. TxE is not set during address phase
+                sr1 = utils.replace_bit(
+                    sr1,
+                    cls.TXE.bit,
+                    claripy.If(
+                        claripy.And(
+                            sr1[cls.ADDR.bit] == 1, sr2[I2C.I2C_SR2.TRA.bit] == 1
+                        ),
+                        claripy.BVV(1, 1),
+                        sr1[cls.TXE.bit],
+                    ),
+                )
+                sr1 = I2C.I2C_SR1.update_TXE(
+                    i2c, state, sr1, cr1, sr2, force=True, value=sr1[cls.TXE.bit]
+                )
 
                 # (AF) Set by hardware when no acknowledge is returned
                 sr1 = utils.replace_bit(
@@ -353,7 +398,7 @@ class I2C(MMIOMemoryRegion):
                     ),
                 )
 
-            return sr1
+            return sr1, sr2
 
         @classmethod
         def update_SB(cls, i2c, state, sr1, cr1, sr2, force=False, value=None):
@@ -425,12 +470,24 @@ class I2C(MMIOMemoryRegion):
                     ),
                 )
 
+                # (BUSY) Set by hardware on detection of SDA or SCL low
+                sr2 = utils.replace_bit(
+                    sr2,
+                    I2C.I2C_SR2.BUSY.bit,
+                    claripy.If(
+                        sr1[cls.SB.bit] == 1,
+                        claripy.BVV(1, 1),
+                        sr2[I2C.I2C_SR2.BUSY.bit],
+                    ),
+                )
+
             return sr1, cr1, sr2
 
     class I2C_SR2(BaseRegister):
         OFFSET = 0x18
 
         TRA = BitsField(2, AccessType.R, 0)
+        BUSY = BitsField(1, AccessType.R, 0)
         MSL = BitsField(0, AccessType.R, 0)
 
     def post_read(self, state):
@@ -452,7 +509,9 @@ class I2C(MMIOMemoryRegion):
                 # 目前寫的方式下，AF 需要比 ADD10, ADDR, TxE, BTF 等早 update，因為這些 bit 的 update function 會新增 claripy.If(bit == 1, 0, AF)。如果 update_* 先執行，update_AF 會被蓋過
                 new_sr1 = I2C.I2C_SR1.update_AF(self, state, new_sr1, new_cr1)
                 new_sr1 = I2C.I2C_SR1.update_ADD10(self, state, new_sr1, new_cr1)
-                new_sr1 = I2C.I2C_SR1.update_ADDR(self, state, new_sr1, new_cr1)
+                new_sr1, new_sr2 = I2C.I2C_SR1.update_ADDR(
+                    self, state, new_sr1, new_cr1, new_sr2
+                )
                 # 目前寫的方式下，TXE 需要比 SB 早 update，因為 update_SB 會新增 claripy.If(SB == 1, 0, TxE)。如果 update_SB 先執行，update_TXE 會被蓋過
                 new_sr1 = I2C.I2C_SR1.update_BTF(self, state, new_sr1, new_cr1)
                 new_sr1 = I2C.I2C_SR1.update_TXE(self, state, new_sr1, new_cr1, new_sr2)
@@ -465,22 +524,9 @@ class I2C(MMIOMemoryRegion):
                     state.globals[f"{self.name}_SR1_read"] = False
 
                     # (ADDR) This bit is cleared by software reading SR1 register followed reading SR2
-                    new_sr1 = I2C.I2C_SR1.update_ADDR(
-                        self, state, new_sr1, new_cr1, force=True, value=0
+                    new_sr1, new_sr2 = I2C.I2C_SR1.update_ADDR(
+                        self, state, new_sr1, new_cr1, new_sr2, force=True, value=0
                     )
-                    # clear ADDR 時結束 address phase
-                    state.globals["is_address_phase"] = False
-
-                    # (TRA) This bit is set depending on the R/W bit of the address byte, at the end of total address phase
-                    new_sr2 = utils.replace_bit(
-                        new_sr2, I2C.I2C_SR2.TRA.bit, ~state.globals["R/W"]
-                    )
-
-                    # (TxE) Set when DR is empty in transmission. TxE is not set during address phase
-                    if state.solver.is_true(new_sr2[I2C.I2C_SR2.TRA.bit] == 1):
-                        new_sr1 = I2C.I2C_SR1.update_TXE(
-                            self, state, new_sr1, new_cr1, new_sr2, force=True, value=1
-                        )
 
             case I2C.I2C_DR.OFFSET:
                 # (BTF) Cleared by software by either a read ... in the DR register
@@ -508,7 +554,7 @@ class I2C(MMIOMemoryRegion):
             case I2C.I2C_CR1.OFFSET:
                 # set START bit 時進入 address phase
                 if state.solver.is_true(value[I2C.I2C_CR1.START.bit] == 1):
-                    state.globals["is_address_phase"] = True
+                    state.globals["is_address_phase"] = claripy.true()
 
                     # (SB) Set when a Start condition generated
                     new_sr1, new_cr1, new_sr2 = I2C.I2C_SR1.update_SB(
@@ -548,7 +594,9 @@ class I2C(MMIOMemoryRegion):
                 new_sr1 = I2C.I2C_SR1.update_AF(
                     self, state, new_sr1, new_cr1, force=True
                 )
-                if state.globals.get("is_address_phase", False):
+                if claripy.is_true(
+                    state.globals.get("is_address_phase", claripy.false())
+                ):
                     if "R/W" not in state.globals:
                         # 10-bit addressing 的 addressing phase 會 write 兩次 DR。第一次 write (header) 時是 11110XXY (Y 為 R/W)
                         is_10bit = (value & 0xF8) == 0xF0
@@ -558,8 +606,8 @@ class I2C(MMIOMemoryRegion):
                             self, state, new_sr1, new_cr1, force=True
                         )
                         # (ADDR) For 7-bit addressing, the bit is set after the ACK of the byte
-                        sr1_7bit = I2C.I2C_SR1.update_ADDR(
-                            self, state, new_sr1, new_cr1, force=True
+                        sr1_7bit, new_sr2 = I2C.I2C_SR1.update_ADDR(
+                            self, state, new_sr1, new_cr1, new_sr2, force=True
                         )
                         new_sr1 = claripy.If(is_10bit, sr1_10bit, sr1_7bit)
 
@@ -574,8 +622,8 @@ class I2C(MMIOMemoryRegion):
                             )
 
                         # (ADDR) For 10-bit addressing, the bit is set after the ACK of the 2nd byte
-                        new_sr1 = I2C.I2C_SR1.update_ADDR(
-                            self, state, new_sr1, new_cr1, force=True
+                        new_sr1, new_sr2 = I2C.I2C_SR1.update_ADDR(
+                            self, state, new_sr1, new_cr1, new_sr2, force=True
                         )
                 else:
                     # 目前寫的方式下，BTF 需要比 TXE 早 update，因為 update_TXE 會新增 claripy.If(TXE == 0, 0, BTF)。如果 update_TXE 先執行，update_BTF 會被蓋過

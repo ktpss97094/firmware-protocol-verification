@@ -4,6 +4,7 @@ import importlib.util
 import logging
 import re
 import warnings
+from functools import partial
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Type
@@ -145,10 +146,24 @@ def explore_step_func(simgr):
     return simgr
 
 
-def LoopSeer_bound_reached_handler(seer, state):
-    logger.info(f"Loop bound reached at {hex(state.addr)}. Truncating state.")
+def LoopSeer_bound_reached_handler(seer, state, bound_loops):
+    loop = state.loop_data.current_loop[-1][0]
+    header_addr = loop.entry.addr
 
-    seer.cut_succs.append(state)
+    bound = bound_loops.get(header_addr, None)
+    if bound is None:
+        return
+
+    counts = 0
+    if seer.use_header:
+        counts = state.loop_data.header_trip_counts[header_addr][-1]
+    else:
+        if state.addr in state.loop_data.back_edge_trip_counts:
+            counts = state.loop_data.back_edge_trip_counts[state.addr][-1]
+
+    if counts > bound:
+        logger.info(f"Loop bound reached at {hex(state.addr)}. Truncating state.")
+        seer.cut_succs.append(state)
 
 
 @app.command()
@@ -356,11 +371,13 @@ def main(
     simgr.use_technique(
         CustomLoopSeer(
             cfg=cfg,
-            functions=utils.get_func_addrs(
-                cfg, Specs.BOUND_LOOP_FUNCTIONS
-            ),  # functions 參數雖然可以直接指定 function 名稱字串，但當 function 是定義成 static，依照 LoopSeer 的實作只會找到第一個符合的
-            bound=Specs.LOOP_BOUND,
-            bound_reached=LoopSeer_bound_reached_handler,
+            loops=utils.loop_entry_block_addrs_to_loops(
+                Specs.BOUND_LOOPS.keys(), proj, cfg
+            ),
+            bound=0,  # bound 判斷由 bound_reached function 處理
+            bound_reached=partial(
+                LoopSeer_bound_reached_handler, bound_loops=Specs.BOUND_LOOPS
+            ),
             discard_stash="loopseer",
         )
     )

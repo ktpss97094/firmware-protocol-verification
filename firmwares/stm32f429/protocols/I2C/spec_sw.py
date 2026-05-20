@@ -99,8 +99,7 @@ class Specs(BaseSpecs):
     ANGR_ARCH = archinfo.ArchARMCortexM(endness=archinfo.Endness.LE)
 
     # --- Parameters ---
-    LOOP_BOUND = 0
-    BOUND_LOOP_FUNCTIONS = ["DWT_Delay_us"]
+    BOUND_LOOPS = {0x80008E7: 0}
 
     # --- Constants ---
 

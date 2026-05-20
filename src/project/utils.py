@@ -160,14 +160,10 @@ def get_symbol_addr(proj, symbol_name, is_variable):
     return addr
 
 
-def get_func_addrs(cfg, funcs: list[str]) -> list[int]:
-    func_addrs = []
+def loop_entry_block_addrs_to_loops(addrs: list[int], proj, cfg):
+    loop_finder = proj.analyses.LoopFinder(kb=cfg.kb, normalize=True)
 
-    for func in cfg.kb.functions.values():
-        if func.name in funcs:
-            func_addrs.append(func.addr)
-
-    return func_addrs
+    return [loop for loop in loop_finder.loops if loop.entry.addr in addrs]
 
 
 def get_constraint_info(state, constraint):
