@@ -1,11 +1,11 @@
 r"""
 read_back_verification
 1. Trigger: write CR1
-    Condition: START = 1 \implies (MSL = 1 \implies ARLO = 0)
+    Condition: value[START] = 1 \implies (MSL = 1 \implies ARLO = 0)
 2. Trigger: write DR
     Condition: MSL = 1 \implies ARLO = 0
 3. Trigger: write CR1
-    Condition: STOP = 1 \implies (MSL = 1 \implies ARLO = 0)
+    Condition: value[STOP] = 1 \implies (MSL = 1 \implies ARLO = 0)
 """
 
 from enum import Enum, auto
@@ -118,10 +118,26 @@ class Specs(BaseSpecs):
     # --- Parameters ---
     match MODE:
         case STM32F4XX_HAL():
-            BOUND_LOOPS = {0x800AF79: 2, 0x800B0BD: 2, 0x800B181: 2, 0x800B211: 2}
+            BOUND_LOOPS = {
+                # BLOCKING
+                0x800AF79: 2,
+                0x800B0BD: 2,
+                0x800B181: 2,
+                0x800B211: 2,
+                # INTERRUPT
+                0x8005E09: 0,
+                # DMA
+                0x80063B9: 0,
+            }
 
         case OPENCM3():
-            BOUND_LOOPS = {0x8000453: 1, 0x8000461: 1, 0x8000485: 1, 0x8000497: 1}
+            BOUND_LOOPS = {
+                # BLOCKING
+                0x8000453: 0,
+                0x8000461: 0,
+                0x8000485: 0,
+                0x8000497: 0,
+            }
 
     def _define_specs(self):
         self.MEMORY_REGIONS = {
@@ -277,8 +293,12 @@ class Specs(BaseSpecs):
         # )
 
     def init_input(self, state):
-        # size_range = (0, 2**16 - 1)
-        size_range = (0, 3)
+        match MODE:
+            case STM32F4XX_HAL():
+                size_range = (0, 3)
+            case OPENCM3():
+                size_range = (0, 1)
+                # receive size: (0, 2)
 
         # addressing mode symbolic
         match MODE:
