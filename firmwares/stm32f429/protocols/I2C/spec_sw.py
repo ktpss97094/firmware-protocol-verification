@@ -54,31 +54,43 @@ class GPIO(STM32F4_GPIO):
     def post_write(self, state):
         _, offset, value = super().post_write(state)
 
-        idr = utils.load(state, self.start + GPIO.GPIO_IDR.OFFSET)
         odr = utils.load(state, self.start + GPIO.GPIO_ODR.OFFSET)
         scl_out = odr[GPIO.GPIO_ODR.ODR13.bit]
         sda_out = odr[GPIO.GPIO_ODR.ODR15.bit]
 
         match offset:
             case GPIO.GPIO_BSRR.OFFSET:
-                if state.solver.is_true(
-                    claripy.And(state.i2c_bus.prev_scl_out == 0, scl_out == 1)
-                ):  # SCL rising edge
-                    state.i2c_bus.bit_count = (state.i2c_bus.bit_count + 1) % 9
+                idr = self.get_idr(state)
 
-                    state.i2c_bus.arbitration_lost = claripy.Or(
+                is_rising_edge = claripy.And(
+                    state.i2c_bus.prev_scl_out == 0, scl_out == 1
+                )
+                state.i2c_bus.bit_count = claripy.If(
+                    is_rising_edge,
+                    (state.i2c_bus.bit_count + 1) % 9,
+                    state.i2c_bus.bit_count,
+                )
+                state.i2c_bus.arbitration_lost = claripy.If(
+                    is_rising_edge,
+                    claripy.Or(
                         state.i2c_bus.arbitration_lost,
                         claripy.And(
                             sda_out == 1, idr[GPIO.GPIO_IDR.IDR15.bit] == 0
                         ),  # 先前 SDA 輸出 1，但實際讀到的是 0
-                    )
+                    ),
+                    state.i2c_bus.arbitration_lost,
+                )
 
-                    state.i2c_bus.arbitration_lost_byte_end = claripy.Or(
+                state.i2c_bus.arbitration_lost_byte_end = claripy.If(
+                    is_rising_edge,
+                    claripy.Or(
                         state.i2c_bus.arbitration_lost_byte_end,
                         claripy.And(
                             state.i2c_bus.arbitration_lost, state.i2c_bus.bit_count == 0
                         ),
-                    )
+                    ),
+                    state.i2c_bus.arbitration_lost_byte_end,
+                )
 
                 state.i2c_bus.prev_scl_out = scl_out
 

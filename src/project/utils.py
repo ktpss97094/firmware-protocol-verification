@@ -5,12 +5,13 @@ from pathlib import Path
 import angr
 import archinfo
 import claripy
+from angr.sim_state import SimState
 from angr.sim_type import SimTypeFunction
 
 logger = logging.getLogger(__name__)
 
 
-def load(state, addr, size=None):
+def load(state: SimState, addr, size=None):
     return state.memory.load(
         addr,
         size if size is not None else state.arch.bytes,
