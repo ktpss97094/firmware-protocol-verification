@@ -1,11 +1,21 @@
 r"""
 read_back_verification
-1. Trigger: write BSRR
-    Condition: value[BRy] (SDA) = 1 \implies arbitration_lost = 0
-    > I2C specification §3.1.8: The first time a controller tries to send a HIGH, but detects that the SDA level is LOW, the controller knows that it has lost the arbitration and turns off its SDA output driver.
-2. Trigger write BSRR
-    Condition: value[BRy] (SCL) = 1 \implies arbitration_lost_byte_end = 0
-    > I2C specification §3.1.8: A controller that loses the arbitration can generate clock pulses until the end of the byte in which it loses the arbitration and must restart its transaction when the bus is free.
+1. Trigger: write ODR
+    Condition: value[ODRy] (SDA) = 0 \implies arbitration_lost = 0
+2. Trigger: write BSRR
+    Condition: (value[BSy] (SDA) = 0 \land value[BRy] (SDA) = 1) \implies arbitration_lost = 0
+> I2C specification §3.1.8: The first time a controller tries to send a HIGH, but detects that the SDA level is LOW, the controller knows that it has lost the arbitration and turns off its SDA output driver.
+3. Trigger: write ODR
+    Condition: value[ODRy] (SCL) = 0 \implies arbitration_lost_byte_end = 0
+4. Trigger: write BSRR
+    Condition: (value[BSy] (SCL) = 0 \land value[BRy] (SCL) = 1) \implies arbitration_lost_byte_end = 0
+> I2C specification §3.1.8: A controller that loses the arbitration can generate clock pulses until the end of the byte in which it loses the arbitration and must restart its transaction when the bus is free.
+
+clock_stretching
+1. Trigger: write ODR
+    Condition: value[ODRy] (SCL) = 0 \implies wait_state = 0
+2. Trigger: write BSRR
+    Condition: (value[BSy] (SCL) = 0 \land value[BRy] (SCL) = 1) \implies wait_state = 0
 """
 
 import angr
@@ -30,26 +40,88 @@ class GPIO(STM32F4_GPIO):
         _, offset, value = super().pre_write(state)
 
         match offset:
-            case GPIO.GPIO_BSRR.OFFSET:
-                # --- Spec 1 ---
+            case GPIO.GPIO_ODR.OFFSET:
                 if state.solver.satisfiable(
                     extra_constraints=[
-                        value[GPIO.GPIO_BSRR.BR15.bit] == 1,
-                        state.i2c_bus.arbitration_lost,
+                        claripy.And(
+                            value[GPIO.GPIO_ODR.ODR15.bit] == 0,
+                            state.i2c_bus.arbitration_lost,
+                        )
                     ]
                 ):
                     raise Violation("read_back_verification (spec 1)")
 
-                # --- Spec 2 ---
                 if state.solver.satisfiable(
                     extra_constraints=[
-                        value[GPIO.GPIO_BSRR.BR13.bit] == 1,
-                        state.i2c_bus.arbitration_lost_byte_end,
+                        claripy.And(
+                            value[GPIO.GPIO_ODR.ODR13.bit] == 0,
+                            state.i2c_bus.arbitration_lost_byte_end,
+                        )
+                    ]
+                ):
+                    raise Violation("read_back_verification (spec 3)")
+
+                if state.solver.satisfiable(
+                    extra_constraints=[
+                        claripy.And(
+                            value[GPIO.GPIO_ODR.ODR13.bit] == 0,
+                            state.i2c_bus.wait_state,
+                        )
+                    ]
+                ):
+                    raise Violation("clock_stretching (spec 1)")
+
+            case GPIO.GPIO_BSRR.OFFSET:
+                if state.solver.satisfiable(
+                    extra_constraints=[
+                        claripy.And(
+                            value[GPIO.GPIO_BSRR.BS15.bit] == 0,
+                            value[GPIO.GPIO_BSRR.BR15.bit] == 1,
+                        ),
+                        state.i2c_bus.arbitration_lost,
                     ]
                 ):
                     raise Violation("read_back_verification (spec 2)")
 
+                if state.solver.satisfiable(
+                    extra_constraints=[
+                        claripy.And(
+                            value[GPIO.GPIO_BSRR.BS13.bit] == 0,
+                            value[GPIO.GPIO_BSRR.BR13.bit] == 1,
+                        ),
+                        state.i2c_bus.arbitration_lost_byte_end,
+                    ]
+                ):
+                    raise Violation("read_back_verification (spec 4)")
+
+                if state.solver.satisfiable(
+                    extra_constraints=[
+                        claripy.And(
+                            value[GPIO.GPIO_BSRR.BS13.bit] == 0,
+                            value[GPIO.GPIO_BSRR.BR13.bit] == 1,
+                        ),
+                        state.i2c_bus.wait_state,
+                    ]
+                ):
+                    raise Violation("clock_stretching (spec 2)")
+
         return _, offset, value
+
+    def post_read(self, state):
+        _, offset, readout_value = super().post_read(state)
+
+        match offset:
+            case GPIO.GPIO_IDR.OFFSET:
+                state.i2c_bus.wait_state = claripy.If(
+                    claripy.And(
+                        state.i2c_bus.wait_state,
+                        readout_value[GPIO.GPIO_IDR.IDR13.bit] == 1,
+                    ),
+                    claripy.false(),
+                    state.i2c_bus.wait_state,
+                )
+
+        return _, offset, readout_value
 
     def post_write(self, state):
         _, offset, value = super().post_write(state)
@@ -59,7 +131,7 @@ class GPIO(STM32F4_GPIO):
         sda_out = odr[GPIO.GPIO_ODR.ODR15.bit]
 
         match offset:
-            case GPIO.GPIO_BSRR.OFFSET:
+            case GPIO.GPIO_BSRR.OFFSET | GPIO.GPIO_ODR.OFFSET:
                 idr = self.get_idr(state)
 
                 is_rising_edge = claripy.And(
@@ -79,6 +151,11 @@ class GPIO(STM32F4_GPIO):
                         ),  # 先前 SDA 輸出 1，但實際讀到的是 0
                     ),
                     state.i2c_bus.arbitration_lost,
+                )
+                state.i2c_bus.wait_state = claripy.If(
+                    claripy.And(is_rising_edge, idr[GPIO.GPIO_IDR.IDR13.bit] == 0),
+                    claripy.true(),
+                    state.i2c_bus.wait_state,
                 )
 
                 state.i2c_bus.arbitration_lost_byte_end = claripy.If(

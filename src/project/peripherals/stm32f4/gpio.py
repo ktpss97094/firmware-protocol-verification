@@ -108,6 +108,19 @@ class GPIO(MMIOMemoryRegion):
 
         return claripy.Concat(*idr)
 
+    def pre_write(self, state):
+        _, offset, value = super().pre_write(state)
+
+        match offset:
+            case GPIO.GPIO_BSRR.OFFSET:
+                # 寫入 BSRR 不會把寫入值存入暫存器
+                state.globals["BSRR_write_value"] = value
+                state.inspect.mem_write_expr = claripy.BVV(
+                    0, state.inspect.mem_write_expr.length
+                )
+
+        return _, offset, value
+
     def post_read(self, state):
         _, offset, readout_value = super().post_read(state)
 
@@ -128,14 +141,17 @@ class GPIO(MMIOMemoryRegion):
 
         match offset:
             case GPIO.GPIO_BSRR.OFFSET:
-                if state.solver.is_true(value[GPIO.GPIO_BSRR.BR13.bit]):
-                    new_odr = utils.replace_bit(new_odr, GPIO.GPIO_BSRR.BS13.bit, 0)
-                if state.solver.is_true(value[GPIO.GPIO_BSRR.BR15.bit]):
-                    new_odr = utils.replace_bit(new_odr, GPIO.GPIO_BSRR.BS15.bit, 0)
-                if state.solver.is_true(value[GPIO.GPIO_BSRR.BS13.bit]):
-                    new_odr = utils.replace_bit(new_odr, GPIO.GPIO_BSRR.BS13.bit, 1)
-                if state.solver.is_true(value[GPIO.GPIO_BSRR.BS15.bit]):
-                    new_odr = utils.replace_bit(new_odr, GPIO.GPIO_BSRR.BS15.bit, 1)
+                for port in range(16):
+                    # BS 比 BR 有較高優先權
+                    new_odr = claripy.If(
+                        state.globals["BSRR_write_value"][port] == 1,
+                        utils.replace_bit(new_odr, port, 1),
+                        claripy.If(
+                            state.globals["BSRR_write_value"][port + 16] == 1,
+                            utils.replace_bit(new_odr, port, 0),
+                            new_odr,
+                        ),
+                    )
 
         utils.store(state, self.start + GPIO.GPIO_ODR.OFFSET, new_odr)
 

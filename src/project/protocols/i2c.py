@@ -9,6 +9,7 @@ class I2CBus(SimStatePlugin):
         arbitration_lost=None,
         bit_count=None,
         arbitration_lost_byte_end=None,
+        wait_state=None,
     ):
         super().__init__()
 
@@ -22,6 +23,7 @@ class I2CBus(SimStatePlugin):
             if arbitration_lost_byte_end is None
             else arbitration_lost_byte_end
         )
+        self.wait_state = claripy.false() if wait_state is None else wait_state
 
     def copy(self, memo):
         o = super().copy(memo)
@@ -30,5 +32,6 @@ class I2CBus(SimStatePlugin):
         o.arbitration_lost = self.arbitration_lost
         o.bit_count = self.bit_count
         o.arbitration_lost_byte_end = self.arbitration_lost_byte_end
+        o.wait_state = self.wait_state
 
         return o
