@@ -26,7 +26,7 @@ from project import config, utils
 from project.cores.arm.cortex_m.systick import SysTickVariable
 from project.peripherals.stm32f4.dma import DMA
 from project.peripherals.stm32f4.i2c import I2C as STM32F4_I2C
-from project.types import BaseSpecs, MemoryRegion, MMIOMemoryRegion, Violation
+from project.types import BaseSpecs, MemoryRegion, MMIOMemoryRegion
 
 
 class STM32F4XX_HAL(Enum):
@@ -60,7 +60,7 @@ class I2C(STM32F4_I2C):
                         sr1[I2C.I2C_SR1.ARLO.bit] == 1,
                     ]
                 ):
-                    raise Violation("read_back_verification (spec 1)")
+                    utils.violation(state, "read_back_verification (spec 1)")
 
                 # --- Spec 3 ---
                 if state.solver.satisfiable(
@@ -70,7 +70,7 @@ class I2C(STM32F4_I2C):
                         sr1[I2C.I2C_SR1.ARLO.bit] == 1,
                     ]
                 ):
-                    raise Violation("read_back_verification (spec 3)")
+                    utils.violation(state, "read_back_verification (spec 3)")
 
             case I2C.I2C_DR.OFFSET:
                 # --- Spec 2 ---
@@ -80,7 +80,7 @@ class I2C(STM32F4_I2C):
                         sr1[I2C.I2C_SR1.ARLO.bit] == 1,
                     ]
                 ):
-                    raise Violation("read_back_verification (spec 2)")
+                    utils.violation(state, "read_back_verification (spec 2)")
 
         return _, offset, value
 

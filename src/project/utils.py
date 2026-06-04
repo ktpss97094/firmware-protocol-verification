@@ -226,5 +226,16 @@ def process_cache_file(
     return result_dict
 
 
+def violation(state, msg):
+    # 方法 1: 只 print 出 message，不砍掉 state
+    print(msg + f" violation (ins_addr: {hex(state.addr)})")
+    from project.main import add_violated_cnt
+
+    add_violated_cnt(1)
+
+    # 方法 2: print 出 message + 砍掉 state
+    # raise Violation("read_back_verification (spec 1)")
+
+
 def stop_and_debug(state):
     state.globals["DEBUG"] = True

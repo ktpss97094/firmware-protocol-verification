@@ -39,6 +39,11 @@ def init_logging():
     logging.getLogger("angr.engines.pcode.lifter").setLevel(logging.CRITICAL)
 
 
+def add_violated_cnt(val):
+    global violated_cnt
+    violated_cnt += val
+
+
 def load_specs_class(spec_arg: str | None) -> Type[Any]:
     def load_module_from_file(path: Path) -> ModuleType:
         unique_name = (
@@ -133,7 +138,7 @@ def explore_step_func(simgr):
         state.history.trim()
     found_cnt += len(simgr.found)
     # 如果需要 found state 做驗證，可以在這裡只取出需要的部分
-    violated_cnt += len(simgr.violated)
+    add_violated_cnt(len(simgr.violated))
     simgr.stashes["found"].clear()
     simgr.stashes["violated"].clear()
     simgr.stashes["loopseer"].clear()
