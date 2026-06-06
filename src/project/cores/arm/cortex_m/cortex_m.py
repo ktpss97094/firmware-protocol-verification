@@ -256,12 +256,12 @@ class CortexM(ARM):
 
         def in_globally_accessible_region(self, state, addr):
             # stack 排除
-            if (
-                (self.cpu.initial_sp - self.cpu.stack_size)
-                <= addr
-                < self.cpu.initial_sp
-            ):
-                return False
+            # if (
+            #     (self.cpu.initial_sp - self.cpu.stack_size)
+            #     <= addr
+            #     < self.cpu.initial_sp
+            # ):
+            #     return False
 
             # read-only 區域排除
             obj = state.project.loader.find_object_containing(addr)
