@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import inspect
 import logging
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -163,6 +165,10 @@ class CustomLoopSeer(LoopSeer):
 
 
 class Violation(SimEngineError):
+    pass
+
+
+class ExploreTermination(Exception):
     pass
 
 
@@ -492,3 +498,61 @@ class BPConfig:
                     state.custom_globals.before_check_handlers.add(handler)
             case angr.BP_AFTER:
                 state.custom_globals.after_check_handlers.add(handler)
+
+
+class VerificationManager:
+    _registered_functions = []
+    all_violations = set()
+    triggered_violations = set()
+    _is_analyzed = False
+
+    @classmethod
+    def register(cls, func):
+        cls._registered_functions.append(func)
+        return func
+
+    @classmethod
+    def analyze_all_violations(cls):
+        """自動掃描所有註冊的 function，統計總共有幾種 violation"""
+
+        if cls._is_analyzed:
+            return
+
+        for func in cls._registered_functions:
+            try:
+                source = inspect.getsource(func)
+                tree = ast.parse(source)
+
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Call):
+                        if (
+                            isinstance(node.func, ast.Attribute)
+                            and isinstance(node.func.value, ast.Name)
+                            and node.func.value.id == cls.__name__
+                            and node.func.attr == cls.violation.__name__
+                        ):
+                            if len(node.args) >= 2 and isinstance(
+                                node.args[1], ast.Constant
+                            ):
+                                cls.all_violations.add(node.args[1].value)
+            except Exception as e:
+                print(f"Analyze {func.__name__} failed: {e}")
+
+    @classmethod
+    def violation(cls, state, violation_name):
+        if not cls._is_analyzed:
+            cls.analyze_all_violations()
+
+        cls.triggered_violations.add(violation_name)
+
+        # 方法 1: 只 print 出 message，不砍掉 state
+        print(violation_name + f" violation (ins_addr: {hex(state.addr)})")
+        from project.main import add_violated_cnt
+
+        add_violated_cnt(1)
+
+        # 方法 2: print 出 message + 砍掉 state
+        # raise Violation(violation_name)
+
+        if len(cls.triggered_violations) == len(cls.all_violations):
+            raise ExploreTermination("All violations triggered. Stopping analysis.")

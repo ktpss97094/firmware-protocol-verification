@@ -28,7 +28,7 @@ from project import config, utils
 from project.cores.arm.cortex_m.dwt import DWT
 from project.peripherals.stm32f4.gpio import GPIO as STM32F4_GPIO
 from project.protocols.i2c import I2CBus
-from project.types import BaseSpecs, MemoryRegion
+from project.types import BaseSpecs, MemoryRegion, VerificationManager
 
 
 class GPIO(STM32F4_GPIO):
@@ -49,7 +49,9 @@ class GPIO(STM32F4_GPIO):
                         )
                     ]
                 ):
-                    utils.violation(state, "read_back_verification (spec 1)")
+                    VerificationManager.violation(
+                        state, "read_back_verification (spec 1)"
+                    )
 
                 if state.solver.satisfiable(
                     extra_constraints=[
@@ -59,7 +61,9 @@ class GPIO(STM32F4_GPIO):
                         )
                     ]
                 ):
-                    utils.violation(state, "read_back_verification (spec 3)")
+                    VerificationManager.violation(
+                        state, "read_back_verification (spec 3)"
+                    )
 
                 if state.solver.satisfiable(
                     extra_constraints=[
@@ -69,7 +73,7 @@ class GPIO(STM32F4_GPIO):
                         )
                     ]
                 ):
-                    utils.violation(state, "clock_stretching (spec 1)")
+                    VerificationManager.violation(state, "clock_stretching (spec 1)")
 
             case GPIO.GPIO_BSRR.OFFSET:
                 if state.solver.satisfiable(
@@ -81,7 +85,9 @@ class GPIO(STM32F4_GPIO):
                         state.i2c_bus.arbitration_lost,
                     ]
                 ):
-                    utils.violation(state, "read_back_verification (spec 2)")
+                    VerificationManager.violation(
+                        state, "read_back_verification (spec 2)"
+                    )
 
                 if state.solver.satisfiable(
                     extra_constraints=[
@@ -92,7 +98,9 @@ class GPIO(STM32F4_GPIO):
                         state.i2c_bus.arbitration_lost_byte_end,
                     ]
                 ):
-                    utils.violation(state, "read_back_verification (spec 4)")
+                    VerificationManager.violation(
+                        state, "read_back_verification (spec 4)"
+                    )
 
                 if state.solver.satisfiable(
                     extra_constraints=[
@@ -103,7 +111,7 @@ class GPIO(STM32F4_GPIO):
                         state.i2c_bus.wait_state,
                     ]
                 ):
-                    utils.violation(state, "clock_stretching (spec 2)")
+                    VerificationManager.violation(state, "clock_stretching (spec 2)")
 
         return _, offset, value
 
@@ -257,7 +265,7 @@ class Specs(BaseSpecs):
         )
 
     def init_input(self, state):
-        size_range = (0, 2)
+        size_range = (0, 0)
 
         # address, size symbolic
         utils.set_func_args_symbolic(

@@ -22,6 +22,7 @@ from project.types import (
     CustomEngine,
     CustomLoopSeer,
     DFSPickFirstSuccessor,
+    ExploreTermination,
     MMIOMemoryRegion,
     VariableMemoryRegion,
     Violation,
@@ -387,7 +388,10 @@ def main(
         )
     )
 
-    simgr.explore(num_find=float("inf"), step_func=explore_step_func, num_inst=1)
+    try:
+        simgr.explore(num_find=float("inf"), step_func=explore_step_func, num_inst=1)
+    except ExploreTermination as e:
+        logger.info(e)
     # step_explore(simgr, proj, monitor_exploration=explore_step_func)
 
     print(simgr)
