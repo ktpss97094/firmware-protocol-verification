@@ -1,13 +1,84 @@
 import claripy
+from angr.errors import SimMergeError
+from angr.state_plugins.plugin import SimStatePlugin
 
 from project import utils
 from project.types import AccessType, BaseRegister, BitsField, MMIOMemoryRegion
+
+
+def _same_ast(left, right):
+    return left is right or left.structurally_match(right)
+
+
+class STM32F4I2CState(SimStatePlugin):
+    def __init__(self, is_address_phase=None, rw=None, sr1_read=False):
+        super().__init__()
+        self.is_address_phase = (
+            claripy.false() if is_address_phase is None else is_address_phase
+        )
+        self.rw = rw
+        self.sr1_read = sr1_read
+
+    @SimStatePlugin.memo
+    def copy(self, memo):
+        return STM32F4I2CState(
+            is_address_phase=self.is_address_phase,
+            rw=self.rw,
+            sr1_read=self.sr1_read,
+        )
+
+    def merge(self, others, merge_conditions, common_ancestor=None):
+        del common_ancestor
+
+        if any(
+            not _same_ast(self.is_address_phase, other.is_address_phase)
+            or self.sr1_read != other.sr1_read
+            or (self.rw is None) != (other.rw is None)
+            for other in others
+        ):
+            raise SimMergeError(
+                "Cannot merge STM32F4 I2C states with different control phases"
+            )
+
+        if self.rw is None:
+            return False
+
+        if merge_conditions is None:
+            merged_rw = self.rw
+            for other in others:
+                merged_rw = claripy.If(
+                    claripy.BoolS("stm32f4_i2c_merge_rw"),
+                    other.rw,
+                    merged_rw,
+                )
+        else:
+            merged_rw = claripy.ite_cases(
+                zip(merge_conditions[1:], (other.rw for other in others)),
+                self.rw,
+            )
+
+        changed = not _same_ast(self.rw, merged_rw)
+        self.rw = merged_rw
+        return changed
 
 
 class I2C(MMIOMemoryRegion):
     IRQ_NUMBERS = [31, 32]  # I2C1_EV, I2C1_ER
 
     # TODO: PE bit
+
+    @property
+    def _state_plugin_name(self):
+        return f"stm32f4_i2c_{self.start:x}"
+
+    def _state(self, state):
+        if not state.has_plugin(self._state_plugin_name):
+            state.register_plugin(self._state_plugin_name, STM32F4I2CState())
+        return state.get_plugin(self._state_plugin_name)
+
+    def set_handlers(self, cpu, state, cfg, specs):
+        self._state(state)
+        return super().set_handlers(cpu, state, cfg, specs)
 
     class I2C_CR1(BaseRegister):
         OFFSET = 0x00
@@ -346,20 +417,21 @@ class I2C(MMIOMemoryRegion):
                 # )
                 sr1 = utils.replace_bit(sr1, cls.ADDR.bit, value)
 
-                state.globals["is_address_phase"] = claripy.If(
+                i2c_state = i2c._state(state)
+                i2c_state.is_address_phase = claripy.If(
                     sr1[cls.ADDR.bit] == 1,
                     claripy.false(),
-                    state.globals["is_address_phase"],
+                    i2c_state.is_address_phase,
                 )
 
                 # (TRA) This bit is set depending on the R/W bit of the address byte, at the end of total address phase
-                if "R/W" in state.globals:
+                if i2c_state.rw is not None:
                     sr2 = utils.replace_bit(
                         sr2,
                         I2C.I2C_SR2.TRA.bit,
                         claripy.If(
                             sr1[cls.ADDR.bit] == 1,
-                            ~state.globals["R/W"],
+                            ~i2c_state.rw,
                             sr2[I2C.I2C_SR2.TRA.bit],
                         ),
                     )
@@ -496,11 +568,12 @@ class I2C(MMIOMemoryRegion):
         new_cr1 = utils.load(state, self.start + I2C.I2C_CR1.OFFSET)
         new_sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
         new_sr2 = utils.load(state, self.start + I2C.I2C_SR2.OFFSET)
-        SR1_read = state.globals.get(f"{self.name}_SR1_read", False)
+        i2c_state = self._state(state)
+        SR1_read = i2c_state.sr1_read
 
         match offset:
             case I2C.I2C_SR1.OFFSET:
-                state.globals[f"{self.name}_SR1_read"] = True
+                i2c_state.sr1_read = True
 
                 # 目前寫的方式下，ARLO 需要比 AF 早 update，因為 update_AF 會新增 claripy.If(AF == 1, 0, ARLO)。如果 update_AF 先執行，update_ARLO 會被蓋過
                 new_sr1, new_sr2 = I2C.I2C_SR1.update_ARLO(
@@ -521,7 +594,7 @@ class I2C(MMIOMemoryRegion):
 
             case I2C.I2C_SR2.OFFSET:
                 if SR1_read:
-                    state.globals[f"{self.name}_SR1_read"] = False
+                    i2c_state.sr1_read = False
 
                     # (ADDR) This bit is cleared by software reading SR1 register followed reading SR2
                     new_sr1, new_sr2 = I2C.I2C_SR1.update_ADDR(
@@ -548,13 +621,14 @@ class I2C(MMIOMemoryRegion):
         new_cr1 = utils.load(state, self.start + I2C.I2C_CR1.OFFSET)
         new_sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
         new_sr2 = utils.load(state, self.start + I2C.I2C_SR2.OFFSET)
-        SR1_read = state.globals.get(f"{self.name}_SR1_read", False)
+        i2c_state = self._state(state)
+        SR1_read = i2c_state.sr1_read
 
         match offset:
             case I2C.I2C_CR1.OFFSET:
                 # set START bit 時進入 address phase
                 if state.solver.is_true(value[I2C.I2C_CR1.START.bit] == 1):
-                    state.globals["is_address_phase"] = claripy.true()
+                    i2c_state.is_address_phase = claripy.true()
 
                     # (SB) Set when a Start condition generated
                     new_sr1, new_cr1, new_sr2 = I2C.I2C_SR1.update_SB(
@@ -579,7 +653,7 @@ class I2C(MMIOMemoryRegion):
                 )
 
                 if SR1_read:
-                    state.globals[f"{self.name}_SR1_read"] = False
+                    i2c_state.sr1_read = False
 
                     # (SB) Cleared by software by reading the SR1 register followed by writing the DR register
                     new_sr1, new_cr1, new_sr2 = I2C.I2C_SR1.update_SB(
@@ -594,10 +668,8 @@ class I2C(MMIOMemoryRegion):
                 new_sr1 = I2C.I2C_SR1.update_AF(
                     self, state, new_sr1, new_cr1, force=True
                 )
-                if claripy.is_true(
-                    state.globals.get("is_address_phase", claripy.false())
-                ):
-                    if "R/W" not in state.globals:
+                if claripy.is_true(i2c_state.is_address_phase):
+                    if i2c_state.rw is None:
                         # 10-bit addressing 的 addressing phase 會 write 兩次 DR。第一次 write (header) 時是 11110XXY (Y 為 R/W)
                         is_10bit = (value & 0xF8) == 0xF0
 
@@ -611,10 +683,10 @@ class I2C(MMIOMemoryRegion):
                         )
                         new_sr1 = claripy.If(is_10bit, sr1_10bit, sr1_7bit)
 
-                        state.globals["R/W"] = value[0]
+                        i2c_state.rw = value[0]
                     else:
                         if SR1_read:
-                            state.globals[f"{self.name}_SR1_read"] = False
+                            i2c_state.sr1_read = False
 
                             # (ADD10) Cleared by software reading the SR1 register followed by a write in the DR register of the second address byte
                             new_sr1 = I2C.I2C_SR1.update_ADD10(

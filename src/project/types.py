@@ -22,7 +22,7 @@ from angr.engines.vex import (
     SimInspectMixin,
     SuperFastpathMixin,
 )
-from angr.errors import SimEngineError
+from angr.errors import SimEngineError, SimMergeError
 from angr.exploration_techniques import DFS, LoopSeer
 from angr.sim_state import SimState
 from angr.state_plugins.plugin import SimStatePlugin
@@ -421,15 +421,51 @@ class BaseCustomGlobals(SimStatePlugin):
         self.prev_after_check_handlers = (
             set() if prev_after_check_handlers is None else prev_after_check_handlers
         )
+        self._merge_source_handlers = None
 
     def copy(self, memo):
         o = super().copy(memo)
 
+        o._merge_source_handlers = self._handler_snapshot()
         o.before_check_handlers = set()
         o.after_check_handlers = set()
         o.prev_after_check_handlers = set()
 
         return o
+
+    def _handler_snapshot(self):
+        return (
+            frozenset(self.before_check_handlers),
+            frozenset(self.after_check_handlers),
+            frozenset(self.prev_after_check_handlers),
+        )
+
+    def merge(self, others, merge_conditions, common_ancestor=None):
+        del merge_conditions, common_ancestor
+
+        if type(self) is not BaseCustomGlobals:
+            raise SimMergeError(
+                f"{type(self).__name__} must implement merge() for its extra fields"
+            )
+
+        source_handlers = (
+            self._handler_snapshot()
+            if self._merge_source_handlers is None
+            else self._merge_source_handlers
+        )
+        if any(other._handler_snapshot() != source_handlers for other in others):
+            raise SimMergeError(
+                "Cannot merge states with different pending event handlers"
+            )
+
+        (
+            self.before_check_handlers,
+            self.after_check_handlers,
+            self.prev_after_check_handlers,
+        ) = (set(handlers) for handlers in source_handlers)
+        self._merge_source_handlers = None
+
+        return True
 
 
 class EventForkHandler:

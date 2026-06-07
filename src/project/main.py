@@ -25,12 +25,11 @@ from project.types import (
     ExploreTermination,
     MMIOMemoryRegion,
     VariableMemoryRegion,
-    Violation,
 )
 
 logger = logging.getLogger(__name__)
 app = typer.Typer(name="verify")
-found_cnt, violated_cnt = 0, 0
+found_cnt, violated_cnt, merged_cnt = 0, 0, 0
 
 
 def init_logging():
@@ -38,6 +37,8 @@ def init_logging():
 
     # 關閉 pcode error
     logging.getLogger("angr.engines.pcode.lifter").setLevel(logging.CRITICAL)
+    # loop_data is only merged when state_merge_key() proves both copies identical.
+    logging.getLogger("angr.state_plugins.loop_data").setLevel(logging.ERROR)
 
 
 def add_violated_cnt(val):
@@ -123,29 +124,72 @@ def step_explore(simgr, proj, monitor_exploration=None):
             monitor_exploration(simgr)
 
 
+def _loop_data_key(state):
+    if not state.has_plugin("loop_data"):
+        return None
+
+    return (
+        tuple(
+            sorted(
+                (addr, tuple(counts))
+                for addr, counts in state.loop_data.header_trip_counts.items()
+            )
+        ),
+        tuple(
+            sorted(
+                (addr, tuple(counts))
+                for addr, counts in state.loop_data.back_edge_trip_counts.items()
+            )
+        ),
+        tuple(
+            (loop.entry.addr, tuple(exits))
+            for loop, exits in state.loop_data.current_loop
+        ),
+    )
+
+
+def state_merge_key(state):
+    ip = state.regs._ip
+    ip_key = ip.cache_key if ip.symbolic else state.addr
+
+    return (
+        ip_key,
+        tuple(
+            (frame.func_addr, frame.stack_ptr, frame.ret_addr)
+            for frame in state.callstack
+        ),
+        _loop_data_key(state),
+        frozenset(state.posix.fd) if state.has_plugin("posix") else None,
+    )
+
+
 def explore_step_func(simgr):
-    global found_cnt, violated_cnt
+    global found_cnt, violated_cnt, merged_cnt
 
     # 取出 violated states
-    for err in simgr.errored.copy():
-        if isinstance(err.error, Violation):
-            print(
-                err.error.args[0] + f" violation (ins_addr: {hex(err.error.ins_addr)})"
-            )
-            simgr.violated.append(err.state)
-            simgr.errored.remove(err)
+    # for err in simgr.errored.copy():
+    #     if isinstance(err.error, Violation):
+    #         print(
+    #             err.error.args[0] + f" violation (ins_addr: {hex(err.error.ins_addr)})"
+    #         )
+    #         simgr.violated.append(err.state)
+    #         simgr.errored.remove(err)
 
-    for state in simgr.active:
-        state.history.trim()
+    # for state in simgr.active:
+    #     state.history.trim()
     found_cnt += len(simgr.found)
     # 如果需要 found state 做驗證，可以在這裡只取出需要的部分
     add_violated_cnt(len(simgr.violated))
     simgr.stashes["found"].clear()
-    simgr.stashes["violated"].clear()
+    # simgr.stashes["violated"].clear()
     simgr.stashes["loopseer"].clear()
 
+    active_before_merge = len(simgr.active)
+    simgr.merge(merge_key=state_merge_key)
+    merged_cnt += active_before_merge - len(simgr.active)
+
     print(
-        f"Step: Active={len(simgr.active)}, Found={found_cnt}, Violated={violated_cnt}"
+        f"Step: Active={len(simgr.active)}, Found={found_cnt}, Violated={violated_cnt}, Merged={merged_cnt}"
     )
     # print(f"pc: {[hex(state.solver.eval(state.regs.pc)) for state in simgr.active]}")
 

@@ -35,3 +35,35 @@ class I2CBus(SimStatePlugin):
         o.wait_state = self.wait_state
 
         return o
+
+    def merge(self, others, merge_conditions, common_ancestor=None):
+        del common_ancestor
+
+        fields = (
+            "prev_scl_out",
+            "arbitration_lost",
+            "bit_count",
+            "arbitration_lost_byte_end",
+            "wait_state",
+        )
+
+        for field in fields:
+            current_value = getattr(self, field)
+            other_values = [getattr(other, field) for other in others]
+
+            if merge_conditions is None:
+                merged_value = current_value
+                for other_value in other_values:
+                    merged_value = claripy.If(
+                        claripy.BoolS(f"i2c_bus_merge_{field}"),
+                        other_value,
+                        merged_value,
+                    )
+            else:
+                merged_value = claripy.ite_cases(
+                    zip(merge_conditions[1:], other_values), current_value
+                )
+
+            setattr(self, field, merged_value)
+
+        return True
