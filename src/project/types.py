@@ -23,7 +23,7 @@ from angr.engines.vex import (
     SuperFastpathMixin,
 )
 from angr.errors import SimEngineError, SimMergeError
-from angr.exploration_techniques import DFS, LoopSeer
+from angr.exploration_techniques import DFS, ExplorationTechnique, LoopSeer
 from angr.sim_state import SimState
 from angr.state_plugins.plugin import SimStatePlugin
 
@@ -162,6 +162,20 @@ class CustomLoopSeer(LoopSeer):
                     succ_state.loop_data.current_loop.append((loop, exits))
 
         return succs
+
+
+class AutomaticMerge(ExplorationTechnique):
+    def __init__(self, max_states=20):
+        super().__init__()
+        self.max_states = max_states
+
+    def step(self, simgr, stash="active", **kwargs):
+        simgr = simgr.step(stash=stash, **kwargs)
+
+        if len(simgr.stashes[stash]) > self.max_states:
+            simgr.merge(stash=stash)
+
+        return simgr
 
 
 class Violation(SimEngineError):

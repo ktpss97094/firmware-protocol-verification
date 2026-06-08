@@ -17,6 +17,7 @@ from typing_extensions import Annotated
 import project.utils as utils
 from project import config
 from project.types import (
+    AutomaticMerge,
     BaseCustomGlobals,
     BaseSpecs,
     CustomEngine,
@@ -29,7 +30,7 @@ from project.types import (
 
 logger = logging.getLogger(__name__)
 app = typer.Typer(name="verify")
-found_cnt, violated_cnt, merged_cnt = 0, 0, 0
+found_cnt, violated_cnt = 0, 0
 
 
 def init_logging():
@@ -164,7 +165,7 @@ def state_merge_key(state):
 
 
 def explore_step_func(simgr):
-    global found_cnt, violated_cnt, merged_cnt
+    global found_cnt, violated_cnt
 
     # 取出 violated states
     # for err in simgr.errored.copy():
@@ -184,12 +185,8 @@ def explore_step_func(simgr):
     # simgr.stashes["violated"].clear()
     simgr.stashes["loopseer"].clear()
 
-    active_before_merge = len(simgr.active)
-    simgr.merge(merge_key=state_merge_key)
-    merged_cnt += active_before_merge - len(simgr.active)
-
     print(
-        f"Step: Active={len(simgr.active)}, Found={found_cnt}, Violated={violated_cnt}, Merged={merged_cnt}"
+        f"Step: Active={len(simgr.active)}, Found={found_cnt}, Violated={violated_cnt}"
     )
     # print(f"pc: {[hex(state.solver.eval(state.regs.pc)) for state in simgr.active]}")
 
@@ -431,6 +428,7 @@ def main(
             discard_stash="loopseer",
         )
     )
+    simgr.use_technique(AutomaticMerge())
 
     try:
         simgr.explore(num_find=float("inf"), step_func=explore_step_func, num_inst=1)

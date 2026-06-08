@@ -6,10 +6,6 @@ from project import utils
 from project.types import AccessType, BaseRegister, BitsField, MMIOMemoryRegion
 
 
-def _same_ast(left, right):
-    return left is right or left.structurally_match(right)
-
-
 class Globals(SimStatePlugin):
     def __init__(self, is_address_phase=None, rw=None, sr1_read=None):
         super().__init__()
@@ -29,34 +25,51 @@ class Globals(SimStatePlugin):
 
         return o
 
+    def _same_ast(self, left, right):
+        if left is right:
+            return True
+        if hasattr(left, "structurally_match") and hasattr(right, "structurally_match"):
+            return left.structurally_match(right)
+        return left == right
+
     def merge(self, others, merge_conditions, common_ancestor=None):
+        """
+        回傳值表示 plugins 是否有被 merge，並不是 state 是否有被 merge。只有 raise SimMergeError 時才表示 state 不被 merge
+        """
+
+        # 如果 plugin 內部沒有更深層的物件需要合併，可以直接忽略 common_ancestor
         del common_ancestor
 
         if any(
-            not _same_ast(self.is_address_phase, other.is_address_phase)
+            not self._same_ast(self.is_address_phase, other.is_address_phase)
             or self.sr1_read != other.sr1_read
-            or self.rw != other.rw
             for other in others
         ):
             raise SimMergeError(
-                "Cannot merge STM32F4 I2C states with different control phases"
+                "Cannot merge STM32F4 I2C globals (is_address_phase or sr1_read)"
             )
 
-        if self.rw is None:
+        all_others_rw_none = all(other.rw is None for other in others)
+        # 所有的 rw 都是 None: plugins 沒有被合併
+        if self.rw is None and all_others_rw_none:
             return False
+        # 其中一個 rw 是 None，另一個不是: 狀態不同，state 不合併
+        if self.rw is None or all_others_rw_none:
+            raise SimMergeError("Cannot merge STM32F4 I2C globals (rw)")
 
+        # static analysis 時 merge_conditions 可以是 None，依照官方建議用 state.solver.union
         if merge_conditions is None:
-            merged_rw = self.rw
-            for other in others:
-                merged_rw = claripy.If(
-                    claripy.BoolS("stm32f4_i2c_merge_rw"), other.rw, merged_rw
-                )
+            merged_rw = self.state.solver.union(
+                [self.rw] + [other.rw for other in others]
+            )
         else:
+            # merge_conditions[0] 是 self 的
+            # 由於 merge 特性 (有共同 ancestor)，merge_conditions[0] | merge_conditions[1] | ... = True，所以如果 merge_conditions[1] | ... 是 False 的話，那 merge_condition[0] 一定為 True，而這個路徑代表的值就是 self.rw
             merged_rw = claripy.ite_cases(
-                zip(merge_conditions[1:], (other.rw for other in others)), self.rw
+                zip(merge_conditions[1:], [other.rw for other in others]), self.rw
             )
 
-        changed = not _same_ast(self.rw, merged_rw)
+        changed = not self._same_ast(self.rw, merged_rw)
         self.rw = merged_rw
         return changed
 
@@ -269,26 +282,6 @@ class I2C(MMIOMemoryRegion):
                 # )
                 sr1 = utils.replace_bit(sr1, cls.TXE.bit, value)
 
-                # (BTF) Set by hardware when NOSTRETCH=0 and: ... In transmission when a new byte should be sent and DR has not been written yet (TxE=1)
-                # 只有 TxE 是 1 時，BTF 才可能是 1
-                sr1 = utils.replace_bit(
-                    sr1,
-                    cls.BTF.bit,
-                    claripy.If(
-                        claripy.Or(
-                            cr1[I2C.I2C_CR1.NOSTRETCH.bit] == 1,
-                            claripy.And(
-                                sr2[I2C.I2C_SR2.TRA.bit] == 1, sr1[cls.TXE.bit] == 0
-                            ),
-                            claripy.And(
-                                sr2[I2C.I2C_SR2.TRA.bit] == 0, sr1[cls.RXNE.bit] == 0
-                            ),
-                        ),
-                        claripy.BVV(0, 1),
-                        sr1[cls.BTF.bit],
-                    ),
-                )
-
             return sr1
 
         @classmethod
@@ -354,7 +347,8 @@ class I2C(MMIOMemoryRegion):
         def update_BTF(cls, i2c, state, sr1, cr1, sr2, force=False, value=None):
             if force or not state.solver.unique(sr1[cls.BTF.bit]):
                 if value is None:
-                    # (BTF) Set by hardware when NOSTRETCH=0 and: ... In transmission when a new byte should be sent and DR has not been written yet (TxE=1)
+                    # (BTF) Set by hardware when NOSTRETCH=0 and: ... In transmission when a new byte should be sent and DR has not been written yet (TxE=1) ... In reception when a new byte is received (including ACK pulse) and DR has not been read yet (RxNE=1) ... The BTF bit is not set after a NACK reception
+                    # 只有 TxE 是 1 時，BTF 才可能是 1
                     value = claripy.If(
                         claripy.And(
                             cr1[I2C.I2C_CR1.NOSTRETCH.bit] == 0,
@@ -389,7 +383,6 @@ class I2C(MMIOMemoryRegion):
             cls, i2c, state, sr1, cr1, sr2, globals, force=False, value=None
         ):
             if force or not state.solver.unique(sr1[cls.ADDR.bit]):
-                # if force or sr1[cls.ADDR.bit].symbolic:
                 if value is None:
                     value = claripy.If(
                         sr1[cls.ADDR.bit] == 1,
@@ -464,7 +457,6 @@ class I2C(MMIOMemoryRegion):
         @classmethod
         def update_SB(cls, i2c, state, sr1, cr1, sr2, force=False, value=None):
             if force or not state.solver.unique(sr1[cls.SB.bit]):
-                # if force or sr1[cls.SB.bit].symbolic:
                 if value is None:
                     value = claripy.If(
                         sr1[cls.SB.bit] == 1,
@@ -575,10 +567,10 @@ class I2C(MMIOMemoryRegion):
                     self, state, new_sr1, new_cr1, new_sr2, new_globals
                 )
                 # 目前寫的方式下，TXE 需要比 SB 早 update，因為 update_SB 會新增 claripy.If(SB == 1, 0, TxE)。如果 update_SB 先執行，update_TXE 會被蓋過
-                new_sr1 = I2C.I2C_SR1.update_BTF(self, state, new_sr1, new_cr1, new_sr2)
                 new_sr1 = I2C.I2C_SR1.update_TXE(
                     self, state, new_sr1, new_cr1, new_sr2, new_globals
                 )
+                new_sr1 = I2C.I2C_SR1.update_BTF(self, state, new_sr1, new_cr1, new_sr2)
                 new_sr1, new_cr1, new_sr2 = I2C.I2C_SR1.update_SB(
                     self, state, new_sr1, new_cr1, new_sr2
                 )
@@ -643,10 +635,7 @@ class I2C(MMIOMemoryRegion):
             case I2C.I2C_DR.OFFSET:
                 # (TxE) Cleared by software writing to the DR register
                 # (BTF) Cleared by software by either ... or write in the DR register
-                # 目前寫的方式下，BTF 需要比 TXE 早 update，因為 update_TXE 會新增 claripy.If(TXE == 0, 0, BTF)。如果 update_TXE 先執行，update_BTF 會被蓋過
-                new_sr1 = I2C.I2C_SR1.update_BTF(
-                    self, state, new_sr1, new_cr1, new_sr2, force=True, value=0
-                )
+                # 目前寫的方式下，TXE 需要比 BTF 早 update，因為 update_BTF 會使用到 TXE
                 new_sr1 = I2C.I2C_SR1.update_TXE(
                     self,
                     state,
@@ -656,6 +645,9 @@ class I2C(MMIOMemoryRegion):
                     new_globals,
                     force=True,
                     value=0,
+                )
+                new_sr1 = I2C.I2C_SR1.update_BTF(
+                    self, state, new_sr1, new_cr1, new_sr2, force=True, value=0
                 )
 
                 if globals.sr1_read:
@@ -723,12 +715,12 @@ class I2C(MMIOMemoryRegion):
                             force=True,
                         )
                 else:
-                    # 目前寫的方式下，BTF 需要比 TXE 早 update，因為 update_TXE 會新增 claripy.If(TXE == 0, 0, BTF)。如果 update_TXE 先執行，update_BTF 會被蓋過
-                    new_sr1 = I2C.I2C_SR1.update_BTF(
-                        self, state, new_sr1, new_cr1, new_sr2, force=True
-                    )
+                    # 目前寫的方式下，TXE 需要比 BTF 早 update，因為 update_BTF 會使用到 TXE
                     new_sr1 = I2C.I2C_SR1.update_TXE(
                         self, state, new_sr1, new_cr1, new_sr2, new_globals, force=True
+                    )
+                    new_sr1 = I2C.I2C_SR1.update_BTF(
+                        self, state, new_sr1, new_cr1, new_sr2, force=True
                     )
 
         utils.store(state, self.start + I2C.I2C_CR1.OFFSET, new_cr1)
@@ -780,7 +772,6 @@ class I2C(MMIOMemoryRegion):
             trigger_cond = event_val == 1
 
             if state.solver.satisfiable(extra_constraints=[trigger_cond]):
-                print(trigger_cond)
                 output.append((trigger_cond, {"irq": irq_num}))
 
         return output
