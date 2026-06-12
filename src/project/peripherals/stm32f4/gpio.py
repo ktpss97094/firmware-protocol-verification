@@ -100,7 +100,7 @@ class GPIO(MMIOMemoryRegion):
 
     def _state(self, state):
         if not state.has_plugin(self._state_plugin_name):
-            state.register_plugin(self._state_plugin_name, STM32F4GPIOState())
+            state.register_plugin(self._state_plugin_name, Globals())
         return state.get_plugin(self._state_plugin_name)
 
     def set_handlers(self, cpu, state, cfg, specs):
@@ -175,11 +175,7 @@ class GPIO(MMIOMemoryRegion):
                 AccessEffects(
                     memory=frozenset(
                         {
-                            MemoryEffect(
-                                "read",
-                                self.start + offset,
-                                register_size,
-                            )
+                            MemoryEffect("read", self.start + offset, register_size)
                             for offset in (
                                 GPIO.GPIO_MODER.OFFSET,
                                 GPIO.GPIO_OTYPER.OFFSET,
@@ -204,28 +200,20 @@ class GPIO(MMIOMemoryRegion):
                 memory=frozenset(
                     {
                         MemoryEffect(
-                            "read",
-                            self.start + GPIO.GPIO_ODR.OFFSET,
-                            register_size,
+                            "read", self.start + GPIO.GPIO_ODR.OFFSET, register_size
                         ),
                         MemoryEffect(
-                            "write",
-                            self.start + GPIO.GPIO_ODR.OFFSET,
-                            register_size,
+                            "write", self.start + GPIO.GPIO_ODR.OFFSET, register_size
                         ),
                     }
                 ),
                 plugins=frozenset(
                     {
                         PluginEffect(
-                            "read",
-                            self._state_plugin_name,
-                            ("bsrr_write_value",),
+                            "read", self._state_plugin_name, ("bsrr_write_value",)
                         ),
                         PluginEffect(
-                            "write",
-                            self._state_plugin_name,
-                            ("bsrr_write_value",),
+                            "write", self._state_plugin_name, ("bsrr_write_value",)
                         ),
                     }
                 ),

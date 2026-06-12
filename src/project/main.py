@@ -17,6 +17,7 @@ from typing_extensions import Annotated
 import project.utils as utils
 from project import config
 from project.types import (
+    AutomaticMerge,
     BaseCustomGlobals,
     BaseSpecs,
     CustomEngine,
@@ -222,6 +223,7 @@ def main(
     search: str = "dfs",
     renode: bool = False,
     debug: Annotated[bool, typer.Option(hidden=True)] = False,
+    automatic_merge: bool = True,
 ):
     Specs = load_specs_class(spec)
 
@@ -349,6 +351,7 @@ def main(
             angr.options.UNICORN,
             angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,
             angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
+            angr.options.EFFICIENT_STATE_MERGING,
         },
     )
 
@@ -414,6 +417,17 @@ def main(
     simgr.stashes["loopseer"] = []
     cfg = specs.CPU.setup(state, specs, simgr)
 
+    if automatic_merge:
+        simgr.use_technique(
+            AutomaticMerge(
+                max_states=20,
+                merge_key=state_merge_key,
+                min_reduction=4,
+                merge_interval=16,
+                substantial_reduction_ratio=0.25,
+                hard_limit=80,
+            )
+        )
     if debug:
         simgr.use_technique(DFSPickFirstSuccessor())
     elif search == "dfs":
@@ -431,7 +445,6 @@ def main(
             discard_stash="loopseer",
         )
     )
-    # simgr.use_technique(AutomaticMerge())
 
     try:
         simgr.explore(num_find=float("inf"), step_func=explore_step_func, num_inst=1)

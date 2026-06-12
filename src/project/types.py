@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import inspect
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partial
@@ -165,15 +166,134 @@ class CustomLoopSeer(LoopSeer):
 
 
 class AutomaticMerge(ExplorationTechnique):
-    def __init__(self, max_states=20):
+    """
+    Merge only states that already share a conservative merge key.
+
+    Candidate detection is linear in the stash size. Expensive state merging is
+    rate-limited unless the merge would remove a substantial fraction of the
+    stash. ``hard_limit`` relaxes the minimum reduction requirement, but not the
+    rate limit.
+    """
+
+    def __init__(
+        self,
+        max_states=20,
+        merge_key: Callable[[SimState], Any] | None = None,
+        min_reduction=4,
+        merge_interval=16,
+        substantial_reduction_ratio=0.25,
+        hard_limit: int | None = None,
+    ):
         super().__init__()
+
+        if max_states < 1:
+            raise ValueError("max_states must be positive")
+        if min_reduction < 1:
+            raise ValueError("min_reduction must be positive")
+        if merge_interval < 1:
+            raise ValueError("merge_interval must be positive")
+        if not 0 < substantial_reduction_ratio <= 1:
+            raise ValueError(
+                "substantial_reduction_ratio must be greater than 0 and at most 1"
+            )
+
         self.max_states = max_states
+        self.merge_key = merge_key
+        self.min_reduction = min_reduction
+        self.merge_interval = merge_interval
+        self.substantial_reduction_ratio = substantial_reduction_ratio
+        self.hard_limit = max_states * 4 if hard_limit is None else hard_limit
+        if self.hard_limit < max_states:
+            raise ValueError("hard_limit must be at least max_states")
+
+        self.step_count = 0
+        self.last_merge_step = -merge_interval
+        self.merge_attempts = 0
+        self.states_merged = 0
+
+    def _merge_candidate_groups(self, simgr, stash, groups):
+        original_states = list(simgr.stashes[stash])
+        group_member_ids = set()
+        replacements = {}
+        temp_stash = "_automatic_merge"
+        suffix = 0
+        while temp_stash in simgr.stashes:
+            suffix += 1
+            temp_stash = f"_automatic_merge_{suffix}"
+
+        try:
+            for group in groups:
+                group_member_ids.update(id(state) for state in group)
+                simgr.stashes[temp_stash] = list(group)
+                simgr.merge(
+                    stash=temp_stash,
+                    merge_key=lambda _state: None,
+                    prune=False,
+                )
+                replacements[id(group[0])] = list(simgr.stashes[temp_stash])
+        finally:
+            simgr.stashes.pop(temp_stash, None)
+
+        merged_states = []
+        for state in original_states:
+            state_id = id(state)
+            if state_id in replacements:
+                merged_states.extend(replacements[state_id])
+            elif state_id not in group_member_ids:
+                merged_states.append(state)
+
+        simgr.stashes[stash] = merged_states
 
     def step(self, simgr, stash="active", **kwargs):
         simgr = simgr.step(stash=stash, **kwargs)
+        self.step_count += 1
 
-        if len(simgr.stashes[stash]) > self.max_states:
-            simgr.merge(stash=stash)
+        states = simgr.stashes[stash]
+        state_count = len(states)
+        if state_count <= self.max_states:
+            return simgr
+
+        merge_key = self.merge_key or simgr._merge_key
+        keyed_states = defaultdict(list)
+        for state in states:
+            keyed_states[merge_key(state)].append(state)
+
+        candidate_groups = [
+            group for group in keyed_states.values() if len(group) > 1
+        ]
+        potential_reduction = sum(len(group) - 1 for group in candidate_groups)
+        if potential_reduction == 0:
+            return simgr
+
+        reduction_ratio = potential_reduction / state_count
+        substantial_reduction = (
+            reduction_ratio >= self.substantial_reduction_ratio
+        )
+        interval_elapsed = (
+            self.step_count - self.last_merge_step >= self.merge_interval
+        )
+        under_hard_pressure = state_count >= self.hard_limit
+
+        if not substantial_reduction and not interval_elapsed:
+            return simgr
+        if potential_reduction < self.min_reduction and not under_hard_pressure:
+            return simgr
+
+        self.last_merge_step = self.step_count
+        self.merge_attempts += len(candidate_groups)
+        self._merge_candidate_groups(simgr, stash, candidate_groups)
+
+        merged_count = state_count - len(simgr.stashes[stash])
+        self.states_merged += merged_count
+        if merged_count:
+            l.info(
+                "AutomaticMerge reduced %s from %d to %d states "
+                "(%d candidate groups)",
+                stash,
+                state_count,
+                len(simgr.stashes[stash]),
+                len(candidate_groups),
+            )
 
         return simgr
 
