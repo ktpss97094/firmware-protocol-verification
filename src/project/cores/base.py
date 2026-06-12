@@ -4,10 +4,10 @@ from collections import defaultdict
 from functools import cache
 
 import angr
-import angr.analyses.variable_recovery.engine_vex as engine_vex
 import claripy
 import pyvex
 
+from project.analyses.isr_memory import ISRMemoryRegions, analyze_isr_memory
 from project.types import BPConfig, MMIOMemoryRegion
 
 logging.getLogger("angr.analyses.variable_recovery.engine_vex.SimEngineVRVEX").setLevel(
@@ -19,67 +19,15 @@ logging.getLogger(
 ).setLevel(logging.CRITICAL)
 
 
-"""
-修補 angr/analyses/variable_recovery/engine_vex.py 中 SimEngineVRVEX 的 _handle_stmt_LoadG(), _handle_stmt_StoreG 的 bug，把 AST(1) 跟 True 比較會是 False，
-而忽略部分 global variable R/W instruction
-"""
-original_LoadG = engine_vex.SimEngineVRVEX._handle_stmt_LoadG
-original_StoreG = engine_vex.SimEngineVRVEX._handle_stmt_StoreG
-
-
-def _is_guard_true(guard_expr):
-    if hasattr(guard_expr, "data"):
-        data = guard_expr.data
-        if hasattr(data, "concrete") and data.concrete:
-            if hasattr(data, "args") and len(data.args) > 0 and data.args[0] == 0:
-                return False
-            return True
-        else:
-            # VariableRecoveryFast 只有當該指令的 guard 是百分之百 True 時才會視為 global variable R/W，如果 guard 算出來是 TOP (未知) 等就不會。這裡為了要最大限度找出所有 checkpoint，所以未知的情況也回傳 True
-            return True
-    elif guard_expr is False:
-        return False
-    return True
-
-
-def _patched_handle_stmt_LoadG(self, stmt):
-    guard_expr = getattr(self, "_expr", lambda x: None)(stmt.guard)
-    if _is_guard_true(guard_expr):
-        addr = self._expr_bv(stmt.addr)
-        if addr is not None and getattr(addr.data, "concrete", False):
-            try:
-                self.tmps[stmt.dst] = self._load(
-                    addr, getattr(self, "tyenv").sizeof(stmt.dst) // 8
-                )
-                return
-            except Exception:
-                pass
-    return original_LoadG(self, stmt)
-
-
-def _patched_handle_stmt_StoreG(self, stmt):
-    guard_expr = getattr(self, "_expr", lambda x: None)(stmt.guard)
-    if _is_guard_true(guard_expr):
-        addr = self._expr_bv(stmt.addr)
-        if addr is not None and getattr(addr.data, "concrete", False):
-            size = stmt.data.result_size(getattr(self, "tyenv")) // 8
-            data = self._expr(stmt.data)
-            try:
-                self._store(addr, data, size, atom=stmt)
-                return
-            except Exception:
-                pass
-    return original_StoreG(self, stmt)
-
-
-engine_vex.SimEngineVRVEX._handle_stmt_LoadG = _patched_handle_stmt_LoadG
-engine_vex.SimEngineVRVEX._handle_stmt_StoreG = _patched_handle_stmt_StoreG
-
-
 class BaseCPU(ABC):
     @abstractmethod
     def normalize_address(self, addr):
         return addr
+
+    @cache
+    def get_isr_shared_regions(self, proj, specs, svd_path=None) -> ISRMemoryRegions:
+        report = analyze_isr_memory(proj.filename, specs, svd_path=svd_path)
+        return ISRMemoryRegions.from_report(report)
 
     @cache
     def get_static_interrupt_checkpoints(self, proj, cfg, specs):

@@ -183,17 +183,6 @@ class CortexM(ARM):
             self.cpu = cpu
             self.specs = specs
 
-            # checkpoints = {}
-            # self.checkpoints = utils.process_cache_file(
-            #     self.specs.FIRMWARE_PATH,
-            #     Path(self.specs.FIRMWARE_PATH).with_suffix(".intrckpt"),
-            #     self.cpu.get_interrupt_checkpoints,
-            #     proj=proj,
-            #     cfg=cfg,
-            #     specs=specs,
-            #     handler=self,
-            # )
-
             for ckpt in self.get_checkpoints(state, cfg, specs):
                 ckpt.apply_to(state, handler=self)
 
@@ -264,17 +253,18 @@ class CortexM(ARM):
             #     return False
 
             # read-only 區域排除
-            obj = state.project.loader.find_object_containing(addr)
-            if obj is not None:
-                segment = obj.find_segment_containing(addr)
-                if segment is not None and not segment.is_writable:
-                    return False
+            # obj = state.project.loader.find_object_containing(addr)
+            # if obj is not None:
+            #     segment = obj.find_segment_containing(addr)
+            #     if segment is not None and not segment.is_writable:
+            #         return False
 
-                section = obj.find_section_containing(addr)
-                if section is not None and not section.is_writable:
-                    return False
+            #     section = obj.find_section_containing(addr)
+            #     if section is not None and not section.is_writable:
+            #         return False
 
-            return True
+            regions = self.cpu.get_isr_shared_regions(state.project, self.specs)
+            return addr in regions
 
         def in_globally_accessible_region_read(self, state):
             return self.in_globally_accessible_region(

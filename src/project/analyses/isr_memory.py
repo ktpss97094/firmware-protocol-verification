@@ -4,6 +4,7 @@ import contextlib
 import dataclasses
 import logging
 import xml.etree.ElementTree as ET
+from bisect import bisect_right
 from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
@@ -69,9 +70,62 @@ class RegionAccess:
     functions: tuple[str, ...]
 
 
+@dataclasses.dataclass(frozen=True)
+class ISRMemoryRegion:
+    name: str
+    kind: str
+    start: int
+    size: int
+
+    @property
+    def end(self) -> int:
+        return self.start + self.size
+
+
+class ISRMemoryRegions:
+    def __init__(self, regions: Iterable[RegionAccess]):
+        unique = {
+            ISRMemoryRegion(region.name, region.kind, region.start, region.size)
+            for region in regions
+            if region.size > 0
+        }
+        self.regions = tuple(
+            sorted(unique, key=lambda region: (region.start, region.end, region.name))
+        )
+
+        merged = []
+        for region in self.regions:
+            if merged and region.start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], region.end))
+            else:
+                merged.append((region.start, region.end))
+        self._starts = tuple(start for start, _ in merged)
+        self._ends = tuple(end for _, end in merged)
+
+    @classmethod
+    def from_report(cls, report: AnalysisReport) -> ISRMemoryRegions:
+        return cls(
+            region
+            for isr_report in report.isrs
+            for region in isr_report.regions
+        )
+
+    def __contains__(self, address: int) -> bool:
+        index = bisect_right(self._starts, address) - 1
+        return index >= 0 and address < self._ends[index]
+
+    def __iter__(self):
+        return iter(self.regions)
+
+    def __len__(self) -> int:
+        return len(self.regions)
+
+
 @dataclasses.dataclass
 class ISRReport:
     isr: str
+    irq: int
+    address: int
     regions: list[RegionAccess]
     unresolved_accesses: list[Access]
     unresolved_calls: list[tuple[str, int]]
@@ -109,6 +163,14 @@ class _RawStore:
     address: int
     size: int
     values: tuple[claripy.ast.BV, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class _ISRTarget:
+    irq: int
+    vector_address: int
+    address: int
+    function: object
 
 
 class _DwarfIndex:
@@ -207,9 +269,7 @@ class _DwarfIndex:
                 if die.tag == "DW_TAG_subprogram":
                     function_name = self._name(die)
                 if die.tag == "DW_TAG_variable":
-                    self._load_variable(
-                        die, function_name, stack_base, expr_parser
-                    )
+                    self._load_variable(die, function_name, stack_base, expr_parser)
                 for child in die.iter_children():
                     visit(child, function_name)
 
@@ -295,9 +355,7 @@ class _SVDIndex:
             base = int(base_node.text or "0", 0)
             block = peripheral.find("addressBlock/size")
             block_size = (
-                int(block.text, 0)
-                if block is not None and block.text
-                else 0x400
+                int(block.text, 0) if block is not None and block.text else 0x400
             )
             self.peripherals.append(MemoryObject(name, base, block_size, "mmio"))
             for register in peripheral.findall("registers/register"):
@@ -363,9 +421,7 @@ class _PreservingFunctionHandler(FunctionHandler):
 
         for reg_name, values in saved.items():
             offset, _ = state.arch.registers[reg_name]
-            state.registers.store(
-                offset, values, endness=state.arch.register_endness
-            )
+            state.registers.store(offset, values, endness=state.arch.register_endness)
 
 
 class _PointerInitializer(RDAStateInitializer):
@@ -386,10 +442,7 @@ class _PointerInitializer(RDAStateInitializer):
                 }
             )
             state.memory.store(
-                address,
-                data,
-                size=self.arch.bytes,
-                endness=self.arch.memory_endness,
+                address, data, size=self.arch.bytes, endness=self.arch.memory_endness
             )
 
 
@@ -407,10 +460,7 @@ class _Recorder:
             elif engine.state.is_top(address):
                 self.accesses.append(
                     _RawAccess(
-                        operation,
-                        engine.ins_addr,
-                        size,
-                        unresolved="TOP address",
+                        operation, engine.ins_addr, size, unresolved="TOP address"
                     )
                 )
             elif engine.state.is_stack_address(address):
@@ -425,19 +475,13 @@ class _Recorder:
             elif not address.symbolic:
                 self.accesses.append(
                     _RawAccess(
-                        operation,
-                        engine.ins_addr,
-                        size,
-                        address=address.concrete_value,
+                        operation, engine.ins_addr, size, address=address.concrete_value
                     )
                 )
             else:
                 self.accesses.append(
                     _RawAccess(
-                        operation,
-                        engine.ins_addr,
-                        size,
-                        unresolved=str(address),
+                        operation, engine.ins_addr, size, unresolved=str(address)
                     )
                 )
 
@@ -464,9 +508,7 @@ def _record_rda_memory(recorder: _Recorder):
                 continue
             else:
                 concrete = address.concrete_value
-            recorder.stores.append(
-                _RawStore(engine.ins_addr, concrete, size, values)
-            )
+            recorder.stores.append(_RawStore(engine.ins_addr, concrete, size, values))
         return original_store(
             engine, address_list, size, data, data_old=data_old, endness=endness
         )
@@ -515,13 +557,10 @@ class ISRMemoryAnalyzer:
 
         self.project = angr.Project(str(self.elf_path), auto_load_libs=False)
         self.cfg = self.project.analyses.CFGFast(
-            normalize=True,
-            data_references=True,
-            resolve_indirect_jumps=True,
+            normalize=True, data_references=True, resolve_indirect_jumps=True
         )
         fact_logger = logging.getLogger(
-            "angr.analyses.calling_convention.fact_collector."
-            "SimEngineFactCollectorVEX"
+            "angr.analyses.calling_convention.fact_collector.SimEngineFactCollectorVEX"
         )
         previous_level = fact_logger.level
         fact_logger.setLevel(logging.CRITICAL)
@@ -539,11 +578,72 @@ class ISRMemoryAnalyzer:
         self.dwarf = _DwarfIndex(self.elf_path, self.stack_base)
         self.svd = _SVDIndex(self.svd_path)
 
-    def _function(self, name: str):
+    def _function_by_name(self, name: str):
         function = self.cfg.kb.functions.function(name=name)
         if function is None:
             raise ValueError(f"Function not found in ELF: {name}")
         return function
+
+    def _function_at(self, address: int):
+        function = self.cfg.kb.functions.get(address)
+        if function is None:
+            raise ValueError(f"Function not found at ISR address {address:#x}")
+        return function
+
+    def _vector_table_base(self) -> int:
+        symbol = self.project.loader.find_symbol("g_pfnVectors")
+        if symbol is not None:
+            return symbol.rebased_addr
+
+        for section in self.project.loader.main_object.sections:
+            if section.name == ".isr_vector":
+                return section.vaddr
+
+        raise ValueError(
+            "Cannot locate the Cortex-M vector table: "
+            "ELF has neither g_pfnVectors nor an .isr_vector section"
+        )
+
+    @staticmethod
+    def _modeled_irq_numbers(specs) -> list[int]:
+        irq_numbers = set()
+        for region in specs.get_MMIOMemoryRegions():
+            for irq in getattr(region, "IRQ_NUMBERS", ()) or ():
+                irq = int(irq)
+                if irq < 0:
+                    raise ValueError(
+                        f"Invalid IRQ number {irq} on MMIO region {region.name}"
+                    )
+                irq_numbers.add(irq)
+        return sorted(irq_numbers)
+
+    def _isr_targets(self, specs) -> list[_ISRTarget]:
+        vector_table_base = self._vector_table_base()
+        targets = []
+        for irq in self._modeled_irq_numbers(specs):
+            vector_address = vector_table_base + (irq + 16) * self.project.arch.bytes
+            if vector_address not in self.project.loader.memory:
+                raise ValueError(
+                    f"Vector entry for IRQ {irq} is not mapped at {vector_address:#x}"
+                )
+
+            address = self.project.loader.memory.unpack_word(
+                vector_address,
+                size=self.project.arch.bytes,
+                endness=self.project.arch.memory_endness,
+            )
+            if address == 0:
+                raise ValueError(f"Vector entry for modeled IRQ {irq} is null")
+
+            try:
+                function = self._function_at(address)
+            except ValueError as error:
+                raise ValueError(
+                    f"Cannot resolve modeled IRQ {irq}: vector entry "
+                    f"{vector_address:#x} points to {address:#x}"
+                ) from error
+            targets.append(_ISRTarget(irq, vector_address, address, function))
+        return targets
 
     def _function_name(self, instruction: int | None) -> str:
         if instruction is None:
@@ -580,7 +680,7 @@ class ISRMemoryAnalyzer:
         recorder = _Recorder()
         with _record_rda_memory(recorder):
             self.project.analyses.ReachingDefinitions(
-                self._function(self.initializer),
+                self._function_by_name(self.initializer),
                 function_handler=_PreservingFunctionHandler(self.init_depth),
                 track_tmps=True,
                 element_limit=30,
@@ -638,8 +738,7 @@ class ISRMemoryAnalyzer:
                 continue
             self.project.loader.memory.add_backer(page, bytes(0x1000))
 
-    def _unresolved_calls(self, isr: str) -> list[tuple[str, int]]:
-        root = self._function(isr)
+    def _unresolved_calls(self, root) -> list[tuple[str, int]]:
         functions = {root, *root.functions_reachable()}
         unresolved = set()
         for function in functions:
@@ -671,7 +770,7 @@ class ISRMemoryAnalyzer:
         return None
 
     def _build_isr_report(
-        self, isr: str, raw_accesses: list[_RawAccess]
+        self, target: _ISRTarget, raw_accesses: list[_RawAccess]
     ) -> ISRReport:
         grouped: dict[tuple[str, int, int, str], dict[str, set]] = {}
         unresolved = set()
@@ -698,8 +797,7 @@ class ISRMemoryAnalyzer:
                 continue
             key = (region.name, region.start, region.size, region.kind)
             entry = grouped.setdefault(
-                key,
-                {"operations": set(), "addresses": set(), "functions": set()},
+                key, {"operations": set(), "addresses": set(), "functions": set()}
             )
             entry["operations"].add(raw.operation)
             entry["addresses"].add(raw.address)
@@ -719,7 +817,9 @@ class ISRMemoryAnalyzer:
         ]
         regions.sort(key=lambda region: (region.kind, region.start, region.name))
         return ISRReport(
-            isr,
+            target.function.name,
+            target.irq,
+            target.address,
             regions,
             sorted(
                 unresolved,
@@ -730,44 +830,48 @@ class ISRMemoryAnalyzer:
                     access.size,
                 ),
             ),
-            self._unresolved_calls(isr),
+            self._unresolved_calls(target.function),
         )
 
-    def analyze(self, isrs: Iterable[str]) -> AnalysisReport:
+    def analyze(self, specs) -> AnalysisReport:
+        targets = self._isr_targets(specs)
         facts_by_cell, pointer_facts = self._collect_pointer_facts()
         self._add_mmio_backers(facts_by_cell)
         initializer = _PointerInitializer(
             self.project.arch, self.project, facts_by_cell
         )
 
+        accesses_by_address = {}
         reports = []
-        for isr in isrs:
-            recorder = _Recorder()
-            with _record_rda_memory(recorder):
-                self.project.analyses.ReachingDefinitions(
-                    self._function(isr),
-                    function_handler=_PreservingFunctionHandler(self.isr_depth),
-                    state_initializer=initializer,
-                    track_tmps=True,
-                    element_limit=30,
-                    max_iterations=self.max_iterations,
-                    merge_into_tops=False,
-                    track_liveness=False,
-                )
-            reports.append(self._build_isr_report(isr, recorder.accesses))
+        for target in targets:
+            if target.address not in accesses_by_address:
+                recorder = _Recorder()
+                with _record_rda_memory(recorder):
+                    self.project.analyses.ReachingDefinitions(
+                        target.function,
+                        function_handler=_PreservingFunctionHandler(self.isr_depth),
+                        state_initializer=initializer,
+                        track_tmps=True,
+                        element_limit=30,
+                        max_iterations=self.max_iterations,
+                        merge_into_tops=False,
+                        track_liveness=False,
+                    )
+                accesses_by_address[target.address] = recorder.accesses
+            reports.append(
+                self._build_isr_report(target, accesses_by_address[target.address])
+            )
 
-        return AnalysisReport(
-            self.elf_path, self.initializer, pointer_facts, reports
-        )
+        return AnalysisReport(self.elf_path, self.initializer, pointer_facts, reports)
 
 
 def analyze_isr_memory(
     elf_path: str | Path,
-    isrs: Iterable[str],
+    specs,
     *,
     svd_path: str | Path | None = None,
     initializer: str = "main",
 ) -> AnalysisReport:
     return ISRMemoryAnalyzer(
         elf_path, svd_path=svd_path, initializer=initializer
-    ).analyze(isrs)
+    ).analyze(specs)
