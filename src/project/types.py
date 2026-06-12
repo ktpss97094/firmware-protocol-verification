@@ -194,6 +194,107 @@ class AccessType(Enum):
 
 
 @dataclass(frozen=True)
+class MemoryEffect:
+    operation: str
+    start: int
+    size: int
+
+    @property
+    def end(self):
+        return self.start + self.size
+
+    def overlaps(self, other):
+        return self.start < other.end and other.start < self.end
+
+
+@dataclass(frozen=True)
+class PluginEffect:
+    operation: str
+    plugin: str
+    fields: tuple[str, ...] = ("*",)
+
+    def overlaps(self, other):
+        if self.plugin != other.plugin:
+            return False
+        return (
+            "*" in self.fields
+            or "*" in other.fields
+            or not set(self.fields).isdisjoint(other.fields)
+        )
+
+
+@dataclass(frozen=True)
+class AccessEffects:
+    memory: frozenset[MemoryEffect] = frozenset()
+    plugins: frozenset[PluginEffect] = frozenset()
+    unknown: bool = False
+
+    @classmethod
+    def memory_access(cls, operation, start, size):
+        return cls(
+            memory=frozenset(
+                {
+                    MemoryEffect(
+                        operation=operation,
+                        start=start,
+                        size=max(1, size),
+                    )
+                }
+            )
+        )
+
+    def union(self, *others):
+        memory = set(self.memory)
+        plugins = set(self.plugins)
+        unknown = self.unknown
+        for other in others:
+            memory.update(other.memory)
+            plugins.update(other.plugins)
+            unknown |= other.unknown
+        return AccessEffects(frozenset(memory), frozenset(plugins), unknown)
+
+    def conflicts_with(self, other):
+        if self.unknown or other.unknown:
+            return True
+
+        for left in self.memory:
+            for right in other.memory:
+                if (
+                    "write" in (left.operation, right.operation)
+                    and left.overlaps(right)
+                ):
+                    return True
+
+        for left in self.plugins:
+            for right in other.plugins:
+                if (
+                    "write" in (left.operation, right.operation)
+                    and left.overlaps(right)
+                ):
+                    return True
+
+        return False
+
+    def writes_resources_used_by(self, other):
+        if self.unknown or other.unknown:
+            return True
+
+        for left in self.memory:
+            if left.operation != "write":
+                continue
+            if any(left.overlaps(right) for right in other.memory):
+                return True
+
+        for left in self.plugins:
+            if left.operation != "write":
+                continue
+            if any(left.overlaps(right) for right in other.plugins):
+                return True
+
+        return False
+
+
+@dataclass(frozen=True)
 class BitsField:
     bit: int
     access_type: AccessType
@@ -270,6 +371,9 @@ class MemoryRegion:
         except Exception:
             return False
 
+    def get_access_effects(self, operation, address, size):
+        return AccessEffects.memory_access(operation, address, size)
+
 
 class MMIOMemoryRegion(MemoryRegion):
     def __init__(self, *args, **kwargs):
@@ -309,9 +413,41 @@ class MMIOMemoryRegion(MemoryRegion):
         addr, offset, value = super().pre_write(state)
 
         orig_value = utils.load(state, addr)
-        state.inspect.mem_write_expr = self.mask_pre_write(offset, orig_value, value)
+        masked_value = self.mask_pre_write(offset, orig_value, value)
+        state.inspect.mem_write_expr = masked_value
+        state.globals[("_mmio_pending_write", id(self))] = (
+            addr,
+            masked_value,
+            state.inspect.mem_write_length,
+            state.inspect.mem_write_condition,
+            state.inspect.mem_write_endness,
+        )
 
         return addr, offset, state.inspect.mem_write_expr
+
+    def post_write(self, state):
+        addr, offset, value = super().post_write(state)
+        pending = state.globals.pop(("_mmio_pending_write", id(self)), None)
+        if pending is None:
+            return addr, offset, value
+
+        pending_addr, masked_value, size, condition, endness = pending
+        if pending_addr != addr:
+            raise SimEngineError(
+                f"Mismatched pending MMIO write: {pending_addr:#x} != {addr:#x}"
+            )
+
+        state.memory.store(
+            addr,
+            masked_value,
+            size=size if size is not None else masked_value.length // 8,
+            condition=condition,
+            endness=endness,
+            disable_actions=True,
+            inspect=False,
+        )
+        state.inspect.mem_write_expr = masked_value
+        return addr, offset, masked_value
 
     def mask_pre_write(self, offset, orig_val, write_val):
         masks = self._access_masks.get(offset)
@@ -407,6 +543,20 @@ class BaseSpecs:
         from project.cores.base import BaseDMA
 
         return [r for r in self.MEMORY_REGIONS.values() if isinstance(r, BaseDMA)]
+
+    def get_memory_region(self, address):
+        matches = [
+            region
+            for region in self.MEMORY_REGIONS.values()
+            if region.in_region(address)
+        ]
+        return min(matches, key=lambda region: region.size) if matches else None
+
+    def get_access_effects(self, operation, address, size):
+        region = self.get_memory_region(address)
+        if region is None:
+            return AccessEffects.memory_access(operation, address, size)
+        return region.get_access_effects(operation, address, size)
 
     def set_handlers(self, cpu, state, cfg, specs):
         for region in self.get_MMIOMemoryRegions():

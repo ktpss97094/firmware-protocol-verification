@@ -3,7 +3,15 @@ from angr.errors import SimMergeError
 from angr.state_plugins.plugin import SimStatePlugin
 
 from project import utils
-from project.types import AccessType, BaseRegister, BitsField, MMIOMemoryRegion
+from project.types import (
+    AccessEffects,
+    AccessType,
+    BaseRegister,
+    BitsField,
+    MemoryEffect,
+    MMIOMemoryRegion,
+    PluginEffect,
+)
 
 
 class Globals(SimStatePlugin):
@@ -510,9 +518,13 @@ class I2C(MMIOMemoryRegion):
                     sr2,
                     I2C.I2C_SR2.MSL.bit,
                     claripy.If(
-                        sr1[cls.SB.bit] == 1,
-                        claripy.BVV(1, 1),
-                        sr2[I2C.I2C_SR2.MSL.bit],
+                        sr1[cls.ARLO.bit] == 1,
+                        claripy.BVV(0, 1),
+                        claripy.If(
+                            sr1[cls.SB.bit] == 1,
+                            claripy.BVV(1, 1),
+                            sr2[I2C.I2C_SR2.MSL.bit],
+                        ),
                     ),
                 )
 
@@ -535,6 +547,53 @@ class I2C(MMIOMemoryRegion):
         TRA = BitsField(2, AccessType.R, 0)
         BUSY = BitsField(1, AccessType.R, 0)
         MSL = BitsField(0, AccessType.R, 0)
+
+    def get_access_effects(self, operation, address, size):
+        effects = super().get_access_effects(operation, address, size)
+        register_effects = {
+            MemoryEffect(
+                "read",
+                self.start + offset,
+                self.spec.ANGR_ARCH.bytes,
+            )
+            for offset in (
+                I2C.I2C_CR1.OFFSET,
+                I2C.I2C_SR1.OFFSET,
+                I2C.I2C_SR2.OFFSET,
+            )
+        }
+        register_effects.update(
+            MemoryEffect(
+                "write",
+                self.start + offset,
+                self.spec.ANGR_ARCH.bytes,
+            )
+            for offset in (
+                I2C.I2C_CR1.OFFSET,
+                I2C.I2C_SR1.OFFSET,
+                I2C.I2C_SR2.OFFSET,
+            )
+        )
+        plugin_name = f"{self.name}_globals"
+        return effects.union(
+            AccessEffects(
+                memory=frozenset(register_effects),
+                plugins=frozenset(
+                    {
+                        PluginEffect(
+                            "read",
+                            plugin_name,
+                            ("is_address_phase", "rw", "sr1_read"),
+                        ),
+                        PluginEffect(
+                            "write",
+                            plugin_name,
+                            ("is_address_phase", "rw", "sr1_read"),
+                        ),
+                    }
+                ),
+            )
+        )
 
     def post_read(self, state):
         _, offset, readout_value = super().post_read(state)

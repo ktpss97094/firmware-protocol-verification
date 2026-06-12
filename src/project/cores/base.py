@@ -25,9 +25,18 @@ class BaseCPU(ABC):
         return addr
 
     @cache
+    def get_isr_memory_report(self, proj, specs, svd_path=None):
+        return analyze_isr_memory(proj.filename, specs, svd_path=svd_path)
+
+    @cache
     def get_isr_shared_regions(self, proj, specs, svd_path=None) -> ISRMemoryRegions:
-        report = analyze_isr_memory(proj.filename, specs, svd_path=svd_path)
-        return ISRMemoryRegions.from_report(report)
+        return ISRMemoryRegions.from_report(
+            self.get_isr_memory_report(proj, specs, svd_path)
+        )
+
+    @cache
+    def get_isr_shared_effects(self, proj, specs, svd_path=None):
+        return self.get_isr_memory_report(proj, specs, svd_path).effects
 
     @cache
     def get_static_interrupt_checkpoints(self, proj, cfg, specs):
@@ -126,6 +135,11 @@ class BaseCPU(ABC):
                     rep_cond = group[0]
 
                     if state.solver.is_true(trig_cond == rep_cond):
+                        if any(
+                            grouped_handler is handler
+                            for grouped_handler, _ in group[1]
+                        ):
+                            continue
                         group[1].append((handler, handler_kwargs))
                         matched = True
                         break

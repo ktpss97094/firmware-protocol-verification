@@ -211,6 +211,20 @@ class CortexM(ARM):
                     condition=self.in_globally_accessible_region_write,
                 )
             )
+            ckpts.add(
+                BPConfig(
+                    "mem_read",
+                    when=angr.BP_AFTER,
+                    condition=self.globally_accessible_region_read_may_affect_isr,
+                )
+            )
+            ckpts.add(
+                BPConfig(
+                    "mem_write",
+                    when=angr.BP_AFTER,
+                    condition=self.globally_accessible_region_write_may_affect_isr,
+                )
+            )
 
             # DMA
             for dma in specs.get_DMAs():
@@ -243,38 +257,71 @@ class CortexM(ARM):
             print(f"IRQ Injection | pc: {state.regs.pc} -> Branching into IRQ {irq}")
             self.cpu.excp_entry(state, irq)
 
-        def in_globally_accessible_region(self, state, addr):
-            # stack 排除
-            # if (
-            #     (self.cpu.initial_sp - self.cpu.stack_size)
-            #     <= addr
-            #     < self.cpu.initial_sp
-            # ):
-            #     return False
+        @staticmethod
+        def _concrete_inspect_value(state, value):
+            if value is None:
+                return None
+            if isinstance(value, int):
+                return value
+            if not state.solver.unique(value):
+                return None
+            return state.solver.eval(value)
 
-            # read-only 區域排除
-            # obj = state.project.loader.find_object_containing(addr)
-            # if obj is not None:
-            #     segment = obj.find_segment_containing(addr)
-            #     if segment is not None and not segment.is_writable:
-            #         return False
+        def _access_effects(self, state, operation, address, size):
+            address = self._concrete_inspect_value(state, address)
+            size = self._concrete_inspect_value(state, size)
+            if address is None or size is None:
+                from project.types import AccessEffects
 
-            #     section = obj.find_section_containing(addr)
-            #     if section is not None and not section.is_writable:
-            #         return False
+                return AccessEffects()
+            return self.specs.get_access_effects(operation, address, size)
 
-            regions = self.cpu.get_isr_shared_regions(state.project, self.specs)
-            return addr in regions
+        def _inspect_access_effects(self, state, operation):
+            if operation == "read":
+                return self._access_effects(
+                    state,
+                    operation,
+                    state.inspect.mem_read_address,
+                    state.inspect.mem_read_length,
+                )
+            return self._access_effects(
+                state,
+                operation,
+                state.inspect.mem_write_address,
+                state.inspect.mem_write_length,
+            )
+
+        def in_globally_accessible_region(self, state, addr, operation, size=1):
+            current_effects = self._access_effects(state, operation, addr, size)
+            isr_effects = self.cpu.get_isr_shared_effects(state.project, self.specs)
+            return current_effects.conflicts_with(isr_effects)
 
         def in_globally_accessible_region_read(self, state):
             return self.in_globally_accessible_region(
-                state, state.solver.eval(state.inspect.mem_read_address)
+                state,
+                state.inspect.mem_read_address,
+                "read",
+                state.inspect.mem_read_length,
             )
 
         def in_globally_accessible_region_write(self, state):
             return self.in_globally_accessible_region(
-                state, state.solver.eval(state.inspect.mem_write_address)
+                state,
+                state.inspect.mem_write_address,
+                "write",
+                state.inspect.mem_write_length,
             )
+
+        def _access_may_affect_isr(self, state, operation):
+            current_effects = self._inspect_access_effects(state, operation)
+            isr_effects = self.cpu.get_isr_shared_effects(state.project, self.specs)
+            return current_effects.writes_resources_used_by(isr_effects)
+
+        def globally_accessible_region_read_may_affect_isr(self, state):
+            return self._access_may_affect_isr(state, "read")
+
+        def globally_accessible_region_write_may_affect_isr(self, state):
+            return self._access_may_affect_isr(state, "write")
 
     def set_handlers(self, state, cfg, specs):
         self.interrupt_handler = CortexM._InterruptHandler(

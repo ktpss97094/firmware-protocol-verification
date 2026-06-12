@@ -2,7 +2,15 @@ import claripy
 from angr.state_plugins.plugin import SimStatePlugin
 
 from project import utils
-from project.types import AccessType, BaseRegister, BitsField, MMIOMemoryRegion
+from project.types import (
+    AccessEffects,
+    AccessType,
+    BaseRegister,
+    BitsField,
+    MemoryEffect,
+    MMIOMemoryRegion,
+    PluginEffect,
+)
 
 
 class Globals(SimStatePlugin):
@@ -157,6 +165,72 @@ class GPIO(MMIOMemoryRegion):
             )
 
         return claripy.Concat(*idr)
+
+    def get_access_effects(self, operation, address, size):
+        effects = super().get_access_effects(operation, address, size)
+        register_size = self.spec.ANGR_ARCH.bytes
+
+        if operation == "read":
+            return effects.union(
+                AccessEffects(
+                    memory=frozenset(
+                        {
+                            MemoryEffect(
+                                "read",
+                                self.start + offset,
+                                register_size,
+                            )
+                            for offset in (
+                                GPIO.GPIO_MODER.OFFSET,
+                                GPIO.GPIO_OTYPER.OFFSET,
+                                GPIO.GPIO_PUPDR.OFFSET,
+                                GPIO.GPIO_IDR.OFFSET,
+                                GPIO.GPIO_ODR.OFFSET,
+                            )
+                        }
+                        | {
+                            MemoryEffect(
+                                "write",
+                                self.start + GPIO.GPIO_IDR.OFFSET,
+                                register_size,
+                            )
+                        }
+                    )
+                )
+            )
+
+        return effects.union(
+            AccessEffects(
+                memory=frozenset(
+                    {
+                        MemoryEffect(
+                            "read",
+                            self.start + GPIO.GPIO_ODR.OFFSET,
+                            register_size,
+                        ),
+                        MemoryEffect(
+                            "write",
+                            self.start + GPIO.GPIO_ODR.OFFSET,
+                            register_size,
+                        ),
+                    }
+                ),
+                plugins=frozenset(
+                    {
+                        PluginEffect(
+                            "read",
+                            self._state_plugin_name,
+                            ("bsrr_write_value",),
+                        ),
+                        PluginEffect(
+                            "write",
+                            self._state_plugin_name,
+                            ("bsrr_write_value",),
+                        ),
+                    }
+                ),
+            )
+        )
 
     def pre_write(self, state):
         _, offset, value = super().pre_write(state)

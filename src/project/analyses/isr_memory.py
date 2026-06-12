@@ -18,6 +18,8 @@ from angr.storage.memory_mixins.paged_memory.pages.multi_values import MultiValu
 from elftools.dwarf.dwarf_expr import DWARFExprParser
 from elftools.elf.elffile import ELFFile
 
+from project.types import AccessEffects
+
 logger = logging.getLogger(__name__)
 
 
@@ -105,9 +107,7 @@ class ISRMemoryRegions:
     @classmethod
     def from_report(cls, report: AnalysisReport) -> ISRMemoryRegions:
         return cls(
-            region
-            for isr_report in report.isrs
-            for region in isr_report.regions
+            region for isr_report in report.isrs for region in isr_report.regions
         )
 
     def __contains__(self, address: int) -> bool:
@@ -129,6 +129,7 @@ class ISRReport:
     regions: list[RegionAccess]
     unresolved_accesses: list[Access]
     unresolved_calls: list[tuple[str, int]]
+    effects: AccessEffects = dataclasses.field(default_factory=AccessEffects)
 
     @property
     def complete(self) -> bool:
@@ -145,6 +146,13 @@ class AnalysisReport:
     @property
     def complete(self) -> bool:
         return all(report.complete for report in self.isrs)
+
+    @property
+    def effects(self) -> AccessEffects:
+        effects = AccessEffects()
+        for report in self.isrs:
+            effects = effects.union(report.effects)
+        return effects
 
 
 @dataclasses.dataclass
@@ -770,10 +778,11 @@ class ISRMemoryAnalyzer:
         return None
 
     def _build_isr_report(
-        self, target: _ISRTarget, raw_accesses: list[_RawAccess]
+        self, target: _ISRTarget, raw_accesses: list[_RawAccess], specs
     ) -> ISRReport:
         grouped: dict[tuple[str, int, int, str], dict[str, set]] = {}
         unresolved = set()
+        effects = AccessEffects()
 
         for raw in raw_accesses:
             function = self._function_name(raw.instruction)
@@ -792,6 +801,9 @@ class ISRMemoryAnalyzer:
                 continue
             if raw.address is None:
                 continue
+            effects = effects.union(
+                specs.get_access_effects(raw.operation, raw.address, raw.size)
+            )
             region = self._region_for(raw.address)
             if region is None:
                 continue
@@ -816,6 +828,10 @@ class ISRMemoryAnalyzer:
             for (name, start, size, kind), data in grouped.items()
         ]
         regions.sort(key=lambda region: (region.kind, region.start, region.name))
+        unresolved_calls = self._unresolved_calls(target.function)
+        if unresolved or unresolved_calls:
+            effects = effects.union(AccessEffects())
+
         return ISRReport(
             target.function.name,
             target.irq,
@@ -830,7 +846,8 @@ class ISRMemoryAnalyzer:
                     access.size,
                 ),
             ),
-            self._unresolved_calls(target.function),
+            unresolved_calls,
+            effects,
         )
 
     def analyze(self, specs) -> AnalysisReport:
@@ -859,7 +876,9 @@ class ISRMemoryAnalyzer:
                     )
                 accesses_by_address[target.address] = recorder.accesses
             reports.append(
-                self._build_isr_report(target, accesses_by_address[target.address])
+                self._build_isr_report(
+                    target, accesses_by_address[target.address], specs
+                )
             )
 
         return AnalysisReport(self.elf_path, self.initializer, pointer_facts, reports)

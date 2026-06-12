@@ -82,34 +82,44 @@ class DMA(BaseDMA):
         events_to_check = []
         output = []
 
-        if state.solver.is_true(s6cr[DMA.DMA_S6CR.HTIE.bit] == 1):
-            events_to_check.extend(
-                [(DMA.DMA_HISR.OFFSET, DMA.DMA_HISR.HTIF6.bit, self.IRQ_NUMBERS[6])]
-            )
+        events_to_check.extend(
+            [
+                (
+                    s6cr[DMA.DMA_S6CR.HTIE.bit] == 1,
+                    DMA.DMA_HISR.OFFSET,
+                    DMA.DMA_HISR.HTIF6.bit,
+                    self.IRQ_NUMBERS[6],
+                ),
+                (
+                    s6cr[DMA.DMA_S6CR.TCIE.bit] == 1,
+                    DMA.DMA_HISR.OFFSET,
+                    DMA.DMA_HISR.TCIF6.bit,
+                    self.IRQ_NUMBERS[6],
+                ),
+                (
+                    s6cr[DMA.DMA_S6CR.TEIE.bit] == 1,
+                    DMA.DMA_HISR.OFFSET,
+                    DMA.DMA_HISR.TEIF6.bit,
+                    self.IRQ_NUMBERS[6],
+                ),
+                (
+                    s6fcr[DMA.DMA_S6FCR.FEIE.bit] == 1,
+                    DMA.DMA_HISR.OFFSET,
+                    DMA.DMA_HISR.FEIF6.bit,
+                    self.IRQ_NUMBERS[6],
+                ),
+                (
+                    s6cr[DMA.DMA_S6CR.DMEIE.bit] == 1,
+                    DMA.DMA_HISR.OFFSET,
+                    DMA.DMA_HISR.DMEIF6.bit,
+                    self.IRQ_NUMBERS[6],
+                ),
+            ]
+        )
 
-        if state.solver.is_true(s6cr[DMA.DMA_S6CR.TCIE.bit] == 1):
-            events_to_check.extend(
-                [(DMA.DMA_HISR.OFFSET, DMA.DMA_HISR.TCIF6.bit, self.IRQ_NUMBERS[6])]
-            )
-
-        if state.solver.is_true(s6cr[DMA.DMA_S6CR.TEIE.bit] == 1):
-            events_to_check.extend(
-                [(DMA.DMA_HISR.OFFSET, DMA.DMA_HISR.TEIF6.bit, self.IRQ_NUMBERS[6])]
-            )
-
-        if state.solver.is_true(s6fcr[DMA.DMA_S6FCR.FEIE.bit] == 1):
-            events_to_check.extend(
-                [(DMA.DMA_HISR.OFFSET, DMA.DMA_HISR.FEIF6.bit, self.IRQ_NUMBERS[6])]
-            )
-
-        if state.solver.is_true(s6cr[DMA.DMA_S6CR.DMEIE.bit] == 1):
-            events_to_check.extend(
-                [(DMA.DMA_HISR.OFFSET, DMA.DMA_HISR.DMEIF6.bit, self.IRQ_NUMBERS[6])]
-            )
-
-        for event_offset, event_bit, irq_num in events_to_check:
+        for enable_cond, event_offset, event_bit, irq_num in events_to_check:
             event_val = utils.load(state, self.start + event_offset)[event_bit]
-            trigger_cond = event_val == 1
+            trigger_cond = claripy.And(enable_cond, event_val == 1)
 
             if state.solver.satisfiable(extra_constraints=[trigger_cond]):
                 output.append((trigger_cond, {"irq": irq_num}))
@@ -152,53 +162,35 @@ class DMA(BaseDMA):
         def get_eligible_events(self, state):
             s6cr = utils.load(state, self.dma.start + DMA.DMA_S6CR.OFFSET)
             s6ndtr = utils.load(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET)
-            events_to_check = []
-            output = []
+            i2c1_cr2 = utils.load(
+                state,
+                self.specs.MEMORY_REGIONS["I2C1"].start + I2C.I2C_CR2.OFFSET,
+            )
+            i2c1_sr1 = utils.load(
+                state,
+                self.specs.MEMORY_REGIONS["I2C1"].start + I2C.I2C_SR1.OFFSET,
+            )
+            channel = s6cr[
+                DMA.DMA_S6CR.CHSEL.bit
+                + DMA.DMA_S6CR.CHSEL.size
+                - 1 : DMA.DMA_S6CR.CHSEL.bit
+            ]
+            ndt = s6ndtr[
+                DMA.DMA_S6NDTR.NDT.bit
+                + DMA.DMA_S6NDTR.NDT.size
+                - 1 : DMA.DMA_S6NDTR.NDT.bit
+            ]
+            trigger_cond = claripy.And(
+                channel == 1,  # I2C1_TX
+                i2c1_cr2[I2C.I2C_CR2.DMAEN.bit] == 1,
+                s6cr[DMA.DMA_S6CR.EN.bit] == 1,
+                ndt > 0,
+                i2c1_sr1[I2C.I2C_SR1.TXE.bit] == 1,
+            )
 
-            # channel select
-            match state.solver.eval(
-                s6cr[
-                    DMA.DMA_S6CR.CHSEL.bit
-                    + DMA.DMA_S6CR.CHSEL.size
-                    - 1 : DMA.DMA_S6CR.CHSEL.bit
-                ]
-            ):
-                case 1:  # I2C1_TX
-                    i2c1_cr2 = utils.load(
-                        state,
-                        self.specs.MEMORY_REGIONS["I2C1"].start + I2C.I2C_CR2.OFFSET,
-                    )
-
-                    if state.solver.is_true(
-                        claripy.And(
-                            i2c1_cr2[I2C.I2C_CR2.DMAEN.bit] == 1,
-                            s6cr[DMA.DMA_S6CR.EN.bit] == 1,
-                            s6ndtr[
-                                DMA.DMA_S6NDTR.NDT.bit
-                                + DMA.DMA_S6NDTR.NDT.size
-                                - 1 : DMA.DMA_S6NDTR.NDT.bit
-                            ]
-                            > 0,
-                        )
-                    ):
-                        events_to_check.extend(
-                            [
-                                (
-                                    self.specs.MEMORY_REGIONS["I2C1"].start
-                                    + I2C.I2C_SR1.OFFSET,
-                                    I2C.I2C_SR1.TXE.bit,
-                                )
-                            ]
-                        )
-
-            for event_addr, event_bit in events_to_check:
-                event_val = utils.load(state, event_addr)[event_bit]
-                trigger_cond = event_val == 1
-
-                if state.solver.satisfiable(extra_constraints=[trigger_cond]):
-                    output.append((trigger_cond, {}))
-
-            return output
+            if state.solver.satisfiable(extra_constraints=[trigger_cond]):
+                return [(trigger_cond, {})]
+            return []
 
         def trigger_event(self, state):
             s6m0ar = utils.load(state, self.dma.start + DMA.DMA_S6M0AR.OFFSET)

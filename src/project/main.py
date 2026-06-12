@@ -17,7 +17,6 @@ from typing_extensions import Annotated
 import project.utils as utils
 from project import config
 from project.types import (
-    AutomaticMerge,
     BaseCustomGlobals,
     BaseSpecs,
     CustomEngine,
@@ -162,6 +161,8 @@ def state_merge_key(state):
             for frame in state.callstack
         ),
         _loop_data_key(state),
+        state.globals.get("current_priority", 256),
+        tuple(state.globals.get("priority_stack", ())),
         frozenset(state.posix.fd) if state.has_plugin("posix") else None,
     )
 
@@ -430,7 +431,7 @@ def main(
             discard_stash="loopseer",
         )
     )
-    simgr.use_technique(AutomaticMerge())
+    # simgr.use_technique(AutomaticMerge())
 
     try:
         simgr.explore(num_find=float("inf"), step_func=explore_step_func, num_inst=1)
