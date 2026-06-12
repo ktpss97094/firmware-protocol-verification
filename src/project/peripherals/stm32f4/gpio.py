@@ -5,39 +5,40 @@ from project import utils
 from project.types import AccessType, BaseRegister, BitsField, MMIOMemoryRegion
 
 
-class STM32F4GPIOState(SimStatePlugin):
+class Globals(SimStatePlugin):
     def __init__(self, bsrr_write_value=None):
         super().__init__()
-        self.bsrr_write_value = (
-            claripy.BVV(0, 32) if bsrr_write_value is None else bsrr_write_value
-        )
 
-    @SimStatePlugin.memo
+        self.bsrr_write_value = bsrr_write_value
+
     def copy(self, memo):
-        return STM32F4GPIOState(self.bsrr_write_value)
+        o = super().copy(memo)
+
+        o.bsrr_write_value = self.bsrr_write_value
+
+        return o
 
     def merge(self, others, merge_conditions, common_ancestor=None):
         del common_ancestor
 
+        if self.bsrr_write_value is None and all(
+            other.bsrr_write_value is None for other in others
+        ):
+            return False
+
         if merge_conditions is None:
-            merged_value = self.bsrr_write_value
-            for other in others:
-                merged_value = claripy.If(
-                    claripy.BoolS("stm32f4_gpio_merge_bsrr"),
-                    other.bsrr_write_value,
-                    merged_value,
-                )
+            merged_bsrr_write_value = self.state.solver.union(
+                [self.bsrr_write_value] + [other.bsrr_write_value for other in others]
+            )
         else:
-            merged_value = claripy.ite_cases(
-                zip(
-                    merge_conditions[1:],
-                    (other.bsrr_write_value for other in others),
-                ),
+            merged_bsrr_write_value = claripy.ite_cases(
+                zip(merge_conditions[1:], [other.bsrr_write_value for other in others]),
                 self.bsrr_write_value,
             )
 
-        self.bsrr_write_value = merged_value
-        return True
+        changed = not utils.same_ast(self.bsrr_write_value, merged_bsrr_write_value)
+        self.bsrr_write_value = merged_bsrr_write_value
+        return changed
 
 
 class GPIO(MMIOMemoryRegion):

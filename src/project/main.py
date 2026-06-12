@@ -40,6 +40,8 @@ def init_logging():
     logging.getLogger("angr.engines.pcode.lifter").setLevel(logging.CRITICAL)
     # loop_data is only merged when state_merge_key() proves both copies identical.
     logging.getLogger("angr.state_plugins.loop_data").setLevel(logging.ERROR)
+    # SimMergeError
+    logging.getLogger("angr.sim_manager").setLevel(logging.ERROR)
 
 
 def add_violated_cnt(val):

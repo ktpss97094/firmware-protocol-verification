@@ -25,13 +25,6 @@ class Globals(SimStatePlugin):
 
         return o
 
-    def _same_ast(self, left, right):
-        if left is right:
-            return True
-        if hasattr(left, "structurally_match") and hasattr(right, "structurally_match"):
-            return left.structurally_match(right)
-        return left == right
-
     def merge(self, others, merge_conditions, common_ancestor=None):
         """
         回傳值表示 plugins 是否有被 merge，並不是 state 是否有被 merge。只有 raise SimMergeError 時才表示 state 不被 merge
@@ -41,7 +34,7 @@ class Globals(SimStatePlugin):
         del common_ancestor
 
         if any(
-            not self._same_ast(self.is_address_phase, other.is_address_phase)
+            not utils.same_ast(self.is_address_phase, other.is_address_phase)
             or self.sr1_read != other.sr1_read
             for other in others
         ):
@@ -69,7 +62,7 @@ class Globals(SimStatePlugin):
                 zip(merge_conditions[1:], [other.rw for other in others]), self.rw
             )
 
-        changed = not self._same_ast(self.rw, merged_rw)
+        changed = not utils.same_ast(self.rw, merged_rw)
         self.rw = merged_rw
         return changed
 
