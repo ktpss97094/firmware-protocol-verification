@@ -372,21 +372,6 @@ class AccessEffects:
 
         return False
 
-    def writes_resources_used_by(self, other):
-        for left in self.memory:
-            if left.operation != "write":
-                continue
-            if any(left.overlaps(right) for right in other.memory):
-                return True
-
-        for left in self.plugins:
-            if left.operation != "write":
-                continue
-            if any(left.overlaps(right) for right in other.plugins):
-                return True
-
-        return False
-
 
 @dataclass(frozen=True)
 class BitsField:

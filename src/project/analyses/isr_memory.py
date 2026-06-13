@@ -4,10 +4,8 @@ import contextlib
 import dataclasses
 import logging
 import xml.etree.ElementTree as ET
-from bisect import bisect_right
 from collections import defaultdict
 from pathlib import Path
-from typing import Iterable
 
 import angr
 import claripy
@@ -72,60 +70,12 @@ class RegionAccess:
     functions: tuple[str, ...]
 
 
-@dataclasses.dataclass(frozen=True)
-class ISRMemoryRegion:
-    name: str
-    kind: str
-    start: int
-    size: int
-
-    @property
-    def end(self) -> int:
-        return self.start + self.size
-
-
-class ISRMemoryRegions:
-    def __init__(self, regions: Iterable[RegionAccess]):
-        unique = {
-            ISRMemoryRegion(region.name, region.kind, region.start, region.size)
-            for region in regions
-            if region.size > 0
-        }
-        self.regions = tuple(
-            sorted(unique, key=lambda region: (region.start, region.end, region.name))
-        )
-
-        merged = []
-        for region in self.regions:
-            if merged and region.start <= merged[-1][1]:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], region.end))
-            else:
-                merged.append((region.start, region.end))
-        self._starts = tuple(start for start, _ in merged)
-        self._ends = tuple(end for _, end in merged)
-
-    @classmethod
-    def from_report(cls, report: AnalysisReport) -> ISRMemoryRegions:
-        return cls(
-            region for isr_report in report.isrs for region in isr_report.regions
-        )
-
-    def __contains__(self, address: int) -> bool:
-        index = bisect_right(self._starts, address) - 1
-        return index >= 0 and address < self._ends[index]
-
-    def __iter__(self):
-        return iter(self.regions)
-
-    def __len__(self) -> int:
-        return len(self.regions)
-
-
 @dataclasses.dataclass
 class ISRReport:
     isr: str
     irq: int
     address: int
+    accesses: list[Access]
     regions: list[RegionAccess]
     unresolved_accesses: list[Access]
     unresolved_calls: list[tuple[str, int]]
@@ -141,11 +91,20 @@ class AnalysisReport:
     elf: Path
     initializer: str
     pointer_facts: list[PointerFact]
+    initializer_accesses: list[Access]
+    initializer_unresolved_calls: list[tuple[str, int]]
     isrs: list[ISRReport]
 
     @property
     def complete(self) -> bool:
-        return all(report.complete for report in self.isrs)
+        return (
+            not any(
+                access.unresolved is not None
+                for access in self.initializer_accesses
+            )
+            and not self.initializer_unresolved_calls
+            and all(report.complete for report in self.isrs)
+        )
 
     @property
     def effects(self) -> AccessEffects:
@@ -684,7 +643,9 @@ class ISRMemoryAnalyzer:
         solutions = solver.eval(value, 2)
         return solutions[0] if len(solutions) == 1 else None
 
-    def _collect_pointer_facts(self) -> tuple[dict[int, set[int]], list[PointerFact]]:
+    def _collect_pointer_facts(
+        self,
+    ) -> tuple[dict[int, set[int]], list[PointerFact], list[_RawAccess]]:
         recorder = _Recorder()
         with _record_rda_memory(recorder):
             self.project.analyses.ReachingDefinitions(
@@ -732,7 +693,7 @@ class ISRMemoryAnalyzer:
         return values_by_cell, sorted(
             unique.values(),
             key=lambda fact: (fact.cell.address, fact.value, fact.instruction or 0),
-        )
+        ), recorder.accesses
 
     def _add_mmio_backers(self, facts: dict[int, set[int]]) -> None:
         pages = {
@@ -777,43 +738,73 @@ class ISRMemoryAnalyzer:
             return MemoryObject("NULL-derived", 0, 0x1000, "invalid")
         return None
 
+    def _build_accesses(
+        self, raw_accesses: list[_RawAccess], *, resolve_stack: bool
+    ) -> list[Access]:
+        accesses = set()
+        for raw in raw_accesses:
+            address = raw.address
+            if (
+                address is None
+                and resolve_stack
+                and raw.stack_offset is not None
+                and self.stack_base is not None
+            ):
+                address = (self.stack_base + raw.stack_offset) & 0xFFFFFFFF
+
+            accesses.add(
+                Access(
+                    raw.operation,
+                    raw.instruction,
+                    raw.size,
+                    self._function_name(raw.instruction),
+                    address=address,
+                    stack_offset=raw.stack_offset,
+                    unresolved=raw.unresolved,
+                )
+            )
+
+        return sorted(
+            accesses,
+            key=lambda access: (
+                access.function,
+                access.instruction or 0,
+                access.operation,
+                access.address if access.address is not None else -1,
+                access.size,
+                access.unresolved or "",
+            ),
+        )
+
     def _build_isr_report(
         self, target: _ISRTarget, raw_accesses: list[_RawAccess], specs
     ) -> ISRReport:
         grouped: dict[tuple[str, int, int, str], dict[str, set]] = {}
-        unresolved = set()
         effects = AccessEffects()
+        accesses = self._build_accesses(raw_accesses, resolve_stack=False)
 
-        for raw in raw_accesses:
-            function = self._function_name(raw.instruction)
-            if raw.unresolved is not None:
-                unresolved.add(
-                    Access(
-                        raw.operation,
-                        raw.instruction,
-                        raw.size,
-                        function,
-                        unresolved=raw.unresolved,
-                    )
-                )
+        for access in accesses:
+            if access.unresolved is not None:
                 continue
-            if raw.stack_offset is not None:
+            if access.stack_offset is not None:
                 continue
-            if raw.address is None:
+            if access.address is None:
                 continue
             effects = effects.union(
-                specs.get_access_effects(raw.operation, raw.address, raw.size)
+                specs.get_access_effects(
+                    access.operation, access.address, access.size
+                )
             )
-            region = self._region_for(raw.address)
+            region = self._region_for(access.address)
             if region is None:
                 continue
             key = (region.name, region.start, region.size, region.kind)
             entry = grouped.setdefault(
                 key, {"operations": set(), "addresses": set(), "functions": set()}
             )
-            entry["operations"].add(raw.operation)
-            entry["addresses"].add(raw.address)
-            entry["functions"].add(function)
+            entry["operations"].add(access.operation)
+            entry["addresses"].add(access.address)
+            entry["functions"].add(access.function)
 
         regions = [
             RegionAccess(
@@ -828,6 +819,9 @@ class ISRMemoryAnalyzer:
             for (name, start, size, kind), data in grouped.items()
         ]
         regions.sort(key=lambda region: (region.kind, region.start, region.name))
+        unresolved = [
+            access for access in accesses if access.unresolved is not None
+        ]
         unresolved_calls = self._unresolved_calls(target.function)
         if unresolved or unresolved_calls:
             effects = effects.union(AccessEffects())
@@ -836,23 +830,18 @@ class ISRMemoryAnalyzer:
             target.function.name,
             target.irq,
             target.address,
+            accesses,
             regions,
-            sorted(
-                unresolved,
-                key=lambda access: (
-                    access.function,
-                    access.instruction or 0,
-                    access.operation,
-                    access.size,
-                ),
-            ),
+            unresolved,
             unresolved_calls,
             effects,
         )
 
     def analyze(self, specs) -> AnalysisReport:
         targets = self._isr_targets(specs)
-        facts_by_cell, pointer_facts = self._collect_pointer_facts()
+        facts_by_cell, pointer_facts, initializer_raw_accesses = (
+            self._collect_pointer_facts()
+        )
         self._add_mmio_backers(facts_by_cell)
         initializer = _PointerInitializer(
             self.project.arch, self.project, facts_by_cell
@@ -881,7 +870,15 @@ class ISRMemoryAnalyzer:
                 )
             )
 
-        return AnalysisReport(self.elf_path, self.initializer, pointer_facts, reports)
+        initializer_function = self._function_by_name(self.initializer)
+        return AnalysisReport(
+            self.elf_path,
+            self.initializer,
+            pointer_facts,
+            self._build_accesses(initializer_raw_accesses, resolve_stack=True),
+            self._unresolved_calls(initializer_function),
+            reports,
+        )
 
 
 def analyze_isr_memory(

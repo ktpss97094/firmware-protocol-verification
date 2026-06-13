@@ -2,22 +2,18 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import angr
 import claripy
 
 from firmwares.stm32f429.protocols.I2C.spec_hw import Specs
-from project.analyses.isr_memory import (
-    ISRMemoryRegions,
-    RegionAccess,
-    analyze_isr_memory,
-)
+from project.analyses.isr_memory import Access, analyze_isr_memory
 from project.cores.arm.cortex_m.cortex_m import CortexM
 from project.cores.base import BaseCPU
 from project.main import state_merge_key
-from project.peripherals.stm32f4.i2c import Globals, I2C
+from project.peripherals.stm32f4.i2c import I2C, Globals
 from project.types import AccessEffects, EventForkHandler, MemoryEffect, PluginEffect
-
 
 ROOT = Path(__file__).resolve().parents[1]
 ELF = (
@@ -35,55 +31,28 @@ SVD = (
 class ISRMemoryAnalysisTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        project = angr.Project(
-            str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH
-        )
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         specs = Specs(project)
-        cls.report = analyze_isr_memory(
-            ELF,
-            specs,
-            svd_path=SVD,
-        )
+        cls.report = analyze_isr_memory(ELF, specs, svd_path=SVD)
 
     def test_modeled_mmio_irqs_are_discovered_from_vector_table(self):
         targets = {
             report.irq: (report.address, report.isr) for report in self.report.isrs
         }
-        self.assertEqual(
-            {11, 12, 13, 14, 15, 16, 17, 31, 32},
-            set(targets),
-        )
+        self.assertEqual({11, 12, 13, 14, 15, 16, 17, 31, 32}, set(targets))
         self.assertEqual((0x08000613, "I2C1_EV_IRQHandler"), targets[31])
         self.assertEqual((0x08000625, "I2C1_ER_IRQHandler"), targets[32])
-
-    def test_identified_regions_support_fast_address_membership(self):
-        regions = ISRMemoryRegions.from_report(self.report)
-        main_data = next(region for region in regions if region.name == "main::data")
-
-        self.assertIn(main_data.start, regions)
-        self.assertIn(main_data.end - 1, regions)
-        self.assertNotIn(0xDEADBEEF, regions)
 
     def test_main_stack_pointer_escape_is_recovered(self):
         facts = {
             (fact.cell.name, fact.value, fact.target)
             for fact in self.report.pointer_facts
         }
-        self.assertIn(
-            ("hi2c1.Instance", 0x40005400, "I2C1"),
-            facts,
-        )
-        self.assertIn(
-            ("hi2c1.pBuffPtr", 0x2001FFF4, "main::data"),
-            facts,
-        )
+        self.assertIn(("hi2c1.Instance", 0x40005400, "I2C1"), facts)
+        self.assertIn(("hi2c1.pBuffPtr", 0x2001FFF4, "main::data"), facts)
 
     def test_event_isr_resolves_expected_shared_regions(self):
-        event = next(
-            report
-            for report in self.report.isrs
-            if report.irq == 31
-        )
+        event = next(report for report in self.report.isrs if report.irq == 31)
         regions = {region.name: region for region in event.regions}
         self.assertIn("hi2c1", regions)
         self.assertIn("main::data", regions)
@@ -92,45 +61,20 @@ class ISRMemoryAnalysisTest(unittest.TestCase):
         self.assertEqual(("read", "write"), regions["main::data"].operations)
         self.assertIn(
             PluginEffect(
-                "write",
-                "I2C1_globals",
-                ("is_address_phase", "rw", "sr1_read"),
+                "write", "I2C1_globals", ("is_address_phase", "rw", "sr1_read")
             ),
             event.effects.plugins,
         )
-        self.assertIn(
-            MemoryEffect("write", 0x40005414, 4),
-            event.effects.memory,
-        )
+        self.assertIn(MemoryEffect("write", 0x40005414, 4), event.effects.memory)
 
     def test_error_isr_resolves_buffer_write_and_reports_incompleteness(self):
-        error = next(
-            report
-            for report in self.report.isrs
-            if report.irq == 32
-        )
+        error = next(report for report in self.report.isrs if report.irq == 32)
         regions = {region.name: region for region in error.regions}
         self.assertEqual(("write",), regions["main::data"].operations)
         self.assertTrue(error.unresolved_accesses)
         self.assertTrue(error.unresolved_calls)
         self.assertFalse(error.complete)
         self.assertFalse(self.report.complete)
-
-
-class ISRMemoryRegionsTest(unittest.TestCase):
-    def test_overlapping_regions_are_deduplicated_and_indexed(self):
-        regions = ISRMemoryRegions(
-            [
-                RegionAccess("first", "global", 0x1000, 0x10, (), (), ()),
-                RegionAccess("first", "global", 0x1000, 0x10, (), (), ()),
-                RegionAccess("second", "global", 0x1008, 0x10, (), (), ()),
-            ]
-        )
-
-        self.assertEqual(2, len(regions))
-        self.assertIn(0x1000, regions)
-        self.assertIn(0x1017, regions)
-        self.assertNotIn(0x1018, regions)
 
 
 class AccessEffectsTest(unittest.TestCase):
@@ -141,36 +85,25 @@ class AccessEffectsTest(unittest.TestCase):
 
         self.assertFalse(read.conflicts_with(overlapping_read))
         self.assertTrue(read.conflicts_with(overlapping_write))
-        self.assertTrue(overlapping_write.writes_resources_used_by(read))
 
     def test_plugin_fields_are_resources(self):
         read = AccessEffects(
-            plugins=frozenset(
-                {PluginEffect("read", "I2C1_globals", ("sr1_read",))}
-            )
+            plugins=frozenset({PluginEffect("read", "I2C1_globals", ("sr1_read",))})
         )
         write_same = AccessEffects(
-            plugins=frozenset(
-                {PluginEffect("write", "I2C1_globals", ("sr1_read",))}
-            )
+            plugins=frozenset({PluginEffect("write", "I2C1_globals", ("sr1_read",))})
         )
         write_other = AccessEffects(
-            plugins=frozenset(
-                {PluginEffect("write", "I2C1_globals", ("rw",))}
-            )
+            plugins=frozenset({PluginEffect("write", "I2C1_globals", ("rw",))})
         )
 
         self.assertTrue(read.conflicts_with(write_same))
         self.assertFalse(read.conflicts_with(write_other))
 
     def test_i2c_access_includes_modeled_memory_and_plugin_effects(self):
-        project = angr.Project(
-            str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH
-        )
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         specs = Specs(project)
-        effects = specs.MEMORY_REGIONS["I2C1"].get_access_effects(
-            "read", 0x40005414, 4
-        )
+        effects = specs.MEMORY_REGIONS["I2C1"].get_access_effects("read", 0x40005414, 4)
 
         self.assertIn(MemoryEffect("read", 0x40005414, 4), effects.memory)
         self.assertIn(MemoryEffect("write", 0x40005400, 4), effects.memory)
@@ -178,75 +111,174 @@ class AccessEffectsTest(unittest.TestCase):
         self.assertIn(MemoryEffect("write", 0x40005418, 4), effects.memory)
         self.assertIn(
             PluginEffect(
-                "write",
-                "I2C1_globals",
-                ("is_address_phase", "rw", "sr1_read"),
+                "write", "I2C1_globals", ("is_address_phase", "rw", "sr1_read")
             ),
             effects.plugins,
         )
 
-    def test_cortex_checkpoint_considers_i2c_plugin_side_effects(self):
-        project = angr.Project(
-            str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH
-        )
+    def test_base_precomputes_shared_regions_from_i2c_side_effects(self):
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         specs = Specs(project)
         state = project.factory.blank_state()
-        isr_effects = AccessEffects(
-            plugins=frozenset(
-                {
-                    PluginEffect(
-                        "read",
-                        "I2C1_globals",
-                        ("sr1_read",),
-                    )
-                }
-            )
+        i2c = specs.MEMORY_REGIONS["I2C1"]
+        main_address = i2c.start + i2c.I2C_SR1.OFFSET
+        isr_address = i2c.start + i2c.I2C_DR.OFFSET
+        report = SimpleNamespace(
+            initializer_accesses=[
+                Access("read", 0x1000, 4, "main", address=main_address)
+            ],
+            initializer_unresolved_calls=[],
+            isrs=[
+                SimpleNamespace(
+                    accesses=[
+                        Access(
+                            "read", 0x2000, 4, "I2C1_EV_IRQHandler", address=isr_address
+                        )
+                    ],
+                    unresolved_calls=[],
+                )
+            ],
         )
 
-        class CPU:
-            @staticmethod
-            def get_isr_shared_effects(project, current_specs):
-                del project, current_specs
-                return isr_effects
+        cpu = CortexM()
+        cpu.get_isr_memory_report = lambda _project, _specs: report
+        shared_regions, _ = cpu._get_shared_access_regions_and_unresolved(
+            project, specs
+        )
+        specs.get_access_effects = lambda *_args: self.fail(
+            "runtime membership must not recompute access effects"
+        )
 
-        handler = object.__new__(CortexM._InterruptHandler)
-        handler.cpu = CPU()
-        handler.specs = specs
-
+        state.inspect.mem_read_address = main_address
+        state.inspect.mem_read_length = 4
         self.assertTrue(
-            handler.in_globally_accessible_region(
-                state,
-                specs.MEMORY_REGIONS["I2C1"].start
-                + specs.MEMORY_REGIONS["I2C1"].I2C_SR1.OFFSET,
-                "read",
-                4,
-            )
+            cpu._inspect_access_in_regions(state, "read", shared_regions["read"])
         )
+
+        state.inspect.mem_read_address = specs.MEMORY_REGIONS["RAM"].start
         self.assertFalse(
-            handler.in_globally_accessible_region(
-                state,
-                specs.MEMORY_REGIONS["RAM"].start,
-                "read",
-                4,
+            cpu._inspect_access_in_regions(state, "read", shared_regions["read"])
+        )
+
+    def test_base_requires_cross_flow_write_for_shared_region(self):
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
+        specs = Specs(project)
+        address = specs.MEMORY_REGIONS["RAM"].start
+
+        def report(isr_operation):
+            return SimpleNamespace(
+                initializer_accesses=[
+                    Access("read", 0x1000, 4, "main", address=address)
+                ],
+                initializer_unresolved_calls=[],
+                isrs=[
+                    SimpleNamespace(
+                        accesses=[
+                            Access(
+                                isr_operation, 0x2000, 4, "IRQ_Handler", address=address
+                            )
+                        ],
+                        unresolved_calls=[],
+                    )
+                ],
             )
+
+        read_only_cpu = CortexM()
+        read_only_cpu.get_isr_memory_report = lambda _project, _specs: report("read")
+        read_only, _ = read_only_cpu._get_shared_access_regions_and_unresolved(
+            project, specs
+        )
+        self.assertFalse(read_only["read"].overlaps(address, 4))
+
+        write_cpu = CortexM()
+        write_cpu.get_isr_memory_report = lambda _project, _specs: report("write")
+        shared, _ = write_cpu._get_shared_access_regions_and_unresolved(project, specs)
+        self.assertTrue(shared["read"].overlaps(address, 4))
+        self.assertTrue(shared["write"].overlaps(address, 4))
+
+    def test_unresolved_access_becomes_instruction_checkpoint_without_effect(self):
+        report = SimpleNamespace(
+            initializer_accesses=[
+                Access(
+                    "read",
+                    0x1000,
+                    4,
+                    "main",
+                    unresolved="TOP address",
+                )
+            ],
+            initializer_unresolved_calls=[],
+            isrs=[],
+        )
+
+        class SpecsStub:
+            def get_access_effects(inner_self, *_args):
+                del inner_self
+                self.fail("unresolved accesses must not produce access effects")
+
+        specs = SpecsStub()
+        cpu = CortexM()
+        cpu.get_isr_memory_report = lambda _project, _specs: report
+
+        _, unresolved = cpu._get_shared_access_regions_and_unresolved(
+            object(), specs
+        )
+
+        self.assertEqual({0x1000}, unresolved)
+
+    def test_unresolved_access_without_instruction_fails_closed(self):
+        report = SimpleNamespace(
+            initializer_accesses=[
+                Access(
+                    "read",
+                    None,
+                    4,
+                    "main",
+                    unresolved="TOP address",
+                )
+            ],
+            initializer_unresolved_calls=[],
+            isrs=[],
+        )
+        cpu = CortexM()
+        cpu.get_isr_memory_report = lambda _project, _specs: report
+
+        with self.assertRaisesRegex(
+            ValueError, "analyzer did not report an instruction address"
+        ):
+            cpu._get_shared_access_regions_and_unresolved(
+                object(), object()
+            )
+
+    def test_base_adds_only_two_shared_effect_breakpoints(self):
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
+        specs = Specs(project)
+        cpu = CortexM()
+
+        checkpoints = cpu.get_static_interrupt_checkpoints(
+            project, project.analyses.CFGFast(normalize=True), specs
+        )
+        memory_checkpoints = {
+            (checkpoint.event_type, checkpoint.when)
+            for checkpoint in checkpoints
+            if checkpoint.event_type in {"mem_read", "mem_write"}
+        }
+
+        self.assertEqual(
+            {("mem_read", angr.BP_BEFORE), ("mem_write", angr.BP_BEFORE)},
+            memory_checkpoints,
         )
 
 
 class I2CModelTest(unittest.TestCase):
     def test_post_write_reapplies_rc_w0_mask_before_side_effects(self):
-        project = angr.Project(
-            str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH
-        )
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         state = project.factory.blank_state()
         specs = Specs(project)
         i2c = specs.MEMORY_REGIONS["I2C1"]
         state.register_plugin("I2C1_globals", Globals())
 
-        for offset in (
-            I2C.I2C_CR1.OFFSET,
-            I2C.I2C_SR1.OFFSET,
-            I2C.I2C_SR2.OFFSET,
-        ):
+        for offset in (I2C.I2C_CR1.OFFSET, I2C.I2C_SR1.OFFSET, I2C.I2C_SR2.OFFSET):
             state.memory.store(
                 i2c.start + offset,
                 claripy.BVV(0, state.arch.bits),
@@ -258,8 +290,7 @@ class I2CModelTest(unittest.TestCase):
         sr1_addr = i2c.start + I2C.I2C_SR1.OFFSET
         old_sr1 = claripy.BVV(1 << I2C.I2C_SR1.AF.bit, state.arch.bits)
         raw_clear_af = claripy.BVV(
-            (~(1 << I2C.I2C_SR1.AF.bit)) & 0xFFFFFFFF,
-            state.arch.bits,
+            (~(1 << I2C.I2C_SR1.AF.bit)) & 0xFFFFFFFF, state.arch.bits
         )
         state.memory.store(
             sr1_addr,
@@ -289,28 +320,14 @@ class I2CModelTest(unittest.TestCase):
         i2c.post_write(state)
 
         stored_sr1 = state.memory.load(
-            sr1_addr,
-            state.arch.bytes,
-            endness=state.arch.memory_endness,
-            inspect=False,
+            sr1_addr, state.arch.bytes, endness=state.arch.memory_endness, inspect=False
         )
-        self.assertEqual(
-            0,
-            state.solver.eval(stored_sr1[I2C.I2C_SR1.ARLO.bit]),
-        )
-        self.assertEqual(
-            0,
-            state.solver.eval(stored_sr1[I2C.I2C_SR1.AF.bit]),
-        )
-        self.assertEqual(
-            state.solver.eval(masked_value),
-            state.solver.eval(stored_sr1),
-        )
+        self.assertEqual(0, state.solver.eval(stored_sr1[I2C.I2C_SR1.ARLO.bit]))
+        self.assertEqual(0, state.solver.eval(stored_sr1[I2C.I2C_SR1.AF.bit]))
+        self.assertEqual(state.solver.eval(masked_value), state.solver.eval(stored_sr1))
 
     def test_arbitration_loss_dominates_start_when_updating_master_mode(self):
-        project = angr.Project(
-            str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH
-        )
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         state = project.factory.blank_state()
         specs = Specs(project)
         i2c = specs.MEMORY_REGIONS["I2C1"]
@@ -329,21 +346,16 @@ class I2CModelTest(unittest.TestCase):
         )
 
         invalid_master_after_arlo = claripy.And(
-            sr1[I2C.I2C_SR1.ARLO.bit] == 1,
-            sr2[I2C.I2C_SR2.MSL.bit] == 1,
+            sr1[I2C.I2C_SR1.ARLO.bit] == 1, sr2[I2C.I2C_SR2.MSL.bit] == 1
         )
         self.assertFalse(
-            state.solver.satisfiable(
-                extra_constraints=[invalid_master_after_arlo]
-            )
+            state.solver.satisfiable(extra_constraints=[invalid_master_after_arlo])
         )
 
 
 class InterruptSchedulingTest(unittest.TestCase):
     def test_equal_conditions_from_one_handler_remain_alternative_events(self):
-        project = angr.Project(
-            str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH
-        )
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         state = project.factory.blank_state()
         manager = BaseCPU.ForkEventManager(cpu=None, end_addrs=())
         handler = EventForkHandler()
@@ -359,19 +371,14 @@ class InterruptSchedulingTest(unittest.TestCase):
         self.assertEqual(2, len(groups))
 
     def test_only_first_equal_priority_irq_is_taken(self):
-        project = angr.Project(
-            str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH
-        )
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         state = project.factory.blank_state(addr=0x08000000)
         manager = BaseCPU.ForkEventManager(cpu=None, end_addrs=())
 
         class Handler(EventForkHandler):
             def get_eligible_events(self, current_state):
                 del current_state
-                return [
-                    (claripy.true(), {"irq": 31}),
-                    (claripy.true(), {"irq": 32}),
-                ]
+                return [(claripy.true(), {"irq": 31}), (claripy.true(), {"irq": 32})]
 
             def trigger_event(self, current_state, irq):
                 current_state.regs.pc = 0x08000612 if irq == 31 else 0x08000624
@@ -382,17 +389,14 @@ class InterruptSchedulingTest(unittest.TestCase):
         self.assertEqual(0x08000612, output[0].addr)
 
     def test_merge_key_separates_interrupt_contexts(self):
-        project = angr.Project(
-            str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH
-        )
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         thread_state = project.factory.blank_state(addr=0x08000000)
         handler_state = thread_state.copy()
         handler_state.globals["current_priority"] = 0
         handler_state.globals["priority_stack"] = [256]
 
         self.assertNotEqual(
-            state_merge_key(thread_state),
-            state_merge_key(handler_state),
+            state_merge_key(thread_state), state_merge_key(handler_state)
         )
 
 

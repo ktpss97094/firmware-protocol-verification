@@ -1,14 +1,15 @@
 import logging
 from abc import ABC, abstractmethod
+from bisect import bisect_right
 from collections import defaultdict
-from functools import cache
+from functools import cache, partial
 
 import angr
 import claripy
 import pyvex
 
-from project.analyses.isr_memory import ISRMemoryRegions, analyze_isr_memory
-from project.types import BPConfig, MMIOMemoryRegion
+from project.analyses.isr_memory import analyze_isr_memory
+from project.types import AccessEffects, BPConfig, MMIOMemoryRegion
 
 logging.getLogger("angr.analyses.variable_recovery.engine_vex.SimEngineVRVEX").setLevel(
     logging.CRITICAL
@@ -18,29 +19,173 @@ logging.getLogger(
     "angr.analyses.propagator.engine_vex.SimEnginePropagatorVEX"
 ).setLevel(logging.CRITICAL)
 
+logger = logging.getLogger(__name__)
+
+
+class _MemoryAccessRegions:
+    def __init__(self, regions):
+        merged = []
+        for start, size in sorted(regions):
+            end = start + max(1, size)
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+
+        self._starts = tuple(start for start, _ in merged)
+        self._ends = tuple(end for _, end in merged)
+
+    def overlaps(self, start, size):
+        end = start + max(1, size)
+        index = bisect_right(self._starts, start) - 1
+        if index >= 0 and self._ends[index] > start:
+            return True
+
+        next_index = index + 1
+        return next_index < len(self._starts) and self._starts[next_index] < end
+
 
 class BaseCPU(ABC):
     @abstractmethod
     def normalize_address(self, addr):
         return addr
 
+    @staticmethod
+    def _add_unresolved_instruction(unresolved_inst_addrs, instruction, description):
+        if instruction is None:
+            raise ValueError(
+                f"Cannot create a checkpoint for {description}: "
+                "the analyzer did not report an instruction address"
+            )
+        unresolved_inst_addrs.add(instruction)
+
     @cache
     def get_isr_memory_report(self, proj, specs, svd_path=None):
-        return analyze_isr_memory(proj.filename, specs, svd_path=svd_path)
+        report = analyze_isr_memory(proj.filename, specs, svd_path=svd_path)
+        for access in report.initializer_accesses:
+            if access.unresolved is None:
+                continue
+            logger.warning(
+                "Adding conservative checkpoint for unresolved main memory access | "
+                "function: %s | instruction: %#x | operation: %s | reason: %s",
+                access.function,
+                access.instruction or 0,
+                access.operation,
+                access.unresolved,
+            )
+        for function, callsite in report.initializer_unresolved_calls:
+            logger.warning(
+                "Adding conservative checkpoint for unresolved main call | function: %s | callsite: %#x",
+                function,
+                callsite,
+            )
+        for isr in report.isrs:
+            for access in isr.unresolved_accesses:
+                logger.warning(
+                    "Adding conservative checkpoint for unresolved ISR memory access | ISR: %s | "
+                    "function: %s | instruction: %#x | operation: %s | reason: %s",
+                    isr.isr,
+                    access.function,
+                    access.instruction or 0,
+                    access.operation,
+                    access.unresolved,
+                )
+            for function, callsite in isr.unresolved_calls:
+                logger.warning(
+                    "Adding conservative checkpoint for unresolved ISR call | ISR: %s | "
+                    "function: %s | callsite: %#x",
+                    isr.isr,
+                    function,
+                    callsite,
+                )
+        return report
 
     @cache
-    def get_isr_shared_regions(self, proj, specs, svd_path=None) -> ISRMemoryRegions:
-        return ISRMemoryRegions.from_report(
-            self.get_isr_memory_report(proj, specs, svd_path)
-        )
+    def _get_shared_access_regions_and_unresolved(self, proj, specs):
+        report = self.get_isr_memory_report(proj, specs)
+        flow_accesses = [
+            report.initializer_accesses,
+            *(isr.accesses for isr in report.isrs),
+        ]
 
-    @cache
-    def get_isr_shared_effects(self, proj, specs, svd_path=None):
-        return self.get_isr_memory_report(proj, specs, svd_path).effects
+        unresolved_inst_addrs = set()
+        for function, callsite in report.initializer_unresolved_calls:
+            self._add_unresolved_instruction(
+                unresolved_inst_addrs, callsite, f"unresolved call in {function}"
+            )
+        for isr in report.isrs:
+            for function, callsite in isr.unresolved_calls:
+                self._add_unresolved_instruction(
+                    unresolved_inst_addrs, callsite, f"unresolved call in {function}"
+                )
+
+        flow_entries = []
+        flow_effects = []
+        for accesses in flow_accesses:
+            entries = []
+            effects = AccessEffects()
+            for access in accesses:
+                if access.address is None or access.unresolved is not None:
+                    self._add_unresolved_instruction(
+                        unresolved_inst_addrs,
+                        access.instruction,
+                        f"unresolved {access.operation} in {access.function}",
+                    )
+                    continue
+                access_effects = specs.get_access_effects(
+                    access.operation, access.address, access.size
+                )
+                entries.append((access, access_effects))
+                effects = effects.union(access_effects)
+            flow_entries.append(entries)
+            flow_effects.append(effects)
+
+        shared = {"read": [], "write": []}
+        for flow_index, entries in enumerate(flow_entries):
+            other_effects = AccessEffects()
+            for other_index, effects in enumerate(flow_effects):
+                if other_index != flow_index:
+                    other_effects = other_effects.union(effects)
+
+            for access, effects in entries:
+                if effects.conflicts_with(other_effects):
+                    shared[access.operation].append((access.address, access.size))
+
+        return {
+            operation: _MemoryAccessRegions(regions)
+            for operation, regions in shared.items()
+        }, unresolved_inst_addrs
 
     @cache
     def get_static_interrupt_checkpoints(self, proj, cfg, specs):
-        ckpts = set()
+        # 1. shared variables (regions) R/W 之前
+        shared_regions, unresolved_inst_addrs = (
+            self._get_shared_access_regions_and_unresolved(proj, specs)
+        )
+        ckpts = {
+            BPConfig(
+                "mem_read",
+                when=angr.BP_BEFORE,
+                condition=partial(
+                    self._inspect_access_in_regions,
+                    operation="read",
+                    regions=shared_regions["read"],
+                ),
+            ),
+            BPConfig(
+                "mem_write",
+                when=angr.BP_BEFORE,
+                condition=partial(
+                    self._inspect_access_in_regions,
+                    operation="write",
+                    regions=shared_regions["write"],
+                ),
+            ),
+        }
+        for inst_addr in unresolved_inst_addrs:
+            ckpts.add(
+                BPConfig("instruction", when=angr.BP_BEFORE, instruction=inst_addr)
+            )
 
         for node in cfg.graph.nodes():
             if node.block is None:
@@ -85,6 +230,31 @@ class BaseCPU(ABC):
         ckpts.update(self.get_end_addrs_ckpts(specs.END_ADDRS))
 
         return ckpts
+
+    @staticmethod
+    def _concrete_inspect_value(state, value):
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        if not state.solver.unique(value):
+            return None
+        return state.solver.eval(value)
+
+    def _inspect_access_in_regions(self, state, operation, regions):
+        if operation == "read":
+            address = state.inspect.mem_read_address
+            size = state.inspect.mem_read_length
+        else:
+            address = state.inspect.mem_write_address
+            size = state.inspect.mem_write_length
+
+        address = self._concrete_inspect_value(state, address)
+        size = self._concrete_inspect_value(state, size)
+        if address is None or size is None:
+            return False
+
+        return regions.overlaps(address, size)
 
     @abstractmethod
     def _compute_dma_synchronize_instruction_checkpoints(self):
