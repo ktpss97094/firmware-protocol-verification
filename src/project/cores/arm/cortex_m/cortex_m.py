@@ -30,15 +30,9 @@ class CortexM(ARM):
         # 要在所有的 hook 都完成後才執行
         cfg = state.project.analyses.CFGFast(normalize=True, cross_references=True)
 
-        self.initial_sp = self._compute_initial_sp(state)
-        self.stack_size = self._compute_stack_size(state)
-
         specs.set_handlers(cpu=self, state=state, cfg=cfg, specs=specs)
         self.set_handlers(state=state, cfg=cfg, specs=specs)
-        self.fork_event_manager = CortexM.ForkEventManager(
-            cpu=self, end_addrs=specs.END_ADDRS
-        )
-        simgr.use_technique(self.fork_event_manager)
+        simgr.use_technique(self.ForkEventManager(cpu=self, end_addrs=specs.END_ADDRS))
 
         return cfg
 

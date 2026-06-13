@@ -226,9 +226,7 @@ class AutomaticMerge(ExplorationTechnique):
                 group_member_ids.update(id(state) for state in group)
                 simgr.stashes[temp_stash] = list(group)
                 simgr.merge(
-                    stash=temp_stash,
-                    merge_key=lambda _state: None,
-                    prune=False,
+                    stash=temp_stash, merge_key=lambda _state: None, prune=False
                 )
                 replacements[id(group[0])] = list(simgr.stashes[temp_stash])
         finally:
@@ -258,20 +256,14 @@ class AutomaticMerge(ExplorationTechnique):
         for state in states:
             keyed_states[merge_key(state)].append(state)
 
-        candidate_groups = [
-            group for group in keyed_states.values() if len(group) > 1
-        ]
+        candidate_groups = [group for group in keyed_states.values() if len(group) > 1]
         potential_reduction = sum(len(group) - 1 for group in candidate_groups)
         if potential_reduction == 0:
             return simgr
 
         reduction_ratio = potential_reduction / state_count
-        substantial_reduction = (
-            reduction_ratio >= self.substantial_reduction_ratio
-        )
-        interval_elapsed = (
-            self.step_count - self.last_merge_step >= self.merge_interval
-        )
+        substantial_reduction = reduction_ratio >= self.substantial_reduction_ratio
+        interval_elapsed = self.step_count - self.last_merge_step >= self.merge_interval
         under_hard_pressure = state_count >= self.hard_limit
 
         if not substantial_reduction and not interval_elapsed:
@@ -287,8 +279,7 @@ class AutomaticMerge(ExplorationTechnique):
         self.states_merged += merged_count
         if merged_count:
             l.info(
-                "AutomaticMerge reduced %s from %d to %d states "
-                "(%d candidate groups)",
+                "AutomaticMerge reduced %s from %d to %d states (%d candidate groups)",
                 stash,
                 state_count,
                 len(simgr.stashes[stash]),
@@ -347,58 +338,41 @@ class PluginEffect:
 class AccessEffects:
     memory: frozenset[MemoryEffect] = frozenset()
     plugins: frozenset[PluginEffect] = frozenset()
-    unknown: bool = False
 
     @classmethod
     def memory_access(cls, operation, start, size):
         return cls(
             memory=frozenset(
-                {
-                    MemoryEffect(
-                        operation=operation,
-                        start=start,
-                        size=max(1, size),
-                    )
-                }
+                {MemoryEffect(operation=operation, start=start, size=max(1, size))}
             )
         )
 
     def union(self, *others):
         memory = set(self.memory)
         plugins = set(self.plugins)
-        unknown = self.unknown
         for other in others:
             memory.update(other.memory)
             plugins.update(other.plugins)
-            unknown |= other.unknown
-        return AccessEffects(frozenset(memory), frozenset(plugins), unknown)
+        return AccessEffects(frozenset(memory), frozenset(plugins))
 
     def conflicts_with(self, other):
-        if self.unknown or other.unknown:
-            return True
-
         for left in self.memory:
             for right in other.memory:
-                if (
-                    "write" in (left.operation, right.operation)
-                    and left.overlaps(right)
+                if "write" in (left.operation, right.operation) and left.overlaps(
+                    right
                 ):
                     return True
 
         for left in self.plugins:
             for right in other.plugins:
-                if (
-                    "write" in (left.operation, right.operation)
-                    and left.overlaps(right)
+                if "write" in (left.operation, right.operation) and left.overlaps(
+                    right
                 ):
                     return True
 
         return False
 
     def writes_resources_used_by(self, other):
-        if self.unknown or other.unknown:
-            return True
-
         for left in self.memory:
             if left.operation != "write":
                 continue
@@ -858,8 +832,17 @@ class VerificationManager:
             except Exception as e:
                 print(f"Analyze {func.__name__} failed: {e}")
 
+        cls._is_analyzed = True
+
+    @classmethod
+    def should_check(cls, violation_name):
+        return violation_name not in cls.triggered_violations
+
     @classmethod
     def violation(cls, state, violation_name):
+        if not cls.should_check(violation_name):
+            return False
+
         if not cls._is_analyzed:
             cls.analyze_all_violations()
 
@@ -876,3 +859,5 @@ class VerificationManager:
 
         if len(cls.triggered_violations) == len(cls.all_violations):
             raise ExploreTermination("All violations triggered. Stopping analysis.")
+
+        return True

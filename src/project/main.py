@@ -223,7 +223,7 @@ def main(
     search: str = "dfs",
     renode: bool = False,
     debug: Annotated[bool, typer.Option(hidden=True)] = False,
-    automatic_merge: bool = True,
+    automatic_merge: bool = False,
 ):
     Specs = load_specs_class(spec)
 
