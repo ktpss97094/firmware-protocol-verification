@@ -18,7 +18,6 @@ import project.utils as utils
 from project import config
 from project.types import (
     AutomaticMerge,
-    BaseCustomGlobals,
     BaseSpecs,
     CustomEngine,
     CustomLoopSeer,
@@ -401,8 +400,6 @@ def main(
 
     specs.init_inspect(state)
     specs.init_input(state)
-    if not hasattr(state, "custom_globals"):
-        BaseCustomGlobals.register_default("custom_globals")
 
     # 關閉 renode
     if renode:

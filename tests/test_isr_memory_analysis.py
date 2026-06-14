@@ -199,13 +199,7 @@ class AccessEffectsTest(unittest.TestCase):
     def test_unresolved_access_becomes_instruction_checkpoint_without_effect(self):
         report = SimpleNamespace(
             initializer_accesses=[
-                Access(
-                    "read",
-                    0x1000,
-                    4,
-                    "main",
-                    unresolved="TOP address",
-                )
+                Access("read", 0x1000, 4, "main", unresolved="TOP address")
             ],
             initializer_unresolved_calls=[],
             isrs=[],
@@ -220,22 +214,14 @@ class AccessEffectsTest(unittest.TestCase):
         cpu = CortexM()
         cpu.get_isr_memory_report = lambda _project, _specs: report
 
-        _, unresolved = cpu._get_shared_access_regions_and_unresolved(
-            object(), specs
-        )
+        _, unresolved = cpu._get_shared_access_regions_and_unresolved(object(), specs)
 
         self.assertEqual({0x1000}, unresolved)
 
     def test_unresolved_access_without_instruction_fails_closed(self):
         report = SimpleNamespace(
             initializer_accesses=[
-                Access(
-                    "read",
-                    None,
-                    4,
-                    "main",
-                    unresolved="TOP address",
-                )
+                Access("read", None, 4, "main", unresolved="TOP address")
             ],
             initializer_unresolved_calls=[],
             isrs=[],
@@ -246,9 +232,7 @@ class AccessEffectsTest(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, "analyzer did not report an instruction address"
         ):
-            cpu._get_shared_access_regions_and_unresolved(
-                object(), object()
-            )
+            cpu._get_shared_access_regions_and_unresolved(object(), object())
 
     def test_base_adds_only_two_shared_effect_breakpoints(self):
         project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
@@ -357,7 +341,7 @@ class InterruptSchedulingTest(unittest.TestCase):
     def test_equal_conditions_from_one_handler_remain_alternative_events(self):
         project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         state = project.factory.blank_state()
-        manager = BaseCPU.ForkEventManager(cpu=None, end_addrs=())
+        manager = BaseCPU.AsynchronousEventManager(cpu=None, end_addrs=())
         handler = EventForkHandler()
 
         groups = manager._merge(
@@ -373,7 +357,7 @@ class InterruptSchedulingTest(unittest.TestCase):
     def test_only_first_equal_priority_irq_is_taken(self):
         project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         state = project.factory.blank_state(addr=0x08000000)
-        manager = BaseCPU.ForkEventManager(cpu=None, end_addrs=())
+        manager = BaseCPU.AsynchronousEventManager(cpu=None, end_addrs=())
 
         class Handler(EventForkHandler):
             def get_eligible_events(self, current_state):

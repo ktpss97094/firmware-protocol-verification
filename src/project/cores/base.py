@@ -7,6 +7,8 @@ from functools import cache, partial
 import angr
 import claripy
 import pyvex
+from angr.errors import SimMergeError
+from angr.state_plugins.plugin import SimStatePlugin
 
 from project.analyses.isr_memory import analyze_isr_memory
 from project.types import AccessEffects, BPConfig, MMIOMemoryRegion
@@ -43,6 +45,50 @@ class _MemoryAccessRegions:
 
         next_index = index + 1
         return next_index < len(self._starts) and self._starts[next_index] < end
+
+
+class AsynchronousEventGlobals(SimStatePlugin):
+    def __init__(
+        self,
+        before_check_handlers=None,
+        after_check_handlers=None,
+        prev_after_check_handlers=None,
+    ):
+        super().__init__()
+
+        self.before_check_handlers = (
+            set() if before_check_handlers is None else before_check_handlers
+        )
+        self.after_check_handlers = (
+            set() if after_check_handlers is None else after_check_handlers
+        )
+        self.prev_after_check_handlers = (
+            set() if prev_after_check_handlers is None else prev_after_check_handlers
+        )
+
+    def copy(self, memo):
+        o = super().copy(memo)
+
+        o.before_check_handlers = set()
+        o.after_check_handlers = set()
+        o.prev_after_check_handlers = set()
+
+        return o
+
+    def merge(self, others, merge_conditions, common_ancestor=None):
+        del common_ancestor
+
+        if any(
+            self.before_check_handlers != other.before_check_handlers
+            or self.after_check_handlers != other.after_check_handlers
+            or self.prev_after_check_handlers != other.prev_after_check_handlers
+            for other in others
+        ):
+            raise SimMergeError(
+                "Cannot merge Asynchronous Event globals (before_check_handlers or after_check_handlers or prev_after_check_handlers)"
+            )
+
+        return False
 
 
 class BaseCPU(ABC):
@@ -285,11 +331,13 @@ class BaseCPU(ABC):
                 curr_inst += 1
         return curr_inst - 1 if curr_inst > 0 else 0
 
-    class ForkEventManager(angr.ExplorationTechnique):
+    class AsynchronousEventManager(angr.ExplorationTechnique):
         def __init__(self, cpu, end_addrs):
             super().__init__()
             self.cpu = cpu
             self.end_addrs = end_addrs
+
+            AsynchronousEventGlobals.register_default("asynevt_globals")
 
         def _merge(self, state, trig_list):
             """
@@ -355,8 +403,8 @@ class BaseCPU(ABC):
 
                     if new_state.addr == check_state.addr:
                         # FIXME: 不確定如果執行 event 中間又有 checkpoint，有沒有必要檢查。目前是全部先忽略
-                        new_state.custom_globals.before_check_handlers = set()
-                        new_state.custom_globals.after_check_handlers = set()
+                        new_state.asynevt_globals.before_check_handlers = set()
+                        new_state.asynevt_globals.after_check_handlers = set()
                         check_items.append((new_state, handlers))
                     else:
                         output.append(new_state)
@@ -390,7 +438,7 @@ class BaseCPU(ABC):
                         state,
                         set().union(
                             *(
-                                succ_active_state.custom_globals.before_check_handlers
+                                succ_active_state.asynevt_globals.before_check_handlers
                                 for succ_active_state in succ_stashes.get(None, [])
                             )
                         ),
@@ -417,11 +465,11 @@ class BaseCPU(ABC):
                 after_check_items.append(
                     (
                         succ_active_state,
-                        succ_active_state.custom_globals.after_check_handlers,
+                        succ_active_state.asynevt_globals.after_check_handlers,
                     )
                 )
-                succ_active_state.custom_globals.prev_after_check_handlers = (
-                    succ_active_state.custom_globals.after_check_handlers
+                succ_active_state.asynevt_globals.prev_after_check_handlers = (
+                    succ_active_state.asynevt_globals.after_check_handlers
                 )
             merged_results[None].extend(self._process_event(after_check_items))
 

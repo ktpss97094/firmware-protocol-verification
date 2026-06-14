@@ -32,7 +32,9 @@ class CortexM(ARM):
 
         specs.set_handlers(cpu=self, state=state, cfg=cfg, specs=specs)
         self.set_handlers(state=state, cfg=cfg, specs=specs)
-        simgr.use_technique(self.ForkEventManager(cpu=self, end_addrs=specs.END_ADDRS))
+        simgr.use_technique(
+            self.AsynchronousEventManager(cpu=self, end_addrs=specs.END_ADDRS)
+        )
 
         return cfg
 
