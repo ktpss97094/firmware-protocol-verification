@@ -2,10 +2,13 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+LOG_DIR = PROJECT_ROOT / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
 """
 avatar2
 """
-AVATAR_LOG_PATH = "/tmp/avatar"
+AVATAR_LOG_PATH = str(LOG_DIR / "avatar")
 
 """
 Renode
@@ -29,11 +32,26 @@ LOGGING_CONFIG = {
             "class": "logging.StreamHandler",
             "formatter": "standard",
             "level": "INFO",
-        }
+        },
+        "file": {
+            "class": "logging.FileHandler",
+            "filename": str(LOG_DIR / "project.log"),
+            "formatter": "standard",
+            "level": "DEBUG",
+            "encoding": "utf-8",
+        },
     },
     "loggers": {
-        "": {"handlers": ["console"], "level": "WARNING"},
-        __package__: {"handlers": ["console"], "level": "INFO", "propagate": False},
-        "__main__": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        "": {"handlers": ["console", "file"], "level": "WARNING"},
+        __package__: {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "__main__": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
     },
 }
