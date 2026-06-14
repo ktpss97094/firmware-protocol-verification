@@ -106,8 +106,8 @@ class BaseCPU(ABC):
         unresolved_inst_addrs.add(instruction)
 
     @cache
-    def get_isr_memory_report(self, proj, specs, svd_path=None):
-        report = analyze_isr_memory(proj.filename, specs, svd_path=svd_path)
+    def get_isr_memory_report(self, proj, specs):
+        report = analyze_isr_memory(proj.filename, specs)
         for access in report.initializer_accesses:
             if access.unresolved is None:
                 continue

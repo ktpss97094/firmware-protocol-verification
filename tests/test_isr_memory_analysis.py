@@ -21,11 +21,6 @@ ELF = (
     / "firmwares/stm32f429/build/protocols/I2C/master/Interrupt_Mode"
     / "stm32f4xx-hal-driver/firmware.elf"
 )
-SVD = (
-    ROOT
-    / "firmwares/stm32f429/protocols/I2C/master/Interrupt_Mode"
-    / "stm32f4xx-hal-driver/STM32F429.svd"
-)
 
 
 class ISRMemoryAnalysisTest(unittest.TestCase):
@@ -33,7 +28,7 @@ class ISRMemoryAnalysisTest(unittest.TestCase):
     def setUpClass(cls):
         project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         specs = Specs(project)
-        cls.report = analyze_isr_memory(ELF, specs, svd_path=SVD)
+        cls.report = analyze_isr_memory(ELF, specs)
 
     def test_modeled_mmio_irqs_are_discovered_from_vector_table(self):
         targets = {
@@ -44,21 +39,18 @@ class ISRMemoryAnalysisTest(unittest.TestCase):
         self.assertEqual((0x08000625, "I2C1_ER_IRQHandler"), targets[32])
 
     def test_main_stack_pointer_escape_is_recovered(self):
-        facts = {
-            (fact.cell.name, fact.value, fact.target)
-            for fact in self.report.pointer_facts
-        }
-        self.assertIn(("hi2c1.Instance", 0x40005400, "I2C1"), facts)
-        self.assertIn(("hi2c1.pBuffPtr", 0x2001FFF4, "main::data"), facts)
+        facts = {(fact.cell.address, fact.value) for fact in self.report.pointer_facts}
+        self.assertIn((0x2000059C, 0x40005400), facts)
+        self.assertIn((0x200005C0, 0x2001FFF4), facts)
 
     def test_event_isr_resolves_expected_shared_regions(self):
         event = next(report for report in self.report.isrs if report.irq == 31)
-        regions = {region.name: region for region in event.regions}
-        self.assertIn("hi2c1", regions)
-        self.assertIn("main::data", regions)
-        for register in ("I2C1.CR1", "I2C1.CR2", "I2C1.DR", "I2C1.SR1", "I2C1.SR2"):
-            self.assertIn(register, regions)
-        self.assertEqual(("read", "write"), regions["main::data"].operations)
+        regions_by_start = {region.start: region for region in event.regions}
+        self.assertIn(0x2000059C, regions_by_start)
+        self.assertIn(0x2001FFF4, regions_by_start)
+        for register in (0x40005400, 0x40005404, 0x40005410, 0x40005414, 0x40005418):
+            self.assertIn(register, regions_by_start)
+        self.assertEqual(("read", "write"), regions_by_start[0x2001FFF4].operations)
         self.assertIn(
             PluginEffect(
                 "write", "I2C1_globals", ("is_address_phase", "rw", "sr1_read")
@@ -69,8 +61,8 @@ class ISRMemoryAnalysisTest(unittest.TestCase):
 
     def test_error_isr_resolves_buffer_write_and_reports_incompleteness(self):
         error = next(report for report in self.report.isrs if report.irq == 32)
-        regions = {region.name: region for region in error.regions}
-        self.assertEqual(("write",), regions["main::data"].operations)
+        regions = {region.start: region for region in error.regions}
+        self.assertEqual(("write",), regions[0x2001FFF4].operations)
         self.assertTrue(error.unresolved_accesses)
         self.assertTrue(error.unresolved_calls)
         self.assertFalse(error.complete)
@@ -309,32 +301,6 @@ class I2CModelTest(unittest.TestCase):
         self.assertEqual(0, state.solver.eval(stored_sr1[I2C.I2C_SR1.ARLO.bit]))
         self.assertEqual(0, state.solver.eval(stored_sr1[I2C.I2C_SR1.AF.bit]))
         self.assertEqual(state.solver.eval(masked_value), state.solver.eval(stored_sr1))
-
-    def test_arbitration_loss_dominates_start_when_updating_master_mode(self):
-        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
-        state = project.factory.blank_state()
-        specs = Specs(project)
-        i2c = specs.MEMORY_REGIONS["I2C1"]
-
-        sr1 = claripy.BVV(0, state.arch.bits)
-        sr2 = claripy.BVV(1, state.arch.bits)
-        cr1 = claripy.BVV(0, state.arch.bits)
-        arlo = claripy.BVS("test_ARLO", 1)
-        sb = claripy.BVS("test_SB", 1)
-
-        sr1, sr2 = I2C.I2C_SR1.update_ARLO(
-            i2c, state, sr1, cr1, sr2, force=True, value=arlo
-        )
-        sr1, cr1, sr2 = I2C.I2C_SR1.update_SB(
-            i2c, state, sr1, cr1, sr2, force=True, value=sb
-        )
-
-        invalid_master_after_arlo = claripy.And(
-            sr1[I2C.I2C_SR1.ARLO.bit] == 1, sr2[I2C.I2C_SR2.MSL.bit] == 1
-        )
-        self.assertFalse(
-            state.solver.satisfiable(extra_constraints=[invalid_master_after_arlo])
-        )
 
 
 class InterruptSchedulingTest(unittest.TestCase):

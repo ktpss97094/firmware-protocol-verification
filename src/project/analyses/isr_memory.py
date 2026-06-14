@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import logging
-import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
 
@@ -13,10 +12,8 @@ from angr.analyses.reaching_definitions.engine_vex import SimEngineRDVEX
 from angr.analyses.reaching_definitions.function_handler import FunctionHandler
 from angr.analyses.reaching_definitions.rd_initializer import RDAStateInitializer
 from angr.storage.memory_mixins.paged_memory.pages.multi_values import MultiValues
-from elftools.dwarf.dwarf_expr import DWARFExprParser
-from elftools.elf.elffile import ELFFile
 
-from project.types import AccessEffects
+from project.types import AccessEffects, MMIOMemoryRegion
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +24,6 @@ class MemoryObject:
     start: int
     size: int
     kind: str
-    frame_offset: int | None = None
 
     @property
     def end(self) -> int:
@@ -140,224 +136,30 @@ class _ISRTarget:
     function: object
 
 
-class _DwarfIndex:
-    def __init__(self, elf_path: Path, stack_base: int | None):
-        self.objects: list[MemoryObject] = []
-        self.stack_objects: list[MemoryObject] = []
-        self.pointer_cells: dict[int, PointerCell] = {}
-        self._load(elf_path, stack_base)
-
-    @staticmethod
-    def _name(die) -> str | None:
-        attr = die.attributes.get("DW_AT_name")
-        return attr.value.decode(errors="replace") if attr is not None else None
-
-    @staticmethod
-    def _type_die(die):
-        if "DW_AT_type" not in die.attributes:
-            return None
-        return die.get_DIE_from_attribute("DW_AT_type")
-
-    def _unwrap_type(self, die):
-        seen = set()
-        while die is not None and die.offset not in seen:
-            seen.add(die.offset)
-            if die.tag not in {
-                "DW_TAG_const_type",
-                "DW_TAG_typedef",
-                "DW_TAG_volatile_type",
-                "DW_TAG_restrict_type",
-                "DW_TAG_atomic_type",
-            }:
-                return die
-            die = self._type_die(die)
-        return die
-
-    def _type_size(self, die) -> int | None:
-        die = self._unwrap_type(die)
-        if die is None:
-            return None
-        byte_size = die.attributes.get("DW_AT_byte_size")
-        if byte_size is not None:
-            return int(byte_size.value)
-        if die.tag == "DW_TAG_pointer_type":
-            return 4
-        if die.tag == "DW_TAG_array_type":
-            elem_size = self._type_size(self._type_die(die))
-            if elem_size is None:
-                return None
-            count = 1
-            for child in die.iter_children():
-                if child.tag != "DW_TAG_subrange_type":
-                    continue
-                if "DW_AT_count" in child.attributes:
-                    count *= int(child.attributes["DW_AT_count"].value)
-                elif "DW_AT_upper_bound" in child.attributes:
-                    count *= int(child.attributes["DW_AT_upper_bound"].value) + 1
-                else:
-                    return None
-            return elem_size * count
-        return None
-
-    def _pointer_members(
-        self, die, base_address: int, prefix: str
-    ) -> Iterable[PointerCell]:
-        die = self._unwrap_type(die)
-        if die is None:
-            return
-        if die.tag == "DW_TAG_pointer_type":
-            yield PointerCell(prefix, base_address)
-            return
-        if die.tag not in {"DW_TAG_structure_type", "DW_TAG_union_type"}:
-            return
-        for child in die.iter_children():
-            if child.tag != "DW_TAG_member":
+class _BinaryObjectIndex:
+    def __init__(self, project):
+        objects = {}
+        for symbol in project.loader.main_object.symbols:
+            if symbol.size <= 0 or symbol.type.name != "TYPE_OBJECT":
                 continue
-            location = child.attributes.get("DW_AT_data_member_location")
-            if location is None or not isinstance(location.value, int):
-                continue
-            member_name = self._name(child) or f"member_{location.value:x}"
-            member_type = self._type_die(child)
-            yield from self._pointer_members(
-                member_type,
-                base_address + int(location.value),
-                f"{prefix}.{member_name}",
+            key = (symbol.rebased_addr, symbol.size, symbol.name)
+            objects[key] = MemoryObject(
+                symbol.name, symbol.rebased_addr, symbol.size, "symbol"
             )
-
-    def _load(self, elf_path: Path, stack_base: int | None) -> None:
-        with elf_path.open("rb") as stream:
-            elf = ELFFile(stream)
-            if not elf.has_dwarf_info():
-                return
-            dwarf = elf.get_dwarf_info()
-            expr_parser = DWARFExprParser(dwarf.structs)
-
-            def visit(die, function_name: str | None = None) -> None:
-                if die.tag == "DW_TAG_subprogram":
-                    function_name = self._name(die)
-                if die.tag == "DW_TAG_variable":
-                    self._load_variable(die, function_name, stack_base, expr_parser)
-                for child in die.iter_children():
-                    visit(child, function_name)
-
-            for cu in dwarf.iter_CUs():
-                visit(cu.get_top_DIE())
-
-        self.objects.sort(key=lambda obj: (obj.start, -obj.size, obj.name))
-        self.stack_objects.sort(key=lambda obj: (obj.start, -obj.size, obj.name))
-
-    def _load_variable(
-        self,
-        die,
-        function_name: str | None,
-        stack_base: int | None,
-        expr_parser: DWARFExprParser,
-    ) -> None:
-        name = self._name(die)
-        location = die.attributes.get("DW_AT_location")
-        type_die = self._type_die(die)
-        size = self._type_size(type_die)
-        if name is None or location is None or size is None:
-            return
-        if not isinstance(location.value, list):
-            return
-        try:
-            ops = expr_parser.parse_expr(location.value)
-        except Exception:
-            return
-        if len(ops) != 1:
-            return
-
-        op = ops[0]
-        if op.op_name == "DW_OP_addr":
-            address = int(op.args[0])
-            self.objects.append(MemoryObject(name, address, size, "global"))
-            for cell in self._pointer_members(type_die, address, name):
-                self.pointer_cells[cell.address] = cell
-        elif (
-            op.op_name == "DW_OP_fbreg"
-            and function_name is not None
-            and stack_base is not None
-        ):
-            offset = int(op.args[0])
-            self.stack_objects.append(
-                MemoryObject(
-                    f"{function_name}::{name}",
-                    (stack_base + offset) & 0xFFFFFFFF,
-                    size,
-                    "escaped-stack",
-                    frame_offset=offset,
-                )
-            )
+        self.objects = sorted(
+            objects.values(), key=lambda obj: (obj.start, -obj.size, obj.name)
+        )
 
     def find_object(self, address: int) -> MemoryObject | None:
-        for obj in self.stack_objects:
-            if obj.start <= address < obj.end:
-                return obj
-        matches = [
-            obj for obj in self.objects if obj.start <= address < obj.end and obj.size
-        ]
+        matches = [obj for obj in self.objects if obj.start <= address < obj.end]
         return min(matches, key=lambda obj: obj.size) if matches else None
 
-    def target_name(self, address: int) -> str:
+    def name_for(self, address: int) -> str:
         obj = self.find_object(address)
-        return obj.name if obj is not None else f"{address:#x}"
-
-
-class _SVDIndex:
-    def __init__(self, svd_path: Path | None):
-        self.registers: dict[int, tuple[str, int]] = {}
-        self.peripherals: list[MemoryObject] = []
-        if svd_path is not None:
-            self._load(svd_path)
-
-    def _load(self, svd_path: Path) -> None:
-        root = ET.parse(svd_path).getroot()
-        for peripheral in root.findall("./peripherals/peripheral"):
-            name_node = peripheral.find("name")
-            base_node = peripheral.find("baseAddress")
-            if name_node is None or base_node is None:
-                continue
-            name = name_node.text or "peripheral"
-            base = int(base_node.text or "0", 0)
-            block = peripheral.find("addressBlock/size")
-            block_size = (
-                int(block.text, 0) if block is not None and block.text else 0x400
-            )
-            self.peripherals.append(MemoryObject(name, base, block_size, "mmio"))
-            for register in peripheral.findall("registers/register"):
-                reg_name = register.find("name")
-                reg_offset = register.find("addressOffset")
-                reg_size = register.find("size")
-                if reg_name is None or reg_offset is None:
-                    continue
-                address = base + int(reg_offset.text or "0", 0)
-                size_bits = (
-                    int(reg_size.text, 0)
-                    if reg_size is not None and reg_size.text
-                    else 32
-                )
-                self.registers[address] = (
-                    f"{name}.{reg_name.text or 'register'}",
-                    max(1, size_bits // 8),
-                )
-
-    def describe(self, address: int) -> MemoryObject | None:
-        if address in self.registers:
-            name, size = self.registers[address]
-            return MemoryObject(name, address, size, "mmio")
-        for peripheral in self.peripherals:
-            if peripheral.start <= address < peripheral.end:
-                return peripheral
-        if 0x40000000 <= address < 0x60000000 or 0xE0000000 <= address:
-            return MemoryObject(f"MMIO@{address:#x}", address, 4, "mmio")
-        return None
-
-    def pointer_target(self, address: int) -> MemoryObject | None:
-        for peripheral in self.peripherals:
-            if peripheral.start == address:
-                return peripheral
-        return self.describe(address)
+        if obj is None:
+            return f"memory@{address:#x}"
+        offset = address - obj.start
+        return obj.name if offset == 0 else f"{obj.name}+{offset:#x}"
 
 
 class _PreservingFunctionHandler(FunctionHandler):
@@ -509,14 +311,12 @@ class ISRMemoryAnalyzer:
         self,
         elf_path: str | Path,
         *,
-        svd_path: str | Path | None = None,
         initializer: str = "main",
         init_depth: int = 4,
         isr_depth: int = 8,
         max_iterations: int = 8,
     ):
         self.elf_path = Path(elf_path).resolve()
-        self.svd_path = Path(svd_path).resolve() if svd_path is not None else None
         self.initializer = initializer
         self.init_depth = init_depth
         self.isr_depth = isr_depth
@@ -542,8 +342,7 @@ class ISRMemoryAnalyzer:
         self.stack_base = (
             stack_symbol.rebased_addr if stack_symbol is not None else None
         )
-        self.dwarf = _DwarfIndex(self.elf_path, self.stack_base)
-        self.svd = _SVDIndex(self.svd_path)
+        self.binary_objects = _BinaryObjectIndex(self.project)
 
     def _function_by_name(self, name: str):
         function = self.cfg.kb.functions.function(name=name)
@@ -644,7 +443,7 @@ class ISRMemoryAnalyzer:
         return solutions[0] if len(solutions) == 1 else None
 
     def _collect_pointer_facts(
-        self,
+        self, specs
     ) -> tuple[dict[int, set[int]], list[PointerFact], list[_RawAccess]]:
         recorder = _Recorder()
         with _record_rda_memory(recorder):
@@ -663,9 +462,19 @@ class ISRMemoryAnalyzer:
         for store in recorder.stores:
             if store.size != self.project.arch.bytes:
                 continue
-            cell = self.dwarf.pointer_cells.get(store.address)
-            if cell is None:
+            # Without type metadata, every pointer-shaped word stored in writable
+            # memory is a possible persistent pointer cell. This may add facts,
+            # but does not discard a pointer solely because DWARF is unavailable.
+            section = self.project.loader.find_section_containing(store.address)
+            region = specs.get_memory_region(store.address)
+            if not (
+                (section is not None and section.is_writable)
+                or (region is not None and region.transfer)
+            ):
                 continue
+            cell = PointerCell(
+                self.binary_objects.name_for(store.address), store.address
+            )
             for value in store.values:
                 if not self._is_pointer_value(value):
                     continue
@@ -673,16 +482,12 @@ class ISRMemoryAnalyzer:
                 if concrete is None:
                     continue
                 values_by_cell[cell.address].add(concrete)
-                target = self.svd.pointer_target(concrete)
+                target = self._region_for(concrete, self.project.arch.bytes, specs)
                 facts.append(
                     PointerFact(
                         cell,
                         concrete,
-                        (
-                            target.name
-                            if target is not None
-                            else self.dwarf.target_name(concrete)
-                        ),
+                        target.name if target is not None else f"{concrete:#x}",
                         store.instruction,
                     )
                 )
@@ -724,19 +529,32 @@ class ISRMemoryAnalyzer:
                     unresolved.add((function.name, callsite))
         return sorted(unresolved, key=lambda item: (item[0], item[1]))
 
-    def _region_for(self, address: int) -> MemoryObject | None:
-        mmio = self.svd.describe(address)
-        if mmio is not None:
-            return mmio
-        obj = self.dwarf.find_object(address)
+    def _region_for(self, address: int, size: int, specs) -> MemoryObject | None:
+        obj = self.binary_objects.find_object(address)
         if obj is not None:
             return obj
-        section = self.project.loader.find_section_containing(address)
-        if section is not None and section.is_writable:
-            return MemoryObject(section.name, section.vaddr, section.memsize, "section")
+
         if address < 0x1000:
             return MemoryObject("NULL-derived", 0, 0x1000, "invalid")
-        return None
+
+        modeled = specs.get_memory_region(address)
+        if modeled is not None:
+            offset = address - modeled.start
+            name = modeled.name if offset == 0 else f"{modeled.name}+{offset:#x}"
+            kind = "mmio" if isinstance(modeled, MMIOMemoryRegion) else "memory"
+            return MemoryObject(name, address, max(1, size), kind)
+
+        section = self.project.loader.find_section_containing(address)
+        if section is not None and section.is_writable:
+            return MemoryObject(
+                f"{section.name}@{address:#x}",
+                address,
+                max(1, size),
+                "section",
+            )
+        return MemoryObject(
+            f"memory@{address:#x}", address, max(1, size), "unknown"
+        )
 
     def _build_accesses(
         self, raw_accesses: list[_RawAccess], *, resolve_stack: bool
@@ -795,7 +613,7 @@ class ISRMemoryAnalyzer:
                     access.operation, access.address, access.size
                 )
             )
-            region = self._region_for(access.address)
+            region = self._region_for(access.address, access.size, specs)
             if region is None:
                 continue
             key = (region.name, region.start, region.size, region.kind)
@@ -840,7 +658,7 @@ class ISRMemoryAnalyzer:
     def analyze(self, specs) -> AnalysisReport:
         targets = self._isr_targets(specs)
         facts_by_cell, pointer_facts, initializer_raw_accesses = (
-            self._collect_pointer_facts()
+            self._collect_pointer_facts(specs)
         )
         self._add_mmio_backers(facts_by_cell)
         initializer = _PointerInitializer(
@@ -885,9 +703,6 @@ def analyze_isr_memory(
     elf_path: str | Path,
     specs,
     *,
-    svd_path: str | Path | None = None,
     initializer: str = "main",
 ) -> AnalysisReport:
-    return ISRMemoryAnalyzer(
-        elf_path, svd_path=svd_path, initializer=initializer
-    ).analyze(specs)
+    return ISRMemoryAnalyzer(elf_path, initializer=initializer).analyze(specs)

@@ -1,9 +1,8 @@
+import shutil
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-
 LOG_DIR = PROJECT_ROOT / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 """
 avatar2
@@ -18,6 +17,10 @@ RENODE_GDB_PORT = 3333
 """
 Logging
 """
+if LOG_DIR.exists():
+    shutil.rmtree(LOG_DIR)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
 LOGGING_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
