@@ -379,7 +379,9 @@ class CFGJoinMerge(ExplorationTechnique):
     the existing SimulationManager hook chain, so event and loop techniques
     continue to observe all states. Singleton states are released after
     ``wait_steps`` so a join that only one feasible path reaches cannot retain
-    states indefinitely.
+    states indefinitely. When ``deferred_stash`` is configured for DFS,
+    singletons remain at the join while another deferred path may still reach
+    the same point.
     """
 
     def __init__(
@@ -387,6 +389,7 @@ class CFGJoinMerge(ExplorationTechnique):
         merge_points,
         merge_key: Callable[[SimState], Any] | None = None,
         wait_steps=16,
+        deferred_stash: str | None = None,
     ):
         super().__init__()
         if wait_steps < 1:
@@ -395,6 +398,7 @@ class CFGJoinMerge(ExplorationTechnique):
         self.merge_points = frozenset(merge_points)
         self.merge_key = merge_key
         self.wait_steps = wait_steps
+        self.deferred_stash = deferred_stash
         self.waiting_stash = "_cfg_join_waiting"
         self.step_count = 0
         self._waiting_since = {}
@@ -456,9 +460,16 @@ class CFGJoinMerge(ExplorationTechnique):
 
         expired = []
         retained = []
+        has_deferred_states = bool(
+            self.deferred_stash
+            and simgr.stashes.get(self.deferred_stash)
+        )
         for state in still_waiting:
             waiting_since = self._waiting_since[id(state)]
-            if self.step_count - waiting_since >= self.wait_steps:
+            if (
+                not has_deferred_states
+                and self.step_count - waiting_since >= self.wait_steps
+            ):
                 expired.append(state)
                 self._waiting_since.pop(id(state), None)
             else:
@@ -468,7 +479,7 @@ class CFGJoinMerge(ExplorationTechnique):
         self.states_released += len(expired)
         simgr.stashes[self.waiting_stash] = retained
 
-        if not simgr.stashes[stash] and retained:
+        if not simgr.stashes[stash] and retained and not has_deferred_states:
             simgr.stashes[stash].extend(retained)
             simgr.stashes[self.waiting_stash] = []
             for state in retained:

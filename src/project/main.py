@@ -192,14 +192,17 @@ def configure_search_techniques(
         simgr.use_technique(DFSPickFirstSuccessor())
         return
 
-    if search == "dfs":
-        simgr.use_technique(angr.exploration_techniques.DFS())
-        return
-
     if automatic_merge and merge_points:
         simgr.use_technique(
-            CFGJoinMerge(merge_points=merge_points, merge_key=state_merge_key)
+            CFGJoinMerge(
+                merge_points=merge_points,
+                merge_key=state_merge_key,
+                deferred_stash="deferred" if search == "dfs" else None,
+            )
         )
+
+    if search == "dfs":
+        simgr.use_technique(angr.exploration_techniques.DFS())
 
 
 def _format_active_pcs(states, limit=8):
@@ -494,7 +497,7 @@ def main(
     loop_finder = proj.analyses.LoopFinder(kb=cfg.kb, normalize=True)
 
     merge_points = set()
-    if search == "bfs" and automatic_merge and not debug:
+    if automatic_merge and not debug:
         merge_roots = {specs.BEGIN_ADDR}
         merge_roots.update(
             isr.address for isr in specs.CPU.get_isr_memory_report(proj, specs).isrs

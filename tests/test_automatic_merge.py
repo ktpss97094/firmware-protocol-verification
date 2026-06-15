@@ -84,7 +84,7 @@ class FakeTechniqueManager:
 
 
 class AutomaticMergeTest(unittest.TestCase):
-    def test_dfs_search_does_not_install_cfg_join_merge(self):
+    def test_dfs_search_installs_cfg_join_merge_before_dfs(self):
         simgr = FakeTechniqueManager()
 
         configure_search_techniques(
@@ -95,9 +95,24 @@ class AutomaticMergeTest(unittest.TestCase):
             merge_points={0x107},
         )
 
+        self.assertEqual(2, len(simgr.techniques))
+        self.assertIsInstance(simgr.techniques[0], CFGJoinMerge)
+        self.assertEqual("deferred", simgr.techniques[0].deferred_stash)
+        self.assertIsInstance(simgr.techniques[1], DFS)
+
+    def test_dfs_search_without_merge_only_installs_dfs(self):
+        simgr = FakeTechniqueManager()
+
+        configure_search_techniques(
+            simgr,
+            search="dfs",
+            automatic_merge=False,
+            debug=False,
+            merge_points={0x107},
+        )
+
         self.assertEqual(1, len(simgr.techniques))
         self.assertIsInstance(simgr.techniques[0], DFS)
-        self.assertNotIsInstance(simgr.techniques[0], CFGJoinMerge)
 
     def test_bfs_search_installs_cfg_join_merge_when_enabled(self):
         simgr = FakeTechniqueManager()
@@ -309,6 +324,39 @@ class AutomaticMergeTest(unittest.TestCase):
         self.assertIn(waiting_state, simgr.stashes["active"])
         self.assertEqual([], simgr.stashes[technique.waiting_stash])
         self.assertEqual(1, technique.states_released)
+
+    def test_cfg_join_keeps_singleton_until_dfs_sibling_arrives(self):
+        join_addr = 0x107
+        first_sibling = FakeState("compatible", join_addr)
+        second_sibling = FakeState("compatible", join_addr)
+        deferred_runner = FakeState("runner", 0x201)
+        simgr = FakeSimulationManager([first_sibling])
+        simgr.stashes["deferred"] = [deferred_runner]
+        technique = CFGJoinMerge(
+            merge_points={join_addr},
+            merge_key=lambda state: state.key,
+            wait_steps=1,
+            deferred_stash="deferred",
+        )
+        technique.setup(simgr)
+
+        technique.step(simgr)
+        technique.step(simgr)
+
+        self.assertEqual([], simgr.stashes["active"])
+        self.assertEqual(
+            [first_sibling], simgr.stashes[technique.waiting_stash]
+        )
+        self.assertEqual(0, technique.states_released)
+
+        simgr.stashes["active"] = [second_sibling]
+        simgr.stashes["deferred"] = []
+        technique.step(simgr)
+
+        self.assertEqual(1, len(simgr.merge_calls))
+        self.assertEqual(1, len(simgr.stashes["active"]))
+        self.assertEqual([], simgr.stashes[technique.waiting_stash])
+        self.assertEqual(1, technique.states_merged)
 
 
 if __name__ == "__main__":

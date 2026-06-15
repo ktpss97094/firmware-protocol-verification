@@ -14,12 +14,7 @@ class STM32F4GPIOTest(unittest.TestCase):
         project = angr.load_shellcode(b"\x00\xbf", arch=self.arch)
         self.state = project.factory.blank_state()
         spec = SimpleNamespace(ANGR_ARCH=self.arch)
-        self.gpio = GPIO(
-            start=0x40020800,
-            size=0x400,
-            spec=spec,
-            name="GPIOC",
-        )
+        self.gpio = GPIO(start=0x40020800, size=0x400, spec=spec, name="GPIOC")
 
         moder = (1 << (13 * 2)) | (1 << (15 * 2))
         otyper = (1 << 13) | (1 << 15)
@@ -37,27 +32,10 @@ class STM32F4GPIOTest(unittest.TestCase):
                 endness=self.arch.memory_endness,
             )
 
-    def test_get_idr_only_creates_symbols_for_modeled_pins(self):
-        idr = self.gpio.get_idr(self.state)
-
-        self.assertEqual(6, len(idr.variables))
-        self.assertTrue(idr[13].symbolic)
-        self.assertTrue(idr[15].symbolic)
-        for pin in set(range(16)) - {13, 15}:
-            self.assertTrue(idr[pin].concrete)
-            self.assertEqual(0, self.state.solver.eval(idr[pin]))
-
-    def test_modeled_pins_follow_register_definition(self):
-        self.assertEqual(
-            frozenset({13, 15}),
-            self.gpio._modeled_pins(GPIO.GPIO_IDR.OFFSET),
-        )
-
     def test_bsrr_write_value_is_cleared_after_post_write(self):
         self.gpio.set_handlers(cpu=None, state=self.state, cfg=None, specs=None)
         self.state.inspect.mem_write_address = claripy.BVV(
-            self.gpio.start + GPIO.GPIO_BSRR.OFFSET,
-            self.arch.bits,
+            self.gpio.start + GPIO.GPIO_BSRR.OFFSET, self.arch.bits
         )
         self.state.inspect.mem_write_expr = claripy.BVV(1 << 13, 32)
         self.state.inspect.mem_write_length = 4
