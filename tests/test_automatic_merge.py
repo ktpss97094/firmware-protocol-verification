@@ -1,11 +1,22 @@
 import unittest
 
-from project.types import AutomaticMerge
+import networkx as nx
+from angr.exploration_techniques import DFS
+
+from project.main import configure_search_techniques
+from project.types import (
+    AutomaticMerge,
+    CFGJoinMerge,
+    _acyclic_postdominator_merge_points,
+    discover_acyclic_merge_points,
+)
 
 
 class FakeState:
-    def __init__(self, key):
+    def __init__(self, key, addr=0):
         self.key = key
+        self.addr = addr
+        self.regs = type("Regs", (), {"_ip": type("IP", (), {"symbolic": False})()})()
 
 
 class FakeSimulationManager:
@@ -31,12 +42,90 @@ class FakeSimulationManager:
 
         merged = []
         for group in groups.values():
-            merged.append(FakeState(group[0].key))
+            merged.append(FakeState(group[0].key, group[0].addr))
         self.stashes[stash] = merged
         return self
 
 
+class FakeCFGNode:
+    def __init__(self, addr):
+        self.addr = addr
+
+
+class FakeFunction:
+    def __init__(self, addr, graph):
+        self.addr = addr
+        self.graph = graph
+
+
+class FakeFunctionManager(dict):
+    def floor_func(self, addr):
+        return self.get(addr)
+
+
+class FakeCFG:
+    def __init__(self, functions, callgraph):
+        self.kb = type(
+            "KnowledgeBase",
+            (),
+            {
+                "functions": FakeFunctionManager(functions),
+                "callgraph": callgraph,
+            },
+        )()
+
+
+class FakeTechniqueManager:
+    def __init__(self):
+        self.techniques = []
+
+    def use_technique(self, technique):
+        self.techniques.append(technique)
+
+
 class AutomaticMergeTest(unittest.TestCase):
+    def test_dfs_search_does_not_install_cfg_join_merge(self):
+        simgr = FakeTechniqueManager()
+
+        configure_search_techniques(
+            simgr,
+            search="dfs",
+            automatic_merge=True,
+            debug=False,
+            merge_points={0x107},
+        )
+
+        self.assertEqual(1, len(simgr.techniques))
+        self.assertIsInstance(simgr.techniques[0], DFS)
+        self.assertNotIsInstance(simgr.techniques[0], CFGJoinMerge)
+
+    def test_bfs_search_installs_cfg_join_merge_when_enabled(self):
+        simgr = FakeTechniqueManager()
+
+        configure_search_techniques(
+            simgr,
+            search="bfs",
+            automatic_merge=True,
+            debug=False,
+            merge_points={0x107},
+        )
+
+        self.assertEqual(1, len(simgr.techniques))
+        self.assertIsInstance(simgr.techniques[0], CFGJoinMerge)
+
+    def test_bfs_search_without_merge_keeps_default_scheduler(self):
+        simgr = FakeTechniqueManager()
+
+        configure_search_techniques(
+            simgr,
+            search="bfs",
+            automatic_merge=False,
+            debug=False,
+            merge_points={0x107},
+        )
+
+        self.assertEqual([], simgr.techniques)
+
     def test_does_not_call_merge_without_compatible_candidates(self):
         simgr = FakeSimulationManager(FakeState(index) for index in range(21))
         technique = AutomaticMerge(
@@ -89,7 +178,7 @@ class AutomaticMergeTest(unittest.TestCase):
         technique.step(second)
         self.assertEqual(0, len(second.merge_calls))
 
-    def test_large_reduction_bypasses_cooldown(self):
+    def test_large_reduction_respects_cooldown(self):
         technique = AutomaticMerge(
             max_states=4,
             merge_key=lambda state: state.key,
@@ -108,8 +197,118 @@ class AutomaticMergeTest(unittest.TestCase):
         )
         technique.step(second)
 
-        self.assertEqual(1, len(second.merge_calls))
-        self.assertEqual(2, technique.merge_attempts)
+        self.assertEqual(0, len(second.merge_calls))
+        self.assertEqual(1, technique.merge_attempts)
+
+    def test_finds_acyclic_diamond_postdominator(self):
+        branch = FakeCFGNode(0x101)
+        left = FakeCFGNode(0x103)
+        right = FakeCFGNode(0x105)
+        join = FakeCFGNode(0x107)
+        graph = nx.DiGraph(
+            [
+                (branch, left),
+                (branch, right),
+                (left, join),
+                (right, join),
+            ]
+        )
+
+        merge_points = _acyclic_postdominator_merge_points(graph, set())
+
+        self.assertEqual({join.addr}, merge_points)
+        self.assertEqual(
+            set(),
+            _acyclic_postdominator_merge_points(graph, {branch.addr}),
+        )
+
+    def test_discovers_merge_points_from_multiple_execution_roots(self):
+        first_branch = FakeCFGNode(0x101)
+        first_left = FakeCFGNode(0x103)
+        first_right = FakeCFGNode(0x105)
+        first_join = FakeCFGNode(0x107)
+        second_branch = FakeCFGNode(0x201)
+        second_left = FakeCFGNode(0x203)
+        second_right = FakeCFGNode(0x205)
+        second_join = FakeCFGNode(0x207)
+        functions = {
+            first_branch.addr: FakeFunction(
+                first_branch.addr,
+                nx.DiGraph(
+                    [
+                        (first_branch, first_left),
+                        (first_branch, first_right),
+                        (first_left, first_join),
+                        (first_right, first_join),
+                    ]
+                ),
+            ),
+            second_branch.addr: FakeFunction(
+                second_branch.addr,
+                nx.DiGraph(
+                    [
+                        (second_branch, second_left),
+                        (second_branch, second_right),
+                        (second_left, second_join),
+                        (second_right, second_join),
+                    ]
+                ),
+            ),
+        }
+        cfg = FakeCFG(functions, nx.DiGraph())
+
+        merge_points = discover_acyclic_merge_points(
+            cfg,
+            {first_branch.addr, second_branch.addr},
+            loops=(),
+        )
+
+        self.assertEqual({first_join.addr, second_join.addr}, merge_points)
+
+    def test_cfg_join_merges_bfs_siblings(self):
+        join_addr = 0x107
+        simgr = FakeSimulationManager(
+            [
+                FakeState("compatible", join_addr),
+                FakeState("compatible", join_addr),
+            ]
+        )
+        technique = CFGJoinMerge(
+            merge_points={join_addr},
+            merge_key=lambda state: state.key,
+        )
+        technique.setup(simgr)
+
+        technique.step(simgr)
+
+        self.assertEqual(1, len(simgr.merge_calls))
+        self.assertEqual(1, len(simgr.stashes["active"]))
+        self.assertEqual([], simgr.stashes[technique.waiting_stash])
+        self.assertEqual(1, technique.states_merged)
+
+    def test_cfg_join_releases_singleton_after_wait_limit(self):
+        join_addr = 0x107
+        waiting_state = FakeState("waiting", join_addr)
+        runner = FakeState("runner", 0x201)
+        simgr = FakeSimulationManager([waiting_state, runner])
+        technique = CFGJoinMerge(
+            merge_points={join_addr},
+            merge_key=lambda state: state.key,
+            wait_steps=2,
+        )
+        technique.setup(simgr)
+
+        technique.step(simgr)
+        self.assertEqual(
+            [waiting_state], simgr.stashes[technique.waiting_stash]
+        )
+
+        technique.step(simgr)
+        technique.step(simgr)
+
+        self.assertIn(waiting_state, simgr.stashes["active"])
+        self.assertEqual([], simgr.stashes[technique.waiting_stash])
+        self.assertEqual(1, technique.states_released)
 
 
 if __name__ == "__main__":

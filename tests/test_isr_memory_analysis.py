@@ -304,6 +304,59 @@ class I2CModelTest(unittest.TestCase):
 
 
 class InterruptSchedulingTest(unittest.TestCase):
+    def test_terminal_state_without_event_is_found_and_successor_is_discarded(self):
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
+        end_addr = 0x080002DF
+        state = project.factory.blank_state(addr=end_addr)
+        manager = BaseCPU.AsynchronousEventManager(
+            cpu=None,
+            end_addrs=(end_addr,),
+        )
+
+        class Simgr:
+            def step_state(self, current_state, **kwargs):
+                del kwargs
+                successor = current_state.copy()
+                successor.regs.pc = end_addr + 2
+                return {None: [successor]}
+
+        result = manager.step_state(Simgr(), state)
+
+        self.assertEqual({"found": [state]}, result)
+
+    def test_terminal_state_processes_before_event_before_becoming_found(self):
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
+        end_addr = 0x080002DF
+        state = project.factory.blank_state(addr=end_addr)
+        manager = BaseCPU.AsynchronousEventManager(
+            cpu=None,
+            end_addrs=(end_addr,),
+        )
+
+        class Handler(EventForkHandler):
+            def get_eligible_events(self, current_state):
+                del current_state
+                return [(claripy.true(), {})]
+
+            def trigger_event(self, current_state):
+                current_state.regs.pc = 0x08000612
+
+        handler = Handler()
+
+        class Simgr:
+            def step_state(self, current_state, **kwargs):
+                del kwargs
+                successor = current_state.copy()
+                successor.regs.pc = end_addr + 2
+                successor.asynevt_globals.before_check_handlers.add(handler)
+                return {None: [successor]}
+
+        result = manager.step_state(Simgr(), state)
+
+        self.assertEqual([], result["found"])
+        self.assertEqual(1, len(result[None]))
+        self.assertEqual(0x08000612, result[None][0].addr)
+
     def test_equal_conditions_from_one_handler_remain_alternative_events(self):
         project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         state = project.factory.blank_state()
@@ -348,6 +401,21 @@ class InterruptSchedulingTest(unittest.TestCase):
         self.assertNotEqual(
             state_merge_key(thread_state), state_merge_key(handler_state)
         )
+
+    def test_merge_key_separates_plugin_states_that_reject_merge(self):
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
+        left = project.factory.blank_state(addr=0x08000000)
+        right = left.copy()
+        left.register_plugin(
+            "I2C1_globals",
+            Globals(is_address_phase=claripy.false()),
+        )
+        right.register_plugin(
+            "I2C1_globals",
+            Globals(is_address_phase=claripy.true()),
+        )
+
+        self.assertNotEqual(state_merge_key(left), state_merge_key(right))
 
 
 if __name__ == "__main__":

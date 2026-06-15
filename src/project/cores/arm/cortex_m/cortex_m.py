@@ -220,7 +220,6 @@ class CortexM(ARM):
             ]
 
         def trigger_event(self, state, irq):
-            print(f"IRQ Injection | pc: {state.regs.pc} -> Branching into IRQ {irq}")
             self.cpu.excp_entry(state, irq)
 
     def set_handlers(self, state, cfg, specs):

@@ -114,7 +114,12 @@ class GPIO(MMIOMemoryRegion):
                 "ext_val", 1
             )  # 外部強驅動信號的邏輯值 (只有當 ext_driven == 1 時才有意義)
 
-            if state.solver.satisfiable(extra_constraints=[moder_bits == 2]):
+            alternate_function_possible = (
+                state.solver.eval(moder_bits) == 2
+                if moder_bits.concrete
+                else state.solver.satisfiable(extra_constraints=[moder_bits == 2])
+            )
+            if alternate_function_possible:
                 raise NotImplementedError(
                     "Alternate function mode is not supported yet (Should consider connected peripheral)"
                 )
@@ -202,12 +207,8 @@ class GPIO(MMIOMemoryRegion):
                 ),
                 plugins=frozenset(
                     {
-                        PluginEffect(
-                            "read", plugin_name, ("bsrr_write_value",)
-                        ),
-                        PluginEffect(
-                            "write", plugin_name, ("bsrr_write_value",)
-                        ),
+                        PluginEffect("read", plugin_name, ("bsrr_write_value",)),
+                        PluginEffect("write", plugin_name, ("bsrr_write_value",)),
                     }
                 ),
             )
@@ -248,6 +249,7 @@ class GPIO(MMIOMemoryRegion):
 
         globals = state.get_plugin(f"{self.name}_globals")
         new_odr = utils.load(state, self.start + GPIO.GPIO_ODR.OFFSET)
+        new_globals = state.get_plugin(f"{self.name}_globals").copy({})
 
         match offset:
             case GPIO.GPIO_BSRR.OFFSET:
@@ -262,8 +264,10 @@ class GPIO(MMIOMemoryRegion):
                             new_odr,
                         ),
                     )
+                    new_globals.bsrr_write_value = None
 
         utils.store(state, self.start + GPIO.GPIO_ODR.OFFSET, new_odr)
+        state.register_plugin(f"{self.name}_globals", new_globals)
 
         return _, offset, value
 

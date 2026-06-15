@@ -1,4 +1,3 @@
-import shutil
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -17,8 +16,6 @@ RENODE_GDB_PORT = 3333
 """
 Logging
 """
-if LOG_DIR.exists():
-    shutil.rmtree(LOG_DIR)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 LOGGING_CONFIG = {
@@ -39,6 +36,7 @@ LOGGING_CONFIG = {
         "file": {
             "class": "logging.FileHandler",
             "filename": str(LOG_DIR / "project.log"),
+            "mode": "w",
             "formatter": "standard",
             "level": "DEBUG",
             "encoding": "utf-8",

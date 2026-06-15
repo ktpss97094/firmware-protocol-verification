@@ -137,6 +137,7 @@ class Specs(BaseSpecs):
                 0x8005E09: 0,
                 # DMA
                 0x80063B9: 0,
+                0x800AF0D: 0,
             }
 
         case OPENCM3():
@@ -299,6 +300,26 @@ class Specs(BaseSpecs):
                     when=angr.BP_BEFORE,
                     condition=self.MEMORY_REGIONS["SysTickVariable"].in_region_read,
                     action=self.MEMORY_REGIONS["SysTickVariable"].post_read,
+                )
+
+            case STM32F4XX_HAL.DMA:
+                state.inspect.b(
+                    "mem_read",
+                    when=angr.BP_AFTER,
+                    condition=self.MEMORY_REGIONS["DMA1"].in_region_read,
+                    action=self.MEMORY_REGIONS["DMA1"].post_read,
+                )
+                state.inspect.b(
+                    "mem_write",
+                    when=angr.BP_BEFORE,
+                    condition=self.MEMORY_REGIONS["DMA1"].in_region_write,
+                    action=self.MEMORY_REGIONS["DMA1"].pre_write,
+                )
+                state.inspect.b(
+                    "mem_write",
+                    when=angr.BP_AFTER,
+                    condition=self.MEMORY_REGIONS["DMA1"].in_region_write,
+                    action=self.MEMORY_REGIONS["DMA1"].post_write,
                 )
 
         # state.inspect.b(

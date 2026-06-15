@@ -39,6 +39,9 @@ class I2CBus(SimStatePlugin):
 
         return o
 
+    def merge_key(self):
+        return (self.bit_count.hash(), self.prev_scl_out.hash())
+
     def merge(self, others, merge_conditions, common_ancestor=None):
         del common_ancestor
 

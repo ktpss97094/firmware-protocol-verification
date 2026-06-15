@@ -3,33 +3,35 @@ import importlib
 import importlib.util
 import logging
 import re
+import resource
 import warnings
+from collections import Counter
 from functools import partial
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Type
+from typing import Annotated, Any, Literal, Type
 
 import angr
 import avatar2
 import typer
-from typing_extensions import Annotated
 
 import project.utils as utils
 from project import config
 from project.types import (
-    AutomaticMerge,
     BaseSpecs,
+    CFGJoinMerge,
     CustomEngine,
     CustomLoopSeer,
     DFSPickFirstSuccessor,
     ExploreTermination,
     MMIOMemoryRegion,
     VariableMemoryRegion,
+    discover_acyclic_merge_points,
 )
 
 logger = logging.getLogger(__name__)
 app = typer.Typer(name="verify")
-found_cnt, violated_cnt = 0, 0
+found_cnt, violated_cnt, step_cnt = 0, 0, 0
 
 
 def init_logging():
@@ -152,7 +154,14 @@ def _loop_data_key(state):
 
 def state_merge_key(state):
     ip = state.regs._ip
-    ip_key = ip.cache_key if ip.symbolic else state.addr
+    ip_key = ip.hash() if ip.symbolic else state.addr
+    plugin_keys = tuple(
+        sorted(
+            (name, plugin.merge_key())
+            for name, plugin in state.plugins.items()
+            if callable(getattr(plugin, "merge_key", None))
+        )
+    )
 
     return (
         ip_key,
@@ -164,11 +173,57 @@ def state_merge_key(state):
         state.globals.get("current_priority", 256),
         tuple(state.globals.get("priority_stack", ())),
         frozenset(state.posix.fd) if state.has_plugin("posix") else None,
+        plugin_keys,
     )
 
 
+def configure_search_techniques(
+    simgr,
+    *,
+    search: str,
+    automatic_merge: bool,
+    debug: bool,
+    merge_points=(),
+):
+    if search not in {"dfs", "bfs"}:
+        raise ValueError(f"Unsupported search strategy: {search}")
+
+    if debug:
+        simgr.use_technique(DFSPickFirstSuccessor())
+        return
+
+    if search == "dfs":
+        simgr.use_technique(angr.exploration_techniques.DFS())
+        return
+
+    if automatic_merge and merge_points:
+        simgr.use_technique(
+            CFGJoinMerge(merge_points=merge_points, merge_key=state_merge_key)
+        )
+
+
+def _format_active_pcs(states, limit=8):
+    locations = Counter()
+    for state in states:
+        ip = state.regs._ip
+        if ip.symbolic:
+            locations["symbolic"] += 1
+        else:
+            locations[hex(state.addr)] += 1
+
+    entries = [
+        f"{location}={count}"
+        for location, count in locations.most_common(limit)
+        if count
+    ]
+    remaining = len(locations) - len(entries)
+    if remaining > 0:
+        entries.append(f"+{remaining} more")
+    return ", ".join(entries)
+
+
 def explore_step_func(simgr):
-    global found_cnt, violated_cnt
+    global found_cnt, violated_cnt, step_cnt
 
     # 取出 violated states
     # for err in simgr.errored.copy():
@@ -181,16 +236,34 @@ def explore_step_func(simgr):
 
     # for state in simgr.active:
     #     state.history.trim()
+    # This is a count of terminal symbolic states after merging, not path count.
     found_cnt += len(simgr.found)
-    # 如果需要 found state 做驗證，可以在這裡只取出需要的部分
     add_violated_cnt(len(simgr.violated))
     simgr.stashes["found"].clear()
     # simgr.stashes["violated"].clear()
     simgr.stashes["loopseer"].clear()
 
-    print(
-        f"Step: Active={len(simgr.active)}, Found={found_cnt}, Violated={violated_cnt}"
-    )
+    step_cnt += 1
+    if step_cnt == 1 or step_cnt % 64 == 0 or not simgr.active:
+        max_rss_mib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        deferred_count = len(simgr.stashes.get("deferred", ()))
+        nonempty_stashes = ", ".join(
+            f"{name}={len(states)}"
+            for name, states in simgr.stashes.items()
+            if states and name not in {"active", "deferred", "found", "violated"}
+        )
+        logger.info(
+            "Step=%d Active=%d Deferred=%d Found=%d Violated=%d "
+            "ActivePCs=[%s] OtherStashes=[%s] MaxRSS=%.1f MiB",
+            step_cnt,
+            len(simgr.active),
+            deferred_count,
+            found_cnt,
+            violated_cnt,
+            _format_active_pcs(simgr.active),
+            nonempty_stashes,
+            max_rss_mib,
+        )
     # print(f"pc: {[hex(state.solver.eval(state.regs.pc)) for state in simgr.active]}")
 
     return simgr
@@ -219,11 +292,17 @@ def LoopSeer_bound_reached_handler(seer, state, bound_loops):
 @app.command()
 def main(
     spec: str,
-    search: str = "dfs",
+    search: Literal["dfs", "bfs"] = "dfs",
     renode: bool = False,
+    automatic_merge: bool = True,
     debug: Annotated[bool, typer.Option(hidden=True)] = False,
-    automatic_merge: bool = False,
 ):
+    global found_cnt, violated_cnt, step_cnt
+    found_cnt, violated_cnt, step_cnt = 0, 0, 0
+
+    if debug:
+        automatic_merge = False
+
     Specs = load_specs_class(spec)
 
     init_logging()
@@ -350,7 +429,6 @@ def main(
             angr.options.UNICORN,
             angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,
             angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
-            angr.options.EFFICIENT_STATE_MERGING,
         },
     )
 
@@ -413,28 +491,38 @@ def main(
     simgr.stashes["violated"] = []
     simgr.stashes["loopseer"] = []
     cfg = specs.CPU.setup(state, specs, simgr)
+    loop_finder = proj.analyses.LoopFinder(kb=cfg.kb, normalize=True)
 
-    if automatic_merge:
-        simgr.use_technique(
-            AutomaticMerge(
-                max_states=20,
-                merge_key=state_merge_key,
-                min_reduction=4,
-                merge_interval=16,
-                substantial_reduction_ratio=0.25,
-                hard_limit=80,
-            )
+    merge_points = set()
+    if search == "bfs" and automatic_merge and not debug:
+        merge_roots = {specs.BEGIN_ADDR}
+        merge_roots.update(
+            isr.address for isr in specs.CPU.get_isr_memory_report(proj, specs).isrs
         )
-    if debug:
-        simgr.use_technique(DFSPickFirstSuccessor())
-    elif search == "dfs":
-        simgr.use_technique(angr.exploration_techniques.DFS())
+        merge_points = discover_acyclic_merge_points(
+            cfg, merge_roots, loop_finder.loops
+        )
+        logger.info(
+            "Discovered %d acyclic CFG merge points from %d execution roots: %s",
+            len(merge_points),
+            len(merge_roots),
+            ", ".join(hex(addr) for addr in sorted(merge_points)),
+        )
+    configure_search_techniques(
+        simgr,
+        search=search,
+        automatic_merge=automatic_merge,
+        debug=debug,
+        merge_points=merge_points,
+    )
     simgr.use_technique(
         CustomLoopSeer(
             cfg=cfg,
-            loops=utils.loop_entry_block_addrs_to_loops(
-                Specs.BOUND_LOOPS.keys(), proj, cfg
-            ),
+            loops=[
+                loop
+                for loop in loop_finder.loops
+                if loop.entry.addr in Specs.BOUND_LOOPS
+            ],
             bound=0,  # bound 判斷由 bound_reached function 處理
             bound_reached=partial(
                 LoopSeer_bound_reached_handler, bound_loops=Specs.BOUND_LOOPS
@@ -486,9 +574,7 @@ def main(
         if violated_cnt > 0:
             print(f"Verification FAILURE! Found {violated_cnt} violation state(s)")
         else:
-            print(
-                f"Verification SUCCESS! Found {found_cnt} state(s) that reached the end"
-            )
+            print(f"Verification SUCCESS! Found {found_cnt} terminal symbolic state(s)")
     else:
         raise AssertionError("No valid paths found or no violations detected")
 

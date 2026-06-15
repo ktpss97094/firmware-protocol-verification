@@ -33,6 +33,13 @@ class Globals(SimStatePlugin):
 
         return o
 
+    def merge_key(self):
+        return (
+            self.is_address_phase.hash(),
+            self.sr1_read,
+            self.rw is None,
+        )
+
     def merge(self, others, merge_conditions, common_ancestor=None):
         """
         回傳值表示 plugins 是否有被 merge，並不是 state 是否有被 merge。只有 raise SimMergeError 時才表示 state 不被 merge

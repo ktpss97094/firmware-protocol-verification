@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 import inspect
 import logging
+import resource
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -11,6 +13,7 @@ from typing import Any, Callable, Optional
 
 import angr
 import archinfo
+import networkx as nx
 from angr.engines import (
     HooksMixin,
     SimEngineFailure,
@@ -265,25 +268,211 @@ class AutomaticMerge(ExplorationTechnique):
         interval_elapsed = self.step_count - self.last_merge_step >= self.merge_interval
         under_hard_pressure = state_count >= self.hard_limit
 
-        if not substantial_reduction and not interval_elapsed:
+        if not interval_elapsed:
             return simgr
-        if potential_reduction < self.min_reduction and not under_hard_pressure:
+        if (
+            potential_reduction < self.min_reduction
+            and not substantial_reduction
+            and not under_hard_pressure
+        ):
             return simgr
 
         self.last_merge_step = self.step_count
         self.merge_attempts += len(candidate_groups)
+        started_at = time.monotonic()
+        l.info(
+            "AutomaticMerge starting on %s with %d states, %d candidate groups, "
+            "and potential reduction %d",
+            stash,
+            state_count,
+            len(candidate_groups),
+            potential_reduction,
+        )
         self._merge_candidate_groups(simgr, stash, candidate_groups)
 
         merged_count = state_count - len(simgr.stashes[stash])
         self.states_merged += merged_count
-        if merged_count:
-            l.info(
-                "AutomaticMerge reduced %s from %d to %d states (%d candidate groups)",
-                stash,
-                state_count,
-                len(simgr.stashes[stash]),
-                len(candidate_groups),
+        max_rss_mib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        l.info(
+            "AutomaticMerge finished %s from %d to %d states "
+            "(%d candidate groups) in %.2fs; MaxRSS=%.1f MiB",
+            stash,
+            state_count,
+            len(simgr.stashes[stash]),
+            len(candidate_groups),
+            time.monotonic() - started_at,
+            max_rss_mib,
+        )
+
+        return simgr
+
+
+def _acyclic_postdominator_merge_points(graph, loop_node_addrs):
+    if not graph:
+        return set()
+
+    graph = nx.DiGraph(graph)
+    exits = [node for node in graph if graph.out_degree(node) == 0]
+    if not exits:
+        return set()
+
+    sink = object()
+    graph.add_node(sink)
+    graph.add_edges_from((node, sink) for node in exits)
+    immediate_postdominators = nx.immediate_dominators(graph.reverse(copy=False), sink)
+
+    merge_points = set()
+    for branch in graph:
+        if branch is sink:
+            continue
+        if graph.out_degree(branch) <= 1 or branch.addr in loop_node_addrs:
+            continue
+
+        join = immediate_postdominators.get(branch)
+        if join is not None and join is not sink and join.addr not in loop_node_addrs:
+            merge_points.add(join.addr)
+
+    return merge_points
+
+
+def discover_acyclic_merge_points(cfg, start_addrs, loops):
+    """
+    Find structured, non-loop branch joins reachable from execution entry points.
+
+    Loop joins are excluded because waiting for all loop paths at a barrier can
+    deadlock across different iteration counts.
+    """
+
+    if isinstance(start_addrs, int):
+        start_addrs = (start_addrs,)
+
+    reachable_function_addrs = set()
+    for start_addr in start_addrs:
+        start_function = cfg.kb.functions.floor_func(start_addr)
+        if start_function is None:
+            continue
+
+        reachable_function_addrs.add(start_function.addr)
+        if start_function.addr in cfg.kb.callgraph:
+            reachable_function_addrs.update(
+                nx.descendants(cfg.kb.callgraph, start_function.addr)
             )
+    loop_node_addrs = {node.addr for loop in loops for node in loop.body_nodes}
+
+    merge_points = set()
+    for function_addr in reachable_function_addrs:
+        if function_addr not in cfg.kb.functions:
+            continue
+        function = cfg.kb.functions[function_addr]
+        merge_points.update(
+            _acyclic_postdominator_merge_points(function.graph, loop_node_addrs)
+        )
+
+    return merge_points
+
+
+class CFGJoinMerge(ExplorationTechnique):
+    """
+    Briefly hold compatible states at automatically discovered acyclic CFG joins.
+
+    Unlike Veritesting, this technique delegates every execution step through
+    the existing SimulationManager hook chain, so event and loop techniques
+    continue to observe all states. Singleton states are released after
+    ``wait_steps`` so a join that only one feasible path reaches cannot retain
+    states indefinitely.
+    """
+
+    def __init__(
+        self,
+        merge_points,
+        merge_key: Callable[[SimState], Any] | None = None,
+        wait_steps=16,
+    ):
+        super().__init__()
+        if wait_steps < 1:
+            raise ValueError("wait_steps must be positive")
+
+        self.merge_points = frozenset(merge_points)
+        self.merge_key = merge_key
+        self.wait_steps = wait_steps
+        self.waiting_stash = "_cfg_join_waiting"
+        self.step_count = 0
+        self._waiting_since = {}
+        self.merge_attempts = 0
+        self.states_merged = 0
+        self.states_released = 0
+
+    def setup(self, simgr):
+        simgr.stashes.setdefault(self.waiting_stash, [])
+
+    def _merge_group(self, simgr, group):
+        temp_stash = "_cfg_join_merge"
+        suffix = 0
+        while temp_stash in simgr.stashes:
+            suffix += 1
+            temp_stash = f"_cfg_join_merge_{suffix}"
+
+        try:
+            simgr.stashes[temp_stash] = list(group)
+            simgr.merge(stash=temp_stash, merge_key=lambda _state: None, prune=False)
+            return list(simgr.stashes[temp_stash])
+        finally:
+            simgr.stashes.pop(temp_stash, None)
+
+    def step(self, simgr, stash="active", **kwargs):
+        extra_stop_points = set(kwargs.get("extra_stop_points", ()))
+        kwargs["extra_stop_points"] = extra_stop_points | self.merge_points
+        simgr = simgr.step(stash=stash, **kwargs)
+        self.step_count += 1
+
+        waiting = simgr.stashes.setdefault(self.waiting_stash, [])
+        runnable = []
+        for state in simgr.stashes[stash]:
+            ip = state.regs._ip
+            if not ip.symbolic and state.addr in self.merge_points:
+                waiting.append(state)
+                self._waiting_since[id(state)] = self.step_count
+            else:
+                runnable.append(state)
+        simgr.stashes[stash] = runnable
+
+        merge_key = self.merge_key or simgr._merge_key
+        keyed_states = defaultdict(list)
+        for state in waiting:
+            keyed_states[merge_key(state)].append(state)
+
+        still_waiting = []
+        for group in keyed_states.values():
+            if len(group) == 1:
+                still_waiting.extend(group)
+                continue
+
+            self.merge_attempts += 1
+            merged = self._merge_group(simgr, group)
+            self.states_merged += len(group) - len(merged)
+            for state in group:
+                self._waiting_since.pop(id(state), None)
+            simgr.stashes[stash].extend(merged)
+
+        expired = []
+        retained = []
+        for state in still_waiting:
+            waiting_since = self._waiting_since[id(state)]
+            if self.step_count - waiting_since >= self.wait_steps:
+                expired.append(state)
+                self._waiting_since.pop(id(state), None)
+            else:
+                retained.append(state)
+
+        simgr.stashes[stash].extend(expired)
+        self.states_released += len(expired)
+        simgr.stashes[self.waiting_stash] = retained
+
+        if not simgr.stashes[stash] and retained:
+            simgr.stashes[stash].extend(retained)
+            simgr.stashes[self.waiting_stash] = []
+            for state in retained:
+                self._waiting_since.pop(id(state), None)
 
         return simgr
 
@@ -490,7 +679,16 @@ class MMIOMemoryRegion(MemoryRegion):
     def pre_write(self, state):
         addr, offset, value = super().pre_write(state)
 
-        orig_value = utils.load(state, addr)
+        byte_offset = offset % state.arch.bytes
+        register_addr = addr - byte_offset
+        register_value = utils.load(state, register_addr)
+        value_bits = value.size()
+        bit_offset = byte_offset * state.arch.byte_width
+        if state.arch.memory_endness == archinfo.Endness.BE:
+            bit_offset = (
+                state.arch.bits - value_bits - byte_offset * state.arch.byte_width
+            )
+        orig_value = register_value[bit_offset + value_bits - 1 : bit_offset]
         masked_value = self.mask_pre_write(offset, orig_value, value)
         state.inspect.mem_write_expr = masked_value
         state.globals[("_mmio_pending_write", id(self))] = (
@@ -527,12 +725,22 @@ class MMIOMemoryRegion(MemoryRegion):
         state.inspect.mem_write_expr = masked_value
         return addr, offset, masked_value
 
+    def _get_access_masks(self, offset, value_bits):
+        register_offset = offset - (offset % 4)
+        masks = self._access_masks.get(register_offset)
+        if masks is None:
+            return None
+
+        bit_offset = (offset - register_offset) * 8
+        value_mask = (1 << value_bits) - 1
+        return tuple((mask >> bit_offset) & value_mask for mask in masks)
+
     def mask_pre_write(self, offset, orig_val, write_val):
-        masks = self._access_masks.get(offset)
+        masks = self._get_access_masks(offset, write_val.size())
         if masks:
             mask_rw, mask_r, mask_w, mask_rc_w0 = masks
             defined_mask = mask_rw | mask_r | mask_w | mask_rc_w0
-            undefined_mask = ~defined_mask
+            undefined_mask = ((1 << write_val.size()) - 1) ^ defined_mask
 
             return (
                 (write_val & mask_rw)
@@ -544,16 +752,21 @@ class MMIOMemoryRegion(MemoryRegion):
         return write_val
 
     def mask_post_read(self, offset, val):
-        masks = self._access_masks.get(offset)
+        masks = self._get_access_masks(offset, val.size())
         if masks:
             mask_rw, mask_r, mask_w, mask_rc_w0 = masks
             defined_mask = mask_rw | mask_r | mask_w | mask_rc_w0
-            undefined_mask = ~defined_mask
+            undefined_mask = ((1 << val.size()) - 1) ^ defined_mask
+            register_offset = offset - (offset % 4)
+            bit_offset = (offset - register_offset) * 8
+            reset_value = (
+                self._rst_vals[register_offset] >> bit_offset
+            ) & ((1 << val.size()) - 1)
 
             return (
                 (val & (mask_rw | mask_r | mask_rc_w0))
                 | (
-                    self._rst_vals[offset]
+                    reset_value
                     & (
                         mask_w | undefined_mask
                     )  # TODO: mask_w 也許可改成 base class 用 symbolic、derived class 再依照 reference manual 上的說明實作是否有明說回傳的是 reset value

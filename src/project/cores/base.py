@@ -75,6 +75,13 @@ class AsynchronousEventGlobals(SimStatePlugin):
 
         return o
 
+    def merge_key(self):
+        return (
+            frozenset(self.before_check_handlers),
+            frozenset(self.after_check_handlers),
+            frozenset(self.prev_after_check_handlers),
+        )
+
     def merge(self, others, merge_conditions, common_ancestor=None):
         del common_ancestor
 
@@ -431,7 +438,7 @@ class BaseCPU(ABC):
 
             succ_stashes = simgr.step_state(state, **kwargs)
             pruning = True
-            found_target = False
+            is_terminal = state.addr in self.end_addrs
             for before_active_state in self._process_event(
                 [
                     (
@@ -447,14 +454,13 @@ class BaseCPU(ABC):
             ):
                 if before_active_state is state:
                     pruning = False
-                    if state.addr in self.end_addrs:
+                    if is_terminal:
                         merged_results["found"].append(state)
-                        found_target = True
                 else:
                     merged_results[None].append(before_active_state)
-            if (
-                pruning or found_target
-            ):  # found_target: 理論上不能在 end address 設 BP_AFTER，這裡直接截斷
+            if pruning or is_terminal:
+                # A terminal address is also an event checkpoint. Keep event
+                # successors, but never execute the terminal marker normally.
                 return merged_results
 
             for k, v in succ_stashes.items():
