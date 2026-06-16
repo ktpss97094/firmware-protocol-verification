@@ -1,14 +1,17 @@
 import logging
 from abc import ABC, abstractmethod
+from bisect import bisect_right
 from collections import defaultdict
-from functools import cache
+from functools import cache, partial
 
 import angr
-import angr.analyses.variable_recovery.engine_vex as engine_vex
 import claripy
 import pyvex
+from angr.errors import SimMergeError
+from angr.state_plugins.plugin import SimStatePlugin
 
-from project.types import BPConfig, MMIOMemoryRegion
+from project.analyses.isr_memory import ISRTarget, analyze_isr_memory
+from project.types import AccessEffects, BPConfig, MMIOMemoryRegion
 
 logging.getLogger("angr.analyses.variable_recovery.engine_vex.SimEngineVRVEX").setLevel(
     logging.CRITICAL
@@ -18,62 +21,81 @@ logging.getLogger(
     "angr.analyses.propagator.engine_vex.SimEnginePropagatorVEX"
 ).setLevel(logging.CRITICAL)
 
-
-"""
-修補 angr/analyses/variable_recovery/engine_vex.py 中 SimEngineVRVEX 的 _handle_stmt_LoadG(), _handle_stmt_StoreG 的 bug，把 AST(1) 跟 True 比較會是 False，
-而忽略部分 global variable R/W instruction
-"""
-original_LoadG = engine_vex.SimEngineVRVEX._handle_stmt_LoadG
-original_StoreG = engine_vex.SimEngineVRVEX._handle_stmt_StoreG
+logger = logging.getLogger(__name__)
 
 
-def _is_guard_true(guard_expr):
-    if hasattr(guard_expr, "data"):
-        data = guard_expr.data
-        if hasattr(data, "concrete") and data.concrete:
-            if hasattr(data, "args") and len(data.args) > 0 and data.args[0] == 0:
-                return False
+class _MemoryAccessRegions:
+    def __init__(self, regions):
+        merged = []
+        for start, size in sorted(regions):
+            end = start + max(1, size)
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+
+        self._starts = tuple(start for start, _ in merged)
+        self._ends = tuple(end for _, end in merged)
+
+    def overlaps(self, start, size):
+        end = start + max(1, size)
+        index = bisect_right(self._starts, start) - 1
+        if index >= 0 and self._ends[index] > start:
             return True
-        else:
-            # VariableRecoveryFast 只有當該指令的 guard 是百分之百 True 時才會視為 global variable R/W，如果 guard 算出來是 TOP (未知) 等就不會。這裡為了要最大限度找出所有 checkpoint，所以未知的情況也回傳 True
-            return True
-    elif guard_expr is False:
+
+        next_index = index + 1
+        return next_index < len(self._starts) and self._starts[next_index] < end
+
+
+class AsynchronousEventGlobals(SimStatePlugin):
+    def __init__(
+        self,
+        before_check_handlers=None,
+        after_check_handlers=None,
+        prev_after_check_handlers=None,
+    ):
+        super().__init__()
+
+        self.before_check_handlers = (
+            set() if before_check_handlers is None else before_check_handlers
+        )
+        self.after_check_handlers = (
+            set() if after_check_handlers is None else after_check_handlers
+        )
+        self.prev_after_check_handlers = (
+            set() if prev_after_check_handlers is None else prev_after_check_handlers
+        )
+
+    def copy(self, memo):
+        o = super().copy(memo)
+
+        o.before_check_handlers = set()
+        o.after_check_handlers = set()
+        o.prev_after_check_handlers = set()
+
+        return o
+
+    def merge_key(self):
+        return (
+            frozenset(self.before_check_handlers),
+            frozenset(self.after_check_handlers),
+            frozenset(self.prev_after_check_handlers),
+        )
+
+    def merge(self, others, merge_conditions, common_ancestor=None):
+        del common_ancestor
+
+        if any(
+            self.before_check_handlers != other.before_check_handlers
+            or self.after_check_handlers != other.after_check_handlers
+            or self.prev_after_check_handlers != other.prev_after_check_handlers
+            for other in others
+        ):
+            raise SimMergeError(
+                "Cannot merge Asynchronous Event globals (before_check_handlers or after_check_handlers or prev_after_check_handlers)"
+            )
+
         return False
-    return True
-
-
-def _patched_handle_stmt_LoadG(self, stmt):
-    guard_expr = getattr(self, "_expr", lambda x: None)(stmt.guard)
-    if _is_guard_true(guard_expr):
-        addr = self._expr_bv(stmt.addr)
-        if addr is not None and getattr(addr.data, "concrete", False):
-            try:
-                self.tmps[stmt.dst] = self._load(
-                    addr, getattr(self, "tyenv").sizeof(stmt.dst) // 8
-                )
-                return
-            except Exception:
-                pass
-    return original_LoadG(self, stmt)
-
-
-def _patched_handle_stmt_StoreG(self, stmt):
-    guard_expr = getattr(self, "_expr", lambda x: None)(stmt.guard)
-    if _is_guard_true(guard_expr):
-        addr = self._expr_bv(stmt.addr)
-        if addr is not None and getattr(addr.data, "concrete", False):
-            size = stmt.data.result_size(getattr(self, "tyenv")) // 8
-            data = self._expr(stmt.data)
-            try:
-                self._store(addr, data, size, atom=stmt)
-                return
-            except Exception:
-                pass
-    return original_StoreG(self, stmt)
-
-
-engine_vex.SimEngineVRVEX._handle_stmt_LoadG = _patched_handle_stmt_LoadG
-engine_vex.SimEngineVRVEX._handle_stmt_StoreG = _patched_handle_stmt_StoreG
 
 
 class BaseCPU(ABC):
@@ -81,9 +103,179 @@ class BaseCPU(ABC):
     def normalize_address(self, addr):
         return addr
 
+    @staticmethod
+    def _add_unresolved_instruction(unresolved_inst_addrs, instruction, description):
+        if instruction is None:
+            raise ValueError(
+                f"Cannot create a checkpoint for {description}: "
+                "the analyzer did not report an instruction address"
+            )
+        unresolved_inst_addrs.add(instruction)
+
+    @staticmethod
+    def _modeled_irq_numbers(specs) -> tuple[int, ...]:
+        irq_numbers = set()
+        for region in specs.get_MMIOMemoryRegions():
+            for irq in getattr(region, "IRQ_NUMBERS", ()) or ():
+                irq = int(irq)
+                if irq < 0:
+                    raise ValueError(
+                        f"Invalid IRQ number {irq} on MMIO region {region.name}"
+                    )
+                irq_numbers.add(irq)
+        return tuple(sorted(irq_numbers))
+
+    @staticmethod
+    def _concrete_state_value(state, value, description):
+        if isinstance(value, int):
+            return value
+        if not state.solver.unique(value):
+            raise ValueError(f"Cannot resolve concrete value for {description}")
+        return state.solver.eval(value)
+
+    def _compute_isr_target(self, state, irq: int) -> ISRTarget:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not provide ISR target discovery"
+        )
+
+    def get_isr_targets(self, state, specs) -> tuple[ISRTarget, ...]:
+        return tuple(
+            self._compute_isr_target(state, irq)
+            for irq in self._modeled_irq_numbers(specs)
+        )
+
+    def get_isr_memory_report(self, proj, state, specs):
+        return self._get_isr_memory_report(
+            proj, specs, self.get_isr_targets(state, specs)
+        )
+
     @cache
-    def get_static_interrupt_checkpoints(self, proj, cfg, specs):
-        ckpts = set()
+    def _get_isr_memory_report(self, proj, specs, isr_targets):
+        report = analyze_isr_memory(
+            proj.filename, specs, isr_targets=tuple(isr_targets)
+        )
+        for access in report.initializer_accesses:
+            if access.unresolved is None:
+                continue
+            logger.warning(
+                "Adding conservative checkpoint for unresolved main memory access | "
+                "function: %s | instruction: %#x | operation: %s | reason: %s",
+                access.function,
+                access.instruction or 0,
+                access.operation,
+                access.unresolved,
+            )
+        for function, callsite in report.initializer_unresolved_calls:
+            logger.warning(
+                "Adding conservative checkpoint for unresolved main call | function: %s | callsite: %#x",
+                function,
+                callsite,
+            )
+        for isr in report.isrs:
+            for access in isr.unresolved_accesses:
+                logger.warning(
+                    "Adding conservative checkpoint for unresolved ISR memory access | ISR: %s | "
+                    "function: %s | instruction: %#x | operation: %s | reason: %s",
+                    isr.isr,
+                    access.function,
+                    access.instruction or 0,
+                    access.operation,
+                    access.unresolved,
+                )
+            for function, callsite in isr.unresolved_calls:
+                logger.warning(
+                    "Adding conservative checkpoint for unresolved ISR call | ISR: %s | "
+                    "function: %s | callsite: %#x",
+                    isr.isr,
+                    function,
+                    callsite,
+                )
+        return report
+
+    def _get_shared_access_regions_and_unresolved(self, proj, state, specs):
+        report = self.get_isr_memory_report(proj, state, specs)
+        flow_accesses = [
+            report.initializer_accesses,
+            *(isr.accesses for isr in report.isrs),
+        ]
+
+        unresolved_inst_addrs = set()
+        for function, callsite in report.initializer_unresolved_calls:
+            self._add_unresolved_instruction(
+                unresolved_inst_addrs, callsite, f"unresolved call in {function}"
+            )
+        for isr in report.isrs:
+            for function, callsite in isr.unresolved_calls:
+                self._add_unresolved_instruction(
+                    unresolved_inst_addrs, callsite, f"unresolved call in {function}"
+                )
+
+        flow_entries = []
+        flow_effects = []
+        for accesses in flow_accesses:
+            entries = []
+            effects = AccessEffects()
+            for access in accesses:
+                if access.address is None or access.unresolved is not None:
+                    self._add_unresolved_instruction(
+                        unresolved_inst_addrs,
+                        access.instruction,
+                        f"unresolved {access.operation} in {access.function}",
+                    )
+                    continue
+                access_effects = specs.get_access_effects(
+                    access.operation, access.address, access.size
+                )
+                entries.append((access, access_effects))
+                effects = effects.union(access_effects)
+            flow_entries.append(entries)
+            flow_effects.append(effects)
+
+        shared = {"read": [], "write": []}
+        for flow_index, entries in enumerate(flow_entries):
+            other_effects = AccessEffects()
+            for other_index, effects in enumerate(flow_effects):
+                if other_index != flow_index:
+                    other_effects = other_effects.union(effects)
+
+            for access, effects in entries:
+                if effects.conflicts_with(other_effects):
+                    shared[access.operation].append((access.address, access.size))
+
+        return {
+            operation: _MemoryAccessRegions(regions)
+            for operation, regions in shared.items()
+        }, unresolved_inst_addrs
+
+    def get_static_interrupt_checkpoints(self, proj, state, cfg, specs):
+        # 1. shared variables (regions) R/W 之前
+        shared_regions, unresolved_inst_addrs = (
+            self._get_shared_access_regions_and_unresolved(proj, state, specs)
+        )
+        ckpts = {
+            BPConfig(
+                "mem_read",
+                when=angr.BP_BEFORE,
+                condition=partial(
+                    self._inspect_access_in_regions,
+                    operation="read",
+                    regions=shared_regions["read"],
+                ),
+            ),
+            BPConfig(
+                "mem_write",
+                when=angr.BP_BEFORE,
+                condition=partial(
+                    self._inspect_access_in_regions,
+                    operation="write",
+                    regions=shared_regions["write"],
+                ),
+            ),
+        }
+        for inst_addr in unresolved_inst_addrs:
+            ckpts.add(
+                BPConfig("instruction", when=angr.BP_BEFORE, instruction=inst_addr)
+            )
 
         for node in cfg.graph.nodes():
             if node.block is None:
@@ -129,6 +321,31 @@ class BaseCPU(ABC):
 
         return ckpts
 
+    @staticmethod
+    def _concrete_inspect_value(state, value):
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        if not state.solver.unique(value):
+            return None
+        return state.solver.eval(value)
+
+    def _inspect_access_in_regions(self, state, operation, regions):
+        if operation == "read":
+            address = state.inspect.mem_read_address
+            size = state.inspect.mem_read_length
+        else:
+            address = state.inspect.mem_write_address
+            size = state.inspect.mem_write_length
+
+        address = self._concrete_inspect_value(state, address)
+        size = self._concrete_inspect_value(state, size)
+        if address is None or size is None:
+            return False
+
+        return regions.overlaps(address, size)
+
     @abstractmethod
     def _compute_dma_synchronize_instruction_checkpoints(self):
         pass
@@ -158,11 +375,13 @@ class BaseCPU(ABC):
                 curr_inst += 1
         return curr_inst - 1 if curr_inst > 0 else 0
 
-    class ForkEventManager(angr.ExplorationTechnique):
+    class AsynchronousEventManager(angr.ExplorationTechnique):
         def __init__(self, cpu, end_addrs):
             super().__init__()
             self.cpu = cpu
             self.end_addrs = end_addrs
+
+            AsynchronousEventGlobals.register_default("asynevt_globals")
 
         def _merge(self, state, trig_list):
             """
@@ -178,6 +397,11 @@ class BaseCPU(ABC):
                     rep_cond = group[0]
 
                     if state.solver.is_true(trig_cond == rep_cond):
+                        if any(
+                            grouped_handler is handler
+                            for grouped_handler, _ in group[1]
+                        ):
+                            continue
                         group[1].append((handler, handler_kwargs))
                         matched = True
                         break
@@ -223,8 +447,8 @@ class BaseCPU(ABC):
 
                     if new_state.addr == check_state.addr:
                         # FIXME: 不確定如果執行 event 中間又有 checkpoint，有沒有必要檢查。目前是全部先忽略
-                        new_state.custom_globals.before_check_handlers = set()
-                        new_state.custom_globals.after_check_handlers = set()
+                        new_state.asynevt_globals.before_check_handlers = set()
+                        new_state.asynevt_globals.after_check_handlers = set()
                         check_items.append((new_state, handlers))
                     else:
                         output.append(new_state)
@@ -251,14 +475,14 @@ class BaseCPU(ABC):
 
             succ_stashes = simgr.step_state(state, **kwargs)
             pruning = True
-            found_target = False
+            is_terminal = state.addr in self.end_addrs
             for before_active_state in self._process_event(
                 [
                     (
                         state,
                         set().union(
                             *(
-                                succ_active_state.custom_globals.before_check_handlers
+                                succ_active_state.asynevt_globals.before_check_handlers
                                 for succ_active_state in succ_stashes.get(None, [])
                             )
                         ),
@@ -267,14 +491,13 @@ class BaseCPU(ABC):
             ):
                 if before_active_state is state:
                     pruning = False
-                    if state.addr in self.end_addrs:
+                    if is_terminal:
                         merged_results["found"].append(state)
-                        found_target = True
                 else:
                     merged_results[None].append(before_active_state)
-            if (
-                pruning or found_target
-            ):  # found_target: 理論上不能在 end address 設 BP_AFTER，這裡直接截斷
+            if pruning or is_terminal:
+                # A terminal address is also an event checkpoint. Keep event
+                # successors, but never execute the terminal marker normally.
                 return merged_results
 
             for k, v in succ_stashes.items():
@@ -285,11 +508,11 @@ class BaseCPU(ABC):
                 after_check_items.append(
                     (
                         succ_active_state,
-                        succ_active_state.custom_globals.after_check_handlers,
+                        succ_active_state.asynevt_globals.after_check_handlers,
                     )
                 )
-                succ_active_state.custom_globals.prev_after_check_handlers = (
-                    succ_active_state.custom_globals.after_check_handlers
+                succ_active_state.asynevt_globals.prev_after_check_handlers = (
+                    succ_active_state.asynevt_globals.after_check_handlers
                 )
             merged_results[None].extend(self._process_event(after_check_items))
 

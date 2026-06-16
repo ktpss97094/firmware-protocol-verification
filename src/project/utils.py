@@ -226,5 +226,13 @@ def process_cache_file(
     return result_dict
 
 
+def same_ast(left, right):
+    if left is right:
+        return True
+    if hasattr(left, "structurally_match") and hasattr(right, "structurally_match"):
+        return left.structurally_match(right)
+    return left == right
+
+
 def stop_and_debug(state):
     state.globals["DEBUG"] = True

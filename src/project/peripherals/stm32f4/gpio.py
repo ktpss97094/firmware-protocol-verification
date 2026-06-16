@@ -2,42 +2,51 @@ import claripy
 from angr.state_plugins.plugin import SimStatePlugin
 
 from project import utils
-from project.types import AccessType, BaseRegister, BitsField, MMIOMemoryRegion
+from project.types import (
+    AccessEffects,
+    AccessType,
+    BaseRegister,
+    BitsField,
+    MemoryEffect,
+    MMIOMemoryRegion,
+    PluginEffect,
+)
 
 
-class STM32F4GPIOState(SimStatePlugin):
+class Globals(SimStatePlugin):
     def __init__(self, bsrr_write_value=None):
         super().__init__()
-        self.bsrr_write_value = (
-            claripy.BVV(0, 32) if bsrr_write_value is None else bsrr_write_value
-        )
 
-    @SimStatePlugin.memo
+        self.bsrr_write_value = bsrr_write_value
+
     def copy(self, memo):
-        return STM32F4GPIOState(self.bsrr_write_value)
+        o = super().copy(memo)
+
+        o.bsrr_write_value = self.bsrr_write_value
+
+        return o
 
     def merge(self, others, merge_conditions, common_ancestor=None):
         del common_ancestor
 
+        if self.bsrr_write_value is None and all(
+            other.bsrr_write_value is None for other in others
+        ):
+            return False
+
         if merge_conditions is None:
-            merged_value = self.bsrr_write_value
-            for other in others:
-                merged_value = claripy.If(
-                    claripy.BoolS("stm32f4_gpio_merge_bsrr"),
-                    other.bsrr_write_value,
-                    merged_value,
-                )
+            merged_bsrr_write_value = self.state.solver.union(
+                [self.bsrr_write_value] + [other.bsrr_write_value for other in others]
+            )
         else:
-            merged_value = claripy.ite_cases(
-                zip(
-                    merge_conditions[1:],
-                    (other.bsrr_write_value for other in others),
-                ),
+            merged_bsrr_write_value = claripy.ite_cases(
+                zip(merge_conditions[1:], [other.bsrr_write_value for other in others]),
                 self.bsrr_write_value,
             )
 
-        self.bsrr_write_value = merged_value
-        return True
+        changed = not utils.same_ast(self.bsrr_write_value, merged_bsrr_write_value)
+        self.bsrr_write_value = merged_bsrr_write_value
+        return changed
 
 
 class GPIO(MMIOMemoryRegion):
@@ -85,19 +94,6 @@ class GPIO(MMIOMemoryRegion):
         BR13 = BitsField(29, AccessType.W, 0)
         BS13 = BitsField(13, AccessType.W, 0)
 
-    @property
-    def _state_plugin_name(self):
-        return f"stm32f4_gpio_{self.start:x}"
-
-    def _state(self, state):
-        if not state.has_plugin(self._state_plugin_name):
-            state.register_plugin(self._state_plugin_name, STM32F4GPIOState())
-        return state.get_plugin(self._state_plugin_name)
-
-    def set_handlers(self, cpu, state, cfg, specs):
-        self._state(state)
-        return super().set_handlers(cpu, state, cfg, specs)
-
     def get_idr(self, state):
         moder = utils.load(state, self.start + GPIO.GPIO_MODER.OFFSET)
         otyper = utils.load(state, self.start + GPIO.GPIO_OTYPER.OFFSET)
@@ -118,7 +114,12 @@ class GPIO(MMIOMemoryRegion):
                 "ext_val", 1
             )  # 外部強驅動信號的邏輯值 (只有當 ext_driven == 1 時才有意義)
 
-            if state.solver.satisfiable(extra_constraints=[moder_bits == 2]):
+            alternate_function_possible = (
+                state.solver.eval(moder_bits) == 2
+                if moder_bits.concrete
+                else state.solver.satisfiable(extra_constraints=[moder_bits == 2])
+            )
+            if alternate_function_possible:
                 raise NotImplementedError(
                     "Alternate function mode is not supported yet (Should consider connected peripheral)"
                 )
@@ -157,16 +158,76 @@ class GPIO(MMIOMemoryRegion):
 
         return claripy.Concat(*idr)
 
+    def get_access_effects(self, operation, address, size):
+        effects = super().get_access_effects(operation, address, size)
+        plugin_name = f"{self.name}_globals"
+
+        if operation == "read":
+            return effects.union(
+                AccessEffects(
+                    memory=frozenset(
+                        {
+                            MemoryEffect(
+                                "read", self.start + offset, self.spec.ANGR_ARCH.bytes
+                            )
+                            for offset in (
+                                GPIO.GPIO_MODER.OFFSET,
+                                GPIO.GPIO_OTYPER.OFFSET,
+                                GPIO.GPIO_PUPDR.OFFSET,
+                                GPIO.GPIO_IDR.OFFSET,
+                                GPIO.GPIO_ODR.OFFSET,
+                            )
+                        }
+                        | {
+                            MemoryEffect(
+                                "write",
+                                self.start + GPIO.GPIO_IDR.OFFSET,
+                                self.spec.ANGR_ARCH.bytes,
+                            )
+                        }
+                    )
+                )
+            )
+
+        return effects.union(
+            AccessEffects(
+                memory=frozenset(
+                    {
+                        MemoryEffect(
+                            "read",
+                            self.start + GPIO.GPIO_ODR.OFFSET,
+                            self.spec.ANGR_ARCH.bytes,
+                        ),
+                        MemoryEffect(
+                            "write",
+                            self.start + GPIO.GPIO_ODR.OFFSET,
+                            self.spec.ANGR_ARCH.bytes,
+                        ),
+                    }
+                ),
+                plugins=frozenset(
+                    {
+                        PluginEffect("read", plugin_name, ("bsrr_write_value",)),
+                        PluginEffect("write", plugin_name, ("bsrr_write_value",)),
+                    }
+                ),
+            )
+        )
+
     def pre_write(self, state):
         _, offset, value = super().pre_write(state)
+
+        new_globals = state.get_plugin(f"{self.name}_globals").copy({})
 
         match offset:
             case GPIO.GPIO_BSRR.OFFSET:
                 # 寫入 BSRR 不會把寫入值存入暫存器
-                self._state(state).bsrr_write_value = value
+                new_globals.bsrr_write_value = value
                 state.inspect.mem_write_expr = claripy.BVV(
                     0, state.inspect.mem_write_expr.length
                 )
+
+        state.register_plugin(f"{self.name}_globals", new_globals)
 
         return _, offset, value
 
@@ -186,23 +247,29 @@ class GPIO(MMIOMemoryRegion):
     def post_write(self, state):
         _, offset, value = super().post_write(state)
 
+        globals = state.get_plugin(f"{self.name}_globals")
         new_odr = utils.load(state, self.start + GPIO.GPIO_ODR.OFFSET)
+        new_globals = state.get_plugin(f"{self.name}_globals").copy({})
 
         match offset:
             case GPIO.GPIO_BSRR.OFFSET:
-                bsrr_write_value = self._state(state).bsrr_write_value
                 for port in range(16):
                     # BS 比 BR 有較高優先權
                     new_odr = claripy.If(
-                        bsrr_write_value[port] == 1,
+                        globals.bsrr_write_value[port] == 1,
                         utils.replace_bit(new_odr, port, 1),
                         claripy.If(
-                            bsrr_write_value[port + 16] == 1,
+                            globals.bsrr_write_value[port + 16] == 1,
                             utils.replace_bit(new_odr, port, 0),
                             new_odr,
                         ),
                     )
+                    new_globals.bsrr_write_value = None
 
         utils.store(state, self.start + GPIO.GPIO_ODR.OFFSET, new_odr)
+        state.register_plugin(f"{self.name}_globals", new_globals)
 
         return _, offset, value
+
+    def set_handlers(self, cpu, state, cfg, specs):
+        Globals.register_default(f"{self.name}_globals")

@@ -40,7 +40,7 @@ class OPENCM3(Enum):
 
 
 type FirmwareMode = STM32F4XX_HAL | OPENCM3
-MODE: FirmwareMode = STM32F4XX_HAL.BLOCKING
+MODE: FirmwareMode = OPENCM3.BLOCKING
 
 
 class I2C(STM32F4_I2C):
@@ -53,40 +53,43 @@ class I2C(STM32F4_I2C):
         match offset:
             case I2C.I2C_CR1.OFFSET:
                 # --- Spec 1 ---
-                if state.solver.satisfiable(
+                violation_name = "read_back_verification (spec 1)"
+                if VerificationManager.should_check(
+                    violation_name
+                ) and state.solver.satisfiable(
                     extra_constraints=[
                         value[I2C.I2C_CR1.START.bit] == 1,
                         sr2[I2C.I2C_SR2.MSL.bit] == 1,
                         sr1[I2C.I2C_SR1.ARLO.bit] == 1,
                     ]
                 ):
-                    VerificationManager.violation(
-                        state, "read_back_verification (spec 1)"
-                    )
+                    VerificationManager.violation(state, violation_name)
 
                 # --- Spec 3 ---
-                if state.solver.satisfiable(
+                violation_name = "read_back_verification (spec 3)"
+                if VerificationManager.should_check(
+                    violation_name
+                ) and state.solver.satisfiable(
                     extra_constraints=[
                         value[I2C.I2C_CR1.STOP.bit] == 1,
                         sr2[I2C.I2C_SR2.MSL.bit] == 1,
                         sr1[I2C.I2C_SR1.ARLO.bit] == 1,
                     ]
                 ):
-                    VerificationManager.violation(
-                        state, "read_back_verification (spec 3)"
-                    )
+                    VerificationManager.violation(state, violation_name)
 
             case I2C.I2C_DR.OFFSET:
                 # --- Spec 2 ---
-                if state.solver.satisfiable(
+                violation_name = "read_back_verification (spec 2)"
+                if VerificationManager.should_check(
+                    violation_name
+                ) and state.solver.satisfiable(
                     extra_constraints=[
                         sr2[I2C.I2C_SR2.MSL.bit] == 1,
                         sr1[I2C.I2C_SR1.ARLO.bit] == 1,
                     ]
                 ):
-                    VerificationManager.violation(
-                        state, "read_back_verification (spec 2)"
-                    )
+                    VerificationManager.violation(state, violation_name)
 
         return _, offset, value
 
@@ -134,6 +137,7 @@ class Specs(BaseSpecs):
                 0x8005E09: 0,
                 # DMA
                 0x80063B9: 0,
+                0x800AF0D: 0,
             }
 
         case OPENCM3():
@@ -162,18 +166,22 @@ class Specs(BaseSpecs):
                 physical_addr=0x08000000,
             ),
             "I2C1": I2C(start=0x40005400, size=0x400, spec=self, name="I2C1"),
-            "NVIC": MMIOMemoryRegion(
-                start=0xE000E100, size=0xC00, spec=self, name="NVIC"
-            ),
-            "DMA1": DMA(start=0x40026000, size=0x400, spec=self, name="DMA1"),
         }
-        match MODE:
-            case STM32F4XX_HAL():
-                self.MEMORY_REGIONS["SysTickVariable"] = SysTickVariable(
-                    start=utils.get_symbol_addr(self.proj, "uwTick", is_variable=True),
-                    size=0x4,
-                    spec=self,
-                    name="SysTickVariable",
+        if MODE == STM32F4XX_HAL.BLOCKING:
+            self.MEMORY_REGIONS["SysTickVariable"] = SysTickVariable(
+                start=utils.get_symbol_addr(self.proj, "uwTick", is_variable=True),
+                size=0x4,
+                spec=self,
+                name="SysTickVariable",
+            )
+        else:
+            self.MEMORY_REGIONS["NVIC"] = MMIOMemoryRegion(
+                start=0xE000E100, size=0xC00, spec=self, name="NVIC"
+            )
+
+            if MODE == STM32F4XX_HAL.DMA:
+                self.MEMORY_REGIONS["DMA1"] = DMA(
+                    start=0x40026000, size=0x400, spec=self, name="DMA1"
                 )
 
         match MODE:
@@ -286,12 +294,32 @@ class Specs(BaseSpecs):
         )
 
         match MODE:
-            case STM32F4XX_HAL():
+            case STM32F4XX_HAL.BLOCKING:
                 state.inspect.b(
                     "mem_read",
                     when=angr.BP_BEFORE,
                     condition=self.MEMORY_REGIONS["SysTickVariable"].in_region_read,
                     action=self.MEMORY_REGIONS["SysTickVariable"].post_read,
+                )
+
+            case STM32F4XX_HAL.DMA:
+                state.inspect.b(
+                    "mem_read",
+                    when=angr.BP_AFTER,
+                    condition=self.MEMORY_REGIONS["DMA1"].in_region_read,
+                    action=self.MEMORY_REGIONS["DMA1"].post_read,
+                )
+                state.inspect.b(
+                    "mem_write",
+                    when=angr.BP_BEFORE,
+                    condition=self.MEMORY_REGIONS["DMA1"].in_region_write,
+                    action=self.MEMORY_REGIONS["DMA1"].pre_write,
+                )
+                state.inspect.b(
+                    "mem_write",
+                    when=angr.BP_AFTER,
+                    condition=self.MEMORY_REGIONS["DMA1"].in_region_write,
+                    action=self.MEMORY_REGIONS["DMA1"].post_write,
                 )
 
         # state.inspect.b(

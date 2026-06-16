@@ -41,7 +41,10 @@ class GPIO(STM32F4_GPIO):
 
         match offset:
             case GPIO.GPIO_ODR.OFFSET:
-                if state.solver.satisfiable(
+                violation_name = "read_back_verification (spec 1)"
+                if VerificationManager.should_check(
+                    violation_name
+                ) and state.solver.satisfiable(
                     extra_constraints=[
                         claripy.And(
                             value[GPIO.GPIO_ODR.ODR15.bit] == 0,
@@ -49,11 +52,12 @@ class GPIO(STM32F4_GPIO):
                         )
                     ]
                 ):
-                    VerificationManager.violation(
-                        state, "read_back_verification (spec 1)"
-                    )
+                    VerificationManager.violation(state, violation_name)
 
-                if state.solver.satisfiable(
+                violation_name = "read_back_verification (spec 3)"
+                if VerificationManager.should_check(
+                    violation_name
+                ) and state.solver.satisfiable(
                     extra_constraints=[
                         claripy.And(
                             value[GPIO.GPIO_ODR.ODR13.bit] == 0,
@@ -61,11 +65,12 @@ class GPIO(STM32F4_GPIO):
                         )
                     ]
                 ):
-                    VerificationManager.violation(
-                        state, "read_back_verification (spec 3)"
-                    )
+                    VerificationManager.violation(state, violation_name)
 
-                if state.solver.satisfiable(
+                violation_name = "clock_stretching (spec 1)"
+                if VerificationManager.should_check(
+                    violation_name
+                ) and state.solver.satisfiable(
                     extra_constraints=[
                         claripy.And(
                             value[GPIO.GPIO_ODR.ODR13.bit] == 0,
@@ -73,10 +78,13 @@ class GPIO(STM32F4_GPIO):
                         )
                     ]
                 ):
-                    VerificationManager.violation(state, "clock_stretching (spec 1)")
+                    VerificationManager.violation(state, violation_name)
 
             case GPIO.GPIO_BSRR.OFFSET:
-                if state.solver.satisfiable(
+                violation_name = "read_back_verification (spec 2)"
+                if VerificationManager.should_check(
+                    violation_name
+                ) and state.solver.satisfiable(
                     extra_constraints=[
                         claripy.And(
                             value[GPIO.GPIO_BSRR.BS15.bit] == 0,
@@ -85,11 +93,12 @@ class GPIO(STM32F4_GPIO):
                         state.i2c_bus.arbitration_lost,
                     ]
                 ):
-                    VerificationManager.violation(
-                        state, "read_back_verification (spec 2)"
-                    )
+                    VerificationManager.violation(state, violation_name)
 
-                if state.solver.satisfiable(
+                violation_name = "read_back_verification (spec 4)"
+                if VerificationManager.should_check(
+                    violation_name
+                ) and state.solver.satisfiable(
                     extra_constraints=[
                         claripy.And(
                             value[GPIO.GPIO_BSRR.BS13.bit] == 0,
@@ -98,11 +107,12 @@ class GPIO(STM32F4_GPIO):
                         state.i2c_bus.arbitration_lost_byte_end,
                     ]
                 ):
-                    VerificationManager.violation(
-                        state, "read_back_verification (spec 4)"
-                    )
+                    VerificationManager.violation(state, violation_name)
 
-                if state.solver.satisfiable(
+                violation_name = "clock_stretching (spec 2)"
+                if VerificationManager.should_check(
+                    violation_name
+                ) and state.solver.satisfiable(
                     extra_constraints=[
                         claripy.And(
                             value[GPIO.GPIO_BSRR.BS13.bit] == 0,
@@ -111,7 +121,7 @@ class GPIO(STM32F4_GPIO):
                         state.i2c_bus.wait_state,
                     ]
                 ):
-                    VerificationManager.violation(state, "clock_stretching (spec 2)")
+                    VerificationManager.violation(state, violation_name)
 
         return _, offset, value
 

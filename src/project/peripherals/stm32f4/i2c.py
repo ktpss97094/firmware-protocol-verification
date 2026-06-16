@@ -3,7 +3,15 @@ from angr.errors import SimMergeError
 from angr.state_plugins.plugin import SimStatePlugin
 
 from project import utils
-from project.types import AccessType, BaseRegister, BitsField, MMIOMemoryRegion
+from project.types import (
+    AccessEffects,
+    AccessType,
+    BaseRegister,
+    BitsField,
+    MemoryEffect,
+    MMIOMemoryRegion,
+    PluginEffect,
+)
 
 
 class Globals(SimStatePlugin):
@@ -25,12 +33,12 @@ class Globals(SimStatePlugin):
 
         return o
 
-    def _same_ast(self, left, right):
-        if left is right:
-            return True
-        if hasattr(left, "structurally_match") and hasattr(right, "structurally_match"):
-            return left.structurally_match(right)
-        return left == right
+    def merge_key(self):
+        return (
+            self.is_address_phase.hash(),
+            self.sr1_read,
+            self.rw is None,
+        )
 
     def merge(self, others, merge_conditions, common_ancestor=None):
         """
@@ -41,7 +49,7 @@ class Globals(SimStatePlugin):
         del common_ancestor
 
         if any(
-            not self._same_ast(self.is_address_phase, other.is_address_phase)
+            not utils.same_ast(self.is_address_phase, other.is_address_phase)
             or self.sr1_read != other.sr1_read
             for other in others
         ):
@@ -69,7 +77,7 @@ class Globals(SimStatePlugin):
                 zip(merge_conditions[1:], [other.rw for other in others]), self.rw
             )
 
-        changed = not self._same_ast(self.rw, merged_rw)
+        changed = not utils.same_ast(self.rw, merged_rw)
         self.rw = merged_rw
         return changed
 
@@ -542,6 +550,34 @@ class I2C(MMIOMemoryRegion):
         TRA = BitsField(2, AccessType.R, 0)
         BUSY = BitsField(1, AccessType.R, 0)
         MSL = BitsField(0, AccessType.R, 0)
+
+    def get_access_effects(self, operation, address, size):
+        effects = super().get_access_effects(operation, address, size)
+
+        register_effects = {
+            MemoryEffect("read", self.start + offset, self.spec.ANGR_ARCH.bytes)
+            for offset in (I2C.I2C_CR1.OFFSET, I2C.I2C_SR1.OFFSET, I2C.I2C_SR2.OFFSET)
+        }
+        register_effects.update(
+            MemoryEffect("write", self.start + offset, self.spec.ANGR_ARCH.bytes)
+            for offset in (I2C.I2C_CR1.OFFSET, I2C.I2C_SR1.OFFSET, I2C.I2C_SR2.OFFSET)
+        )
+        plugin_name = f"{self.name}_globals"
+        return effects.union(
+            AccessEffects(
+                memory=frozenset(register_effects),
+                plugins=frozenset(
+                    {
+                        PluginEffect(
+                            "read", plugin_name, ("is_address_phase", "rw", "sr1_read")
+                        ),
+                        PluginEffect(
+                            "write", plugin_name, ("is_address_phase", "rw", "sr1_read")
+                        ),
+                    }
+                ),
+            )
+        )
 
     def post_read(self, state):
         _, offset, readout_value = super().post_read(state)

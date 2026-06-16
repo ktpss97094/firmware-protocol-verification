@@ -8,6 +8,7 @@ import angr
 import claripy
 
 from project import utils
+from project.analyses.isr_memory import ISRTarget
 from project.cores.arm.arm import ARM
 from project.cores.arm.cortex_m.nvic import NVIC
 from project.types import BPConfig, EventForkHandler
@@ -30,15 +31,11 @@ class CortexM(ARM):
         # 要在所有的 hook 都完成後才執行
         cfg = state.project.analyses.CFGFast(normalize=True, cross_references=True)
 
-        self.initial_sp = self._compute_initial_sp(state)
-        self.stack_size = self._compute_stack_size(state)
-
         specs.set_handlers(cpu=self, state=state, cfg=cfg, specs=specs)
         self.set_handlers(state=state, cfg=cfg, specs=specs)
-        self.fork_event_manager = CortexM.ForkEventManager(
-            cpu=self, end_addrs=specs.END_ADDRS
+        simgr.use_technique(
+            self.AsynchronousEventManager(cpu=self, end_addrs=specs.END_ADDRS)
         )
-        simgr.use_technique(self.fork_event_manager)
 
         return cfg
 
@@ -54,12 +51,7 @@ class CortexM(ARM):
         state.globals["priority_stack"] = priority_stack
         state.globals["current_priority"] = NVIC.get_irq_priority(state, int_no)
 
-        # 計算 ISR 的 address
-        excp_no = int_no + 16
-        vector_table_base = self._get_vector_table_base(state)
-        vector_addr = vector_table_base + (excp_no * 4)
-        isr_addr = state.solver.eval(utils.load(state, vector_addr))
-
+        _, isr_addr = self._get_exception_handler_address(state, int_no)
         state.regs.pc = isr_addr
         state.regs.lr = 0xFFFFFFF1 if NVIC.is_in_handler_mode(state) else 0xFFFFFFF9
 
@@ -107,8 +99,31 @@ class CortexM(ARM):
 
     def _get_vector_table_base(self, state):
         if self.VTOR_ADDR is not None:
-            return state.solver.eval(utils.load(state, self.VTOR_ADDR)) & 0xFFFFFF80
+            return (
+                self._concrete_state_value(
+                    state, utils.load(state, self.VTOR_ADDR), "VTOR"
+                )
+                & 0xFFFFFF80
+            )
         return 0x00000000
+
+    def _get_exception_handler_address(self, state, int_no: int):
+        excp_no = int_no + 16
+        vector_addr = self._get_vector_table_base(state) + (
+            excp_no * state.arch.bytes
+        )
+        isr_addr = self._concrete_state_value(
+            state,
+            utils.load(state, vector_addr),
+            f"Cortex-M vector entry for IRQ {int_no}",
+        )
+        return vector_addr, isr_addr
+
+    def _compute_isr_target(self, state, irq: int) -> ISRTarget:
+        vector_addr, isr_addr = self._get_exception_handler_address(state, irq)
+        if isr_addr == 0:
+            raise ValueError(f"Vector entry for modeled IRQ {irq} is null")
+        return ISRTarget(irq=irq, address=isr_addr, source=vector_addr)
 
     def _compute_initial_sp(self, state):
         """
@@ -167,8 +182,8 @@ class CortexM(ARM):
 
             self.successors.add_successor(self.state, pc, claripy.true(), "Ijk_Boring")
 
-    def get_static_interrupt_checkpoints(self, proj, cfg, specs):
-        ckpts = super().get_static_interrupt_checkpoints(proj, cfg, specs)
+    def get_static_interrupt_checkpoints(self, proj, state, cfg, specs):
+        ckpts = super().get_static_interrupt_checkpoints(proj, state, cfg, specs)
 
         ckpts.add(BPConfig("instruction", when=angr.BP_AFTER, instruction=0xFFFFFFF1))
         ckpts.add(BPConfig("instruction", when=angr.BP_AFTER, instruction=0xFFFFFFF9))
@@ -183,17 +198,6 @@ class CortexM(ARM):
             self.cpu = cpu
             self.specs = specs
 
-            # checkpoints = {}
-            # self.checkpoints = utils.process_cache_file(
-            #     self.specs.FIRMWARE_PATH,
-            #     Path(self.specs.FIRMWARE_PATH).with_suffix(".intrckpt"),
-            #     self.cpu.get_interrupt_checkpoints,
-            #     proj=proj,
-            #     cfg=cfg,
-            #     specs=specs,
-            #     handler=self,
-            # )
-
             for ckpt in self.get_checkpoints(state, cfg, specs):
                 ckpt.apply_to(state, handler=self)
 
@@ -203,23 +207,7 @@ class CortexM(ARM):
 
             ckpts.update(
                 self.cpu.get_static_interrupt_checkpoints(
-                    proj=state.project, cfg=cfg, specs=specs
-                )
-            )
-
-            # globally accessible regions
-            ckpts.add(
-                BPConfig(
-                    "mem_read",
-                    when=angr.BP_BEFORE,
-                    condition=self.in_globally_accessible_region_read,
-                )
-            )
-            ckpts.add(
-                BPConfig(
-                    "mem_write",
-                    when=angr.BP_BEFORE,
-                    condition=self.in_globally_accessible_region_write,
+                    proj=state.project, state=state, cfg=cfg, specs=specs
                 )
             )
 
@@ -251,40 +239,7 @@ class CortexM(ARM):
             ]
 
         def trigger_event(self, state, irq):
-            print(f"IRQ Injection | pc: {state.regs.pc} -> Branching into IRQ {irq}")
             self.cpu.excp_entry(state, irq)
-
-        def in_globally_accessible_region(self, state, addr):
-            # stack 排除
-            # if (
-            #     (self.cpu.initial_sp - self.cpu.stack_size)
-            #     <= addr
-            #     < self.cpu.initial_sp
-            # ):
-            #     return False
-
-            # read-only 區域排除
-            obj = state.project.loader.find_object_containing(addr)
-            if obj is not None:
-                segment = obj.find_segment_containing(addr)
-                if segment is not None and not segment.is_writable:
-                    return False
-
-                section = obj.find_section_containing(addr)
-                if section is not None and not section.is_writable:
-                    return False
-
-            return True
-
-        def in_globally_accessible_region_read(self, state):
-            return self.in_globally_accessible_region(
-                state, state.solver.eval(state.inspect.mem_read_address)
-            )
-
-        def in_globally_accessible_region_write(self, state):
-            return self.in_globally_accessible_region(
-                state, state.solver.eval(state.inspect.mem_write_address)
-            )
 
     def set_handlers(self, state, cfg, specs):
         self.interrupt_handler = CortexM._InterruptHandler(

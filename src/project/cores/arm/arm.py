@@ -5,8 +5,8 @@ from project.types import BPConfig
 
 
 class ARM(BaseCPU):
-    def get_static_interrupt_checkpoints(self, proj, cfg, specs):
-        ckpts = super().get_static_interrupt_checkpoints(proj, cfg, specs)
+    def get_static_interrupt_checkpoints(self, proj, state, cfg, specs):
+        ckpts = super().get_static_interrupt_checkpoints(proj, state, cfg, specs)
 
         for node in cfg.graph.nodes():
             if node.block is None:

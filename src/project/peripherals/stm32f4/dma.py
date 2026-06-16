@@ -31,6 +31,15 @@ class DMA(BaseDMA):
         )  # Stream 6 direct mode error interrupt flag
         FEIF6 = BitsField(16, AccessType.R, 0)  # Stream 6 FIFO error interrupt flag
 
+    class DMA_HIFCR(BaseRegister):
+        OFFSET = 0x0C
+
+        CTCIF6 = BitsField(21, AccessType.W, 0)
+        CHTIF6 = BitsField(20, AccessType.W, 0)
+        CTEIF6 = BitsField(19, AccessType.W, 0)
+        CDMEIF6 = BitsField(18, AccessType.W, 0)
+        CFEIF6 = BitsField(16, AccessType.W, 0)
+
     class DMA_S6CR(BaseRegister):
         OFFSET = 0x10 + 0x18 * 6
 
@@ -41,6 +50,7 @@ class DMA(BaseDMA):
         PSIZE = BitsField(11, AccessType.RW, 0, size=2)  # Peripheral data size
         MINC = BitsField(10, AccessType.RW, 0)  # Memory increment mode
         PINC = BitsField(9, AccessType.RW, 0)  # Peripheral increment mode
+        CIRC = BitsField(8, AccessType.RW, 0)  # Circular mode
         TCIE = BitsField(4, AccessType.RW, 0)  # TC (transfer complete) interrupt enable
         HTIE = BitsField(3, AccessType.RW, 0)  # HT (half transfer) interrupt enable
         TEIE = BitsField(2, AccessType.RW, 0)  # TE (transfer error) interrupt enable
@@ -76,40 +86,71 @@ class DMA(BaseDMA):
 
         FEIE = BitsField(7, AccessType.RW, 0)  # FE (FIFO error) interrupt enable
 
+    def post_read(self, state):
+        _, offset, readout_value = super().post_read(state)
+        state.inspect.mem_read_expr = self.mask_post_read(offset, readout_value)
+        return _, offset, state.inspect.mem_read_expr
+
+    def post_write(self, state):
+        _, offset, value = super().post_write(state)
+
+        if offset == DMA.DMA_HIFCR.OFFSET:
+            hisr = utils.load(state, self.start + DMA.DMA_HISR.OFFSET)
+            clear_mask = value & (
+                DMA.DMA_HIFCR.CTCIF6.mask
+                | DMA.DMA_HIFCR.CHTIF6.mask
+                | DMA.DMA_HIFCR.CTEIF6.mask
+                | DMA.DMA_HIFCR.CDMEIF6.mask
+                | DMA.DMA_HIFCR.CFEIF6.mask
+            )
+            utils.store(state, self.start + DMA.DMA_HISR.OFFSET, hisr & ~clear_mask)
+
+        return _, offset, value
+
     def get_pending_irqs(self, state):
         s6cr = utils.load(state, self.start + DMA.DMA_S6CR.OFFSET)
         s6fcr = utils.load(state, self.start + DMA.DMA_S6FCR.OFFSET)
         events_to_check = []
         output = []
 
-        if state.solver.is_true(s6cr[DMA.DMA_S6CR.HTIE.bit] == 1):
-            events_to_check.extend(
-                [(DMA.DMA_HISR.OFFSET, DMA.DMA_HISR.HTIF6.bit, self.IRQ_NUMBERS[6])]
-            )
+        events_to_check.extend(
+            [
+                (
+                    s6cr[DMA.DMA_S6CR.HTIE.bit] == 1,
+                    DMA.DMA_HISR.OFFSET,
+                    DMA.DMA_HISR.HTIF6.bit,
+                    self.IRQ_NUMBERS[6],
+                ),
+                (
+                    s6cr[DMA.DMA_S6CR.TCIE.bit] == 1,
+                    DMA.DMA_HISR.OFFSET,
+                    DMA.DMA_HISR.TCIF6.bit,
+                    self.IRQ_NUMBERS[6],
+                ),
+                (
+                    s6cr[DMA.DMA_S6CR.TEIE.bit] == 1,
+                    DMA.DMA_HISR.OFFSET,
+                    DMA.DMA_HISR.TEIF6.bit,
+                    self.IRQ_NUMBERS[6],
+                ),
+                (
+                    s6fcr[DMA.DMA_S6FCR.FEIE.bit] == 1,
+                    DMA.DMA_HISR.OFFSET,
+                    DMA.DMA_HISR.FEIF6.bit,
+                    self.IRQ_NUMBERS[6],
+                ),
+                (
+                    s6cr[DMA.DMA_S6CR.DMEIE.bit] == 1,
+                    DMA.DMA_HISR.OFFSET,
+                    DMA.DMA_HISR.DMEIF6.bit,
+                    self.IRQ_NUMBERS[6],
+                ),
+            ]
+        )
 
-        if state.solver.is_true(s6cr[DMA.DMA_S6CR.TCIE.bit] == 1):
-            events_to_check.extend(
-                [(DMA.DMA_HISR.OFFSET, DMA.DMA_HISR.TCIF6.bit, self.IRQ_NUMBERS[6])]
-            )
-
-        if state.solver.is_true(s6cr[DMA.DMA_S6CR.TEIE.bit] == 1):
-            events_to_check.extend(
-                [(DMA.DMA_HISR.OFFSET, DMA.DMA_HISR.TEIF6.bit, self.IRQ_NUMBERS[6])]
-            )
-
-        if state.solver.is_true(s6fcr[DMA.DMA_S6FCR.FEIE.bit] == 1):
-            events_to_check.extend(
-                [(DMA.DMA_HISR.OFFSET, DMA.DMA_HISR.FEIF6.bit, self.IRQ_NUMBERS[6])]
-            )
-
-        if state.solver.is_true(s6cr[DMA.DMA_S6CR.DMEIE.bit] == 1):
-            events_to_check.extend(
-                [(DMA.DMA_HISR.OFFSET, DMA.DMA_HISR.DMEIF6.bit, self.IRQ_NUMBERS[6])]
-            )
-
-        for event_offset, event_bit, irq_num in events_to_check:
+        for enable_cond, event_offset, event_bit, irq_num in events_to_check:
             event_val = utils.load(state, self.start + event_offset)[event_bit]
-            trigger_cond = event_val == 1
+            trigger_cond = claripy.And(enable_cond, event_val == 1)
 
             if state.solver.satisfiable(extra_constraints=[trigger_cond]):
                 output.append((trigger_cond, {"irq": irq_num}))
@@ -152,59 +193,57 @@ class DMA(BaseDMA):
         def get_eligible_events(self, state):
             s6cr = utils.load(state, self.dma.start + DMA.DMA_S6CR.OFFSET)
             s6ndtr = utils.load(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET)
-            events_to_check = []
-            output = []
+            i2c1_cr2 = utils.load(
+                state, self.specs.MEMORY_REGIONS["I2C1"].start + I2C.I2C_CR2.OFFSET
+            )
+            i2c1_sr1 = utils.load(
+                state, self.specs.MEMORY_REGIONS["I2C1"].start + I2C.I2C_SR1.OFFSET
+            )
+            channel = s6cr[
+                DMA.DMA_S6CR.CHSEL.bit
+                + DMA.DMA_S6CR.CHSEL.size
+                - 1 : DMA.DMA_S6CR.CHSEL.bit
+            ]
+            ndt = s6ndtr[
+                DMA.DMA_S6NDTR.NDT.bit
+                + DMA.DMA_S6NDTR.NDT.size
+                - 1 : DMA.DMA_S6NDTR.NDT.bit
+            ]
+            trigger_cond = claripy.And(
+                channel == 1,  # I2C1_TX
+                i2c1_cr2[I2C.I2C_CR2.DMAEN.bit] == 1,
+                s6cr[DMA.DMA_S6CR.EN.bit] == 1,
+                ndt > 0,
+                i2c1_sr1[I2C.I2C_SR1.TXE.bit] == 1,
+            )
 
-            # channel select
-            match state.solver.eval(
-                s6cr[
-                    DMA.DMA_S6CR.CHSEL.bit
-                    + DMA.DMA_S6CR.CHSEL.size
-                    - 1 : DMA.DMA_S6CR.CHSEL.bit
-                ]
-            ):
-                case 1:  # I2C1_TX
-                    i2c1_cr2 = utils.load(
-                        state,
-                        self.specs.MEMORY_REGIONS["I2C1"].start + I2C.I2C_CR2.OFFSET,
-                    )
-
-                    if state.solver.is_true(
-                        claripy.And(
-                            i2c1_cr2[I2C.I2C_CR2.DMAEN.bit] == 1,
-                            s6cr[DMA.DMA_S6CR.EN.bit] == 1,
-                            s6ndtr[
-                                DMA.DMA_S6NDTR.NDT.bit
-                                + DMA.DMA_S6NDTR.NDT.size
-                                - 1 : DMA.DMA_S6NDTR.NDT.bit
-                            ]
-                            > 0,
-                        )
-                    ):
-                        events_to_check.extend(
-                            [
-                                (
-                                    self.specs.MEMORY_REGIONS["I2C1"].start
-                                    + I2C.I2C_SR1.OFFSET,
-                                    I2C.I2C_SR1.TXE.bit,
-                                )
-                            ]
-                        )
-
-            for event_addr, event_bit in events_to_check:
-                event_val = utils.load(state, event_addr)[event_bit]
-                trigger_cond = event_val == 1
-
-                if state.solver.satisfiable(extra_constraints=[trigger_cond]):
-                    output.append((trigger_cond, {}))
-
-            return output
+            if state.solver.satisfiable(extra_constraints=[trigger_cond]):
+                return [(trigger_cond, {})]
+            return []
 
         def trigger_event(self, state):
+            s6cr = utils.load(state, self.dma.start + DMA.DMA_S6CR.OFFSET)
             s6m0ar = utils.load(state, self.dma.start + DMA.DMA_S6M0AR.OFFSET)
             s6par = utils.load(state, self.dma.start + DMA.DMA_S6PAR.OFFSET)
             s6ndtr = utils.load(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET)
             hisr = utils.load(state, self.dma.start + DMA.DMA_HISR.OFFSET)
+            ndt = s6ndtr[
+                DMA.DMA_S6NDTR.NDT.bit
+                + DMA.DMA_S6NDTR.NDT.size
+                - 1 : DMA.DMA_S6NDTR.NDT.bit
+            ]
+            msize_code = s6cr[
+                DMA.DMA_S6CR.MSIZE.bit
+                + DMA.DMA_S6CR.MSIZE.size
+                - 1 : DMA.DMA_S6CR.MSIZE.bit
+            ]
+            psize_code = s6cr[
+                DMA.DMA_S6CR.PSIZE.bit
+                + DMA.DMA_S6CR.PSIZE.size
+                - 1 : DMA.DMA_S6CR.PSIZE.bit
+            ]
+            msize_bytes = 1 << state.solver.eval_one(msize_code)
+            psize_bytes = 1 << state.solver.eval_one(psize_code)
             data = utils.load(
                 state,
                 s6m0ar[
@@ -212,9 +251,15 @@ class DMA(BaseDMA):
                     + DMA.DMA_S6M0AR.M0A.size
                     - 1 : DMA.DMA_S6M0AR.M0A.bit
                 ],
+                size=msize_bytes,
             )
+            if data.size() > psize_bytes * 8:
+                data = data[psize_bytes * 8 - 1 : 0]
+            elif data.size() < psize_bytes * 8:
+                data = data.zero_extend(psize_bytes * 8 - data.size())
 
-            print(f"Perform DMA transfer | pc: {state.regs.pc}")
+            next_ndt = ndt - 1
+            transfer_complete = next_ndt == 0
             state.memory.store(
                 s6par[
                     DMA.DMA_S6PAR.PAR.bit
@@ -222,12 +267,51 @@ class DMA(BaseDMA):
                     - 1 : DMA.DMA_S6PAR.PAR.bit
                 ],
                 data,
+                size=psize_bytes,
+                endness=state.arch.memory_endness,
             )
-            utils.store(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET, s6ndtr - 1)
+
+            new_s6ndtr = claripy.Concat(
+                s6ndtr[
+                    state.arch.bits - 1 : DMA.DMA_S6NDTR.NDT.bit
+                    + DMA.DMA_S6NDTR.NDT.size
+                ],
+                next_ndt,
+            )
+            utils.store(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET, new_s6ndtr)
+
+            new_s6m0ar = claripy.If(
+                s6cr[DMA.DMA_S6CR.MINC.bit] == 1, s6m0ar + msize_bytes, s6m0ar
+            )
+            new_s6par = claripy.If(
+                s6cr[DMA.DMA_S6CR.PINC.bit] == 1, s6par + psize_bytes, s6par
+            )
+            utils.store(state, self.dma.start + DMA.DMA_S6M0AR.OFFSET, new_s6m0ar)
+            utils.store(state, self.dma.start + DMA.DMA_S6PAR.OFFSET, new_s6par)
+
+            new_s6cr = utils.replace_bit(
+                s6cr,
+                DMA.DMA_S6CR.EN.bit,
+                claripy.If(
+                    claripy.And(transfer_complete, s6cr[DMA.DMA_S6CR.CIRC.bit] == 0),
+                    claripy.BVV(0, 1),
+                    s6cr[DMA.DMA_S6CR.EN.bit],
+                ),
+            )
+            utils.store(state, self.dma.start + DMA.DMA_S6CR.OFFSET, new_s6cr)
+
             utils.store(
                 state,
                 self.dma.start + DMA.DMA_HISR.OFFSET,
-                utils.replace_bit(hisr, DMA.DMA_HISR.TCIF6.bit, 1),
+                utils.replace_bit(
+                    hisr,
+                    DMA.DMA_HISR.TCIF6.bit,
+                    claripy.If(
+                        transfer_complete,
+                        claripy.BVV(1, 1),
+                        hisr[DMA.DMA_HISR.TCIF6.bit],
+                    ),
+                ),
             )
 
         def _bp_cond_mem_op(self, state, addr):
@@ -270,7 +354,7 @@ class DMA(BaseDMA):
 
             if state.solver.is_true(s6cr[DMA.DMA_S6CR.EN.bit] == 1):
                 if state.solver.is_true(s6cr[DMA.DMA_S6CR.MINC.bit] == 1):
-                    regions.append((s6m0ar, ndt * psize_val))
+                    regions.append((s6m0ar, ndt * msize_val))
 
                     if state.solver.is_true(s6cr[DMA.DMA_S6CR.DBM.bit] == 1):
                         regions.append((s6m1ar, ndt * psize_val))
