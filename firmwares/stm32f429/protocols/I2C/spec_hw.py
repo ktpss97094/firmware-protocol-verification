@@ -40,7 +40,7 @@ class OPENCM3(Enum):
 
 
 type FirmwareMode = STM32F4XX_HAL | OPENCM3
-MODE: FirmwareMode = STM32F4XX_HAL.BLOCKING
+MODE: FirmwareMode = OPENCM3.BLOCKING
 
 
 class I2C(STM32F4_I2C):

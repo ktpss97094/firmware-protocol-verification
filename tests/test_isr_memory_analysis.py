@@ -23,17 +23,35 @@ ELF = (
 )
 
 
+def state_with_vector_alias(project, specs):
+    state = project.factory.blank_state()
+    alias = specs.MEMORY_REGIONS["VECTOR_TABLE_ALIAS"]
+    state.memory.store(
+        alias.start,
+        project.loader.memory.load(alias.physical_addr, alias.size),
+        inspect=False,
+    )
+    return state
+
+
 class ISRMemoryAnalysisTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         specs = Specs(project)
-        cls.report = analyze_isr_memory(ELF, specs)
+        state = state_with_vector_alias(project, specs)
+        cls.targets = specs.CPU.get_isr_targets(state, specs)
+        cls.report = analyze_isr_memory(ELF, specs, isr_targets=cls.targets)
 
-    def test_modeled_mmio_irqs_are_discovered_from_vector_table(self):
+    def test_modeled_mmio_irqs_are_discovered_from_initial_state(self):
+        raw_targets = {
+            target.irq: (target.source, target.address) for target in self.targets
+        }
         targets = {
             report.irq: (report.address, report.isr) for report in self.report.isrs
         }
+        self.assertEqual((0xBC, 0x08000613), raw_targets[31])
+        self.assertEqual((0xC0, 0x08000625), raw_targets[32])
         self.assertEqual({11, 12, 13, 14, 15, 16, 17, 31, 32}, set(targets))
         self.assertEqual((0x08000613, "I2C1_EV_IRQHandler"), targets[31])
         self.assertEqual((0x08000625, "I2C1_ER_IRQHandler"), targets[32])
@@ -133,9 +151,9 @@ class AccessEffectsTest(unittest.TestCase):
         )
 
         cpu = CortexM()
-        cpu.get_isr_memory_report = lambda _project, _specs: report
+        cpu.get_isr_memory_report = lambda _project, _state, _specs: report
         shared_regions, _ = cpu._get_shared_access_regions_and_unresolved(
-            project, specs
+            project, state, specs
         )
         specs.get_access_effects = lambda *_args: self.fail(
             "runtime membership must not recompute access effects"
@@ -176,15 +194,21 @@ class AccessEffectsTest(unittest.TestCase):
             )
 
         read_only_cpu = CortexM()
-        read_only_cpu.get_isr_memory_report = lambda _project, _specs: report("read")
+        read_only_cpu.get_isr_memory_report = (
+            lambda _project, _state, _specs: report("read")
+        )
         read_only, _ = read_only_cpu._get_shared_access_regions_and_unresolved(
-            project, specs
+            project, None, specs
         )
         self.assertFalse(read_only["read"].overlaps(address, 4))
 
         write_cpu = CortexM()
-        write_cpu.get_isr_memory_report = lambda _project, _specs: report("write")
-        shared, _ = write_cpu._get_shared_access_regions_and_unresolved(project, specs)
+        write_cpu.get_isr_memory_report = (
+            lambda _project, _state, _specs: report("write")
+        )
+        shared, _ = write_cpu._get_shared_access_regions_and_unresolved(
+            project, None, specs
+        )
         self.assertTrue(shared["read"].overlaps(address, 4))
         self.assertTrue(shared["write"].overlaps(address, 4))
 
@@ -204,9 +228,11 @@ class AccessEffectsTest(unittest.TestCase):
 
         specs = SpecsStub()
         cpu = CortexM()
-        cpu.get_isr_memory_report = lambda _project, _specs: report
+        cpu.get_isr_memory_report = lambda _project, _state, _specs: report
 
-        _, unresolved = cpu._get_shared_access_regions_and_unresolved(object(), specs)
+        _, unresolved = cpu._get_shared_access_regions_and_unresolved(
+            object(), None, specs
+        )
 
         self.assertEqual({0x1000}, unresolved)
 
@@ -219,20 +245,21 @@ class AccessEffectsTest(unittest.TestCase):
             isrs=[],
         )
         cpu = CortexM()
-        cpu.get_isr_memory_report = lambda _project, _specs: report
+        cpu.get_isr_memory_report = lambda _project, _state, _specs: report
 
         with self.assertRaisesRegex(
             ValueError, "analyzer did not report an instruction address"
         ):
-            cpu._get_shared_access_regions_and_unresolved(object(), object())
+            cpu._get_shared_access_regions_and_unresolved(object(), None, object())
 
     def test_base_adds_only_two_shared_effect_breakpoints(self):
         project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         specs = Specs(project)
+        state = state_with_vector_alias(project, specs)
         cpu = CortexM()
 
         checkpoints = cpu.get_static_interrupt_checkpoints(
-            project, project.analyses.CFGFast(normalize=True), specs
+            project, state, project.analyses.CFGFast(normalize=True), specs
         )
         memory_checkpoints = {
             (checkpoint.event_type, checkpoint.when)

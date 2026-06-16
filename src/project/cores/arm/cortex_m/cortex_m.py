@@ -8,6 +8,7 @@ import angr
 import claripy
 
 from project import utils
+from project.analyses.isr_memory import ISRTarget
 from project.cores.arm.arm import ARM
 from project.cores.arm.cortex_m.nvic import NVIC
 from project.types import BPConfig, EventForkHandler
@@ -50,12 +51,7 @@ class CortexM(ARM):
         state.globals["priority_stack"] = priority_stack
         state.globals["current_priority"] = NVIC.get_irq_priority(state, int_no)
 
-        # 計算 ISR 的 address
-        excp_no = int_no + 16
-        vector_table_base = self._get_vector_table_base(state)
-        vector_addr = vector_table_base + (excp_no * 4)
-        isr_addr = state.solver.eval(utils.load(state, vector_addr))
-
+        _, isr_addr = self._get_exception_handler_address(state, int_no)
         state.regs.pc = isr_addr
         state.regs.lr = 0xFFFFFFF1 if NVIC.is_in_handler_mode(state) else 0xFFFFFFF9
 
@@ -103,8 +99,31 @@ class CortexM(ARM):
 
     def _get_vector_table_base(self, state):
         if self.VTOR_ADDR is not None:
-            return state.solver.eval(utils.load(state, self.VTOR_ADDR)) & 0xFFFFFF80
+            return (
+                self._concrete_state_value(
+                    state, utils.load(state, self.VTOR_ADDR), "VTOR"
+                )
+                & 0xFFFFFF80
+            )
         return 0x00000000
+
+    def _get_exception_handler_address(self, state, int_no: int):
+        excp_no = int_no + 16
+        vector_addr = self._get_vector_table_base(state) + (
+            excp_no * state.arch.bytes
+        )
+        isr_addr = self._concrete_state_value(
+            state,
+            utils.load(state, vector_addr),
+            f"Cortex-M vector entry for IRQ {int_no}",
+        )
+        return vector_addr, isr_addr
+
+    def _compute_isr_target(self, state, irq: int) -> ISRTarget:
+        vector_addr, isr_addr = self._get_exception_handler_address(state, irq)
+        if isr_addr == 0:
+            raise ValueError(f"Vector entry for modeled IRQ {irq} is null")
+        return ISRTarget(irq=irq, address=isr_addr, source=vector_addr)
 
     def _compute_initial_sp(self, state):
         """
@@ -163,8 +182,8 @@ class CortexM(ARM):
 
             self.successors.add_successor(self.state, pc, claripy.true(), "Ijk_Boring")
 
-    def get_static_interrupt_checkpoints(self, proj, cfg, specs):
-        ckpts = super().get_static_interrupt_checkpoints(proj, cfg, specs)
+    def get_static_interrupt_checkpoints(self, proj, state, cfg, specs):
+        ckpts = super().get_static_interrupt_checkpoints(proj, state, cfg, specs)
 
         ckpts.add(BPConfig("instruction", when=angr.BP_AFTER, instruction=0xFFFFFFF1))
         ckpts.add(BPConfig("instruction", when=angr.BP_AFTER, instruction=0xFFFFFFF9))
@@ -188,7 +207,7 @@ class CortexM(ARM):
 
             ckpts.update(
                 self.cpu.get_static_interrupt_checkpoints(
-                    proj=state.project, cfg=cfg, specs=specs
+                    proj=state.project, state=state, cfg=cfg, specs=specs
                 )
             )
 

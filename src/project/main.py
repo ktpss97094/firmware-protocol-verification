@@ -525,7 +525,8 @@ def main(
     if automatic_merge and not debug:
         merge_roots = {specs.BEGIN_ADDR}
         merge_roots.update(
-            isr.address for isr in specs.CPU.get_isr_memory_report(proj, specs).isrs
+            isr.address
+            for isr in specs.CPU.get_isr_memory_report(proj, state, specs).isrs
         )
         merge_points, fork_to_join = discover_acyclic_merge_plan(
             cfg, merge_roots, loop_finder.loops

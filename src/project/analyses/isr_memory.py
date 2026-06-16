@@ -110,6 +110,13 @@ class AnalysisReport:
         return effects
 
 
+@dataclasses.dataclass(frozen=True)
+class ISRTarget:
+    irq: int
+    address: int
+    source: int | None = None
+
+
 @dataclasses.dataclass
 class _RawAccess:
     operation: str
@@ -129,9 +136,8 @@ class _RawStore:
 
 
 @dataclasses.dataclass(frozen=True)
-class _ISRTarget:
+class _ResolvedISRTarget:
     irq: int
-    vector_address: int
     address: int
     function: object
 
@@ -356,59 +362,24 @@ class ISRMemoryAnalyzer:
             raise ValueError(f"Function not found at ISR address {address:#x}")
         return function
 
-    def _vector_table_base(self) -> int:
-        symbol = self.project.loader.find_symbol("g_pfnVectors")
-        if symbol is not None:
-            return symbol.rebased_addr
-
-        for section in self.project.loader.main_object.sections:
-            if section.name == ".isr_vector":
-                return section.vaddr
-
-        raise ValueError(
-            "Cannot locate the Cortex-M vector table: "
-            "ELF has neither g_pfnVectors nor an .isr_vector section"
-        )
-
-    @staticmethod
-    def _modeled_irq_numbers(specs) -> list[int]:
-        irq_numbers = set()
-        for region in specs.get_MMIOMemoryRegions():
-            for irq in getattr(region, "IRQ_NUMBERS", ()) or ():
-                irq = int(irq)
-                if irq < 0:
-                    raise ValueError(
-                        f"Invalid IRQ number {irq} on MMIO region {region.name}"
-                    )
-                irq_numbers.add(irq)
-        return sorted(irq_numbers)
-
-    def _isr_targets(self, specs) -> list[_ISRTarget]:
-        vector_table_base = self._vector_table_base()
+    def _resolve_isr_targets(
+        self, isr_targets: tuple[ISRTarget, ...]
+    ) -> list[_ResolvedISRTarget]:
         targets = []
-        for irq in self._modeled_irq_numbers(specs):
-            vector_address = vector_table_base + (irq + 16) * self.project.arch.bytes
-            if vector_address not in self.project.loader.memory:
-                raise ValueError(
-                    f"Vector entry for IRQ {irq} is not mapped at {vector_address:#x}"
-                )
-
-            address = self.project.loader.memory.unpack_word(
-                vector_address,
-                size=self.project.arch.bytes,
-                endness=self.project.arch.memory_endness,
-            )
-            if address == 0:
-                raise ValueError(f"Vector entry for modeled IRQ {irq} is null")
-
+        for target in isr_targets:
             try:
-                function = self._function_at(address)
+                function = self._function_at(target.address)
             except ValueError as error:
+                source = (
+                    f" from source {target.source:#x}"
+                    if target.source is not None
+                    else ""
+                )
                 raise ValueError(
-                    f"Cannot resolve modeled IRQ {irq}: vector entry "
-                    f"{vector_address:#x} points to {address:#x}"
+                    f"Cannot resolve modeled IRQ {target.irq}: target{source} "
+                    f"points to {target.address:#x}"
                 ) from error
-            targets.append(_ISRTarget(irq, vector_address, address, function))
+            targets.append(_ResolvedISRTarget(target.irq, target.address, function))
         return targets
 
     def _function_name(self, instruction: int | None) -> str:
@@ -595,7 +566,7 @@ class ISRMemoryAnalyzer:
         )
 
     def _build_isr_report(
-        self, target: _ISRTarget, raw_accesses: list[_RawAccess], specs
+        self, target: _ResolvedISRTarget, raw_accesses: list[_RawAccess], specs
     ) -> ISRReport:
         grouped: dict[tuple[str, int, int, str], dict[str, set]] = {}
         effects = AccessEffects()
@@ -655,8 +626,17 @@ class ISRMemoryAnalyzer:
             effects,
         )
 
-    def analyze(self, specs) -> AnalysisReport:
-        targets = self._isr_targets(specs)
+    def analyze(
+        self, specs, isr_targets: tuple[ISRTarget, ...] | None
+    ) -> AnalysisReport:
+        if isr_targets is None:
+            raise ValueError(
+                "ISR targets must be provided by the CPU/core from an angr state; "
+                "isr_memory.py no longer discovers handlers from ELF vector symbols "
+                "or section names."
+            )
+
+        targets = self._resolve_isr_targets(isr_targets)
         facts_by_cell, pointer_facts, initializer_raw_accesses = (
             self._collect_pointer_facts(specs)
         )
@@ -704,5 +684,8 @@ def analyze_isr_memory(
     specs,
     *,
     initializer: str = "main",
+    isr_targets: tuple[ISRTarget, ...] | None = None,
 ) -> AnalysisReport:
-    return ISRMemoryAnalyzer(elf_path, initializer=initializer).analyze(specs)
+    return ISRMemoryAnalyzer(elf_path, initializer=initializer).analyze(
+        specs, isr_targets
+    )

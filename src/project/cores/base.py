@@ -10,7 +10,7 @@ import pyvex
 from angr.errors import SimMergeError
 from angr.state_plugins.plugin import SimStatePlugin
 
-from project.analyses.isr_memory import analyze_isr_memory
+from project.analyses.isr_memory import ISRTarget, analyze_isr_memory
 from project.types import AccessEffects, BPConfig, MMIOMemoryRegion
 
 logging.getLogger("angr.analyses.variable_recovery.engine_vex.SimEngineVRVEX").setLevel(
@@ -112,9 +112,48 @@ class BaseCPU(ABC):
             )
         unresolved_inst_addrs.add(instruction)
 
+    @staticmethod
+    def _modeled_irq_numbers(specs) -> tuple[int, ...]:
+        irq_numbers = set()
+        for region in specs.get_MMIOMemoryRegions():
+            for irq in getattr(region, "IRQ_NUMBERS", ()) or ():
+                irq = int(irq)
+                if irq < 0:
+                    raise ValueError(
+                        f"Invalid IRQ number {irq} on MMIO region {region.name}"
+                    )
+                irq_numbers.add(irq)
+        return tuple(sorted(irq_numbers))
+
+    @staticmethod
+    def _concrete_state_value(state, value, description):
+        if isinstance(value, int):
+            return value
+        if not state.solver.unique(value):
+            raise ValueError(f"Cannot resolve concrete value for {description}")
+        return state.solver.eval(value)
+
+    def _compute_isr_target(self, state, irq: int) -> ISRTarget:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not provide ISR target discovery"
+        )
+
+    def get_isr_targets(self, state, specs) -> tuple[ISRTarget, ...]:
+        return tuple(
+            self._compute_isr_target(state, irq)
+            for irq in self._modeled_irq_numbers(specs)
+        )
+
+    def get_isr_memory_report(self, proj, state, specs):
+        return self._get_isr_memory_report(
+            proj, specs, self.get_isr_targets(state, specs)
+        )
+
     @cache
-    def get_isr_memory_report(self, proj, specs):
-        report = analyze_isr_memory(proj.filename, specs)
+    def _get_isr_memory_report(self, proj, specs, isr_targets):
+        report = analyze_isr_memory(
+            proj.filename, specs, isr_targets=tuple(isr_targets)
+        )
         for access in report.initializer_accesses:
             if access.unresolved is None:
                 continue
@@ -153,9 +192,8 @@ class BaseCPU(ABC):
                 )
         return report
 
-    @cache
-    def _get_shared_access_regions_and_unresolved(self, proj, specs):
-        report = self.get_isr_memory_report(proj, specs)
+    def _get_shared_access_regions_and_unresolved(self, proj, state, specs):
+        report = self.get_isr_memory_report(proj, state, specs)
         flow_accesses = [
             report.initializer_accesses,
             *(isr.accesses for isr in report.isrs),
@@ -209,11 +247,10 @@ class BaseCPU(ABC):
             for operation, regions in shared.items()
         }, unresolved_inst_addrs
 
-    @cache
-    def get_static_interrupt_checkpoints(self, proj, cfg, specs):
+    def get_static_interrupt_checkpoints(self, proj, state, cfg, specs):
         # 1. shared variables (regions) R/W 之前
         shared_regions, unresolved_inst_addrs = (
-            self._get_shared_access_regions_and_unresolved(proj, specs)
+            self._get_shared_access_regions_and_unresolved(proj, state, specs)
         )
         ckpts = {
             BPConfig(
