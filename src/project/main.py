@@ -22,11 +22,12 @@ from project.types import (
     CFGJoinMerge,
     CustomEngine,
     CustomLoopSeer,
+    DFSJoinMerge,
     DFSPickFirstSuccessor,
     ExploreTermination,
     MMIOMemoryRegion,
     VariableMemoryRegion,
-    discover_acyclic_merge_points,
+    discover_acyclic_merge_plan,
 )
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,7 @@ def configure_search_techniques(
     automatic_merge: bool,
     debug: bool,
     merge_points=(),
+    fork_to_join=None,
 ):
     if search not in {"dfs", "bfs"}:
         raise ValueError(f"Unsupported search strategy: {search}")
@@ -193,15 +195,19 @@ def configure_search_techniques(
         return
 
     if automatic_merge and merge_points:
-        simgr.use_technique(
-            CFGJoinMerge(
-                merge_points=merge_points,
-                merge_key=state_merge_key,
-                deferred_stash="deferred" if search == "dfs" else None,
+        if search == "dfs":
+            simgr.use_technique(
+                DFSJoinMerge(
+                    merge_points=merge_points,
+                    fork_to_join=fork_to_join or {},
+                    merge_key=state_merge_key,
+                )
             )
-        )
-
-    if search == "dfs":
+        else:
+            simgr.use_technique(
+                CFGJoinMerge(merge_points=merge_points, merge_key=state_merge_key)
+            )
+    elif search == "dfs":
         simgr.use_technique(angr.exploration_techniques.DFS())
 
 
@@ -255,9 +261,26 @@ def explore_step_func(simgr):
             for name, states in simgr.stashes.items()
             if states and name not in {"active", "deferred", "found", "violated"}
         )
+        dfs_join = next(
+            (
+                technique
+                for technique in simgr._techniques
+                if isinstance(technique, DFSJoinMerge)
+            ),
+            None,
+        )
+        merge_status = (
+            "disabled"
+            if dfs_join is None
+            else (
+                f"tokens={len(dfs_join._tokens)} merged={dfs_join.states_merged} "
+                f"expired={dfs_join.expired_tokens} "
+                f"depth_limited={dfs_join.depth_limited_groups}"
+            )
+        )
         logger.info(
             "Step=%d Active=%d Deferred=%d Found=%d Violated=%d "
-            "ActivePCs=[%s] OtherStashes=[%s] MaxRSS=%.1f MiB",
+            "ActivePCs=[%s] OtherStashes=[%s] DFSJoin=[%s] MaxRSS=%.1f MiB",
             step_cnt,
             len(simgr.active),
             deferred_count,
@@ -265,6 +288,7 @@ def explore_step_func(simgr):
             violated_cnt,
             _format_active_pcs(simgr.active),
             nonempty_stashes,
+            merge_status,
             max_rss_mib,
         )
     # print(f"pc: {[hex(state.solver.eval(state.regs.pc)) for state in simgr.active]}")
@@ -497,17 +521,20 @@ def main(
     loop_finder = proj.analyses.LoopFinder(kb=cfg.kb, normalize=True)
 
     merge_points = set()
+    fork_to_join = {}
     if automatic_merge and not debug:
         merge_roots = {specs.BEGIN_ADDR}
         merge_roots.update(
             isr.address for isr in specs.CPU.get_isr_memory_report(proj, specs).isrs
         )
-        merge_points = discover_acyclic_merge_points(
+        merge_points, fork_to_join = discover_acyclic_merge_plan(
             cfg, merge_roots, loop_finder.loops
         )
         logger.info(
-            "Discovered %d acyclic CFG merge points from %d execution roots: %s",
+            "Discovered %d acyclic CFG merge points and %d fork instructions "
+            "from %d execution roots: %s",
             len(merge_points),
+            len(fork_to_join),
             len(merge_roots),
             ", ".join(hex(addr) for addr in sorted(merge_points)),
         )
@@ -517,6 +544,7 @@ def main(
         automatic_merge=automatic_merge,
         debug=debug,
         merge_points=merge_points,
+        fork_to_join=fork_to_join,
     )
     simgr.use_technique(
         CustomLoopSeer(
