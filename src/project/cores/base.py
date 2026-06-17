@@ -103,6 +103,19 @@ class BaseCPU(ABC):
     def normalize_address(self, addr):
         return addr
 
+    def get_current_return_address(self, state):
+        if state.arch.call_pushes_ret:
+            return state.mem[state.regs.sp].uint.resolved
+
+        if state.arch.lr_offset is not None:
+            return state.registers.load(
+                state.arch.lr_offset,
+                state.arch.bytes,
+                endness=state.arch.register_endness,
+            )
+
+        raise NotImplementedError("No return address can be retrieved")
+
     @staticmethod
     def _add_unresolved_instruction(unresolved_inst_addrs, instruction, description):
         if instruction is None:

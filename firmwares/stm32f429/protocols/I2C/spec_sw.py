@@ -243,15 +243,6 @@ class Specs(BaseSpecs):
             returnty=SimTypeBool(),
         )
 
-        self.END_ADDRS = [
-            utils.convert_thumb_mode(
-                self.proj,
-                utils.get_symbol_addr(
-                    self.proj, "END_SYMBOLIC_EXECUTION", is_variable=False
-                ),
-            )
-        ]
-
     def init_inspect(self, state: angr.SimState):
         state.inspect.b(
             "mem_write",

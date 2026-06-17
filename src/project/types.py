@@ -536,15 +536,10 @@ class DFSJoinMerge(DFS):
 
         released = []
         for group in keyed_states.values():
-            depths = [
-                state.globals.get(self._MERGE_DEPTH_KEY, 0) for state in group
-            ]
+            depths = [state.globals.get(self._MERGE_DEPTH_KEY, 0) for state in group]
             before_count = len(group)
             added_depth = before_count - 1
-            if (
-                before_count > 1
-                and max(depths) + added_depth <= self.max_merge_depth
-            ):
+            if before_count > 1 and max(depths) + added_depth <= self.max_merge_depth:
                 self.merge_attempts += 1
                 merged = self._merge_group(simgr, group)
                 if len(merged) < before_count:
@@ -564,9 +559,7 @@ class DFSJoinMerge(DFS):
             self.expired_tokens += 1
 
         if reduction:
-            outer_stack = tuple(
-                token_states[0].globals.get(self._TOKEN_STACK_KEY, ())
-            )
+            outer_stack = tuple(token_states[0].globals.get(self._TOKEN_STACK_KEY, ()))
             self._adjust_outstanding(outer_stack, -reduction)
 
         simgr.stashes[stash].extend(released)
@@ -1051,9 +1044,9 @@ class MMIOMemoryRegion(MemoryRegion):
             undefined_mask = ((1 << val.size()) - 1) ^ defined_mask
             register_offset = offset - (offset % 4)
             bit_offset = (offset - register_offset) * 8
-            reset_value = (
-                self._rst_vals[register_offset] >> bit_offset
-            ) & ((1 << val.size()) - 1)
+            reset_value = (self._rst_vals[register_offset] >> bit_offset) & (
+                (1 << val.size()) - 1
+            )
 
             return (
                 (val & (mask_rw | mask_r | mask_rc_w0))

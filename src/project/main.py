@@ -520,6 +520,9 @@ def main(
     simgr = proj.factory.simgr(state)
     simgr.stashes["violated"] = []
     simgr.stashes["loopseer"] = []
+    specs.END_ADDRS.append(
+        state.solver.eval(specs.CPU.get_current_return_address(state))
+    )
     cfg = specs.CPU.setup(state, specs, simgr)
     loop_finder = proj.analyses.LoopFinder(kb=cfg.kb, normalize=True)
 

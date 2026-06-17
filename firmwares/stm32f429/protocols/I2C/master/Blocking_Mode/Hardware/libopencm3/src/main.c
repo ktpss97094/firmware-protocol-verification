@@ -36,7 +36,6 @@ int main(void) {
 
     uint8_t data[65536];
     i2c_transfer7(I2C_PORT, 0x68, data, 1, NULL, 0);
-    SYMBOL_MARKER("END_SYMBOLIC_EXECUTION");
 
     while (1) {}
 

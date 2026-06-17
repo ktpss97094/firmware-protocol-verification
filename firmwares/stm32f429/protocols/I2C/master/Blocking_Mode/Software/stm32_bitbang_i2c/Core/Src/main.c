@@ -101,9 +101,7 @@ int main(void)
   // }
 
   uint8_t data[256];
-
-  bool result = I2C_transmit(0x68 << 1, data, 1);
-  SYMBOL_MARKER("END_SYMBOLIC_EXECUTION");
+  I2C_transmit(0x68 << 1, data, 1);
   /* USER CODE END 3 */
 }
 

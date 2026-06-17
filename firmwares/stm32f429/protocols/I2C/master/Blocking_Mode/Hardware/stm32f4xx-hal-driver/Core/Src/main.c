@@ -88,8 +88,7 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   uint8_t data[65536];
-  HAL_StatusTypeDef result = HAL_I2C_Master_Transmit(&hi2c1, 0x68 << 1, data, 2, 5);
-  SYMBOL_MARKER("END_SYMBOLIC_EXECUTION");
+  HAL_I2C_Master_Transmit(&hi2c1, 0x68 << 1, data, 2, 5);
   /* USER CODE END 2 */
 
   /* Infinite loop */
