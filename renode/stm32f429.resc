@@ -1,5 +1,9 @@
+# Renode 的 STM32F429 GPIO 沒有實作 OTYPER register，故沒有 open-drain 設定
+
 mach create
 machine LoadPlatformDescription @platforms/cpus/stm32f429.repl
+# Renode 的 STM32F429 沒有放入 DWT，需要自己放
+machine LoadPlatformDescriptionFromString "dwt: Miscellaneous.DWT @ sysbus 0xE0001000 { frequency: 72000000 }"
 # machine LoadPlatformDescriptionFromString "dummy: Mocks.DummyI2CSlave @ i2c1 0x68"
 
 sysbus LoadELF @../firmwares/stm32f429/build/protocols/I2C/master/Blocking_Mode/Hardware/stm32f4xx-hal-driver/firmware.elf

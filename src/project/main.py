@@ -201,6 +201,9 @@ def configure_search_techniques(
                     merge_points=merge_points,
                     fork_to_join=fork_to_join or {},
                     merge_key=state_merge_key,
+                    max_wait_steps=1024,
+                    max_waiting_states=32,
+                    max_merge_depth=8,
                 )
             )
         else:
