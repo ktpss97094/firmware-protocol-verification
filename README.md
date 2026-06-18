@@ -6,6 +6,11 @@
     sudo apt-get update
     sudo apt-get install -y python3-pip python3-setuptools python3-dev cmake build-essential gdb-multiarch
     ```
+3. Install OpenOCD
+    ```sh
+    sudo apt update
+    sudo apt install openocd
+    ```
 3. Install [Renode](https://github.com/renode/renode)
 
 ## Build
@@ -20,7 +25,25 @@ uv sync
 uv run verify <spec file>
 ```
 
-## angr-management
+## Utilities
+
+### Renode
+
+### Remote OpenOCD
+
+Open two terminals.
+
+1. First terminal:
+    ```sh
+    openocd -f <interface script> -f <target script>
+    ```
+2. Second terminal:
+    ```sh
+    ssh -R 3333:localhost:3333 <user>@<IP>
+    ```
+    and [verify](#verify) using `--debug` parameter.
+
+### angr-management
 
 可協助找 loop entry block address
 1. 可視覺化顯示 control-flow graph
