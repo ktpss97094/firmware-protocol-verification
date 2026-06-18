@@ -4,7 +4,6 @@
 #include <stddef.h>
 
 #define I2C_PORT      I2C1
-#define SYMBOL_MARKER(name) __asm__ volatile (".global " #name "\n" #name ":")
 
 static void clock_setup(void) {
     rcc_osc_on(RCC_HSI);
@@ -36,8 +35,6 @@ int main(void) {
 
     uint8_t data[65536];
     i2c_transfer7(I2C_PORT, 0x68, data, 1, NULL, 0);
-
-    while (1) {}
 
     return 0;
 }

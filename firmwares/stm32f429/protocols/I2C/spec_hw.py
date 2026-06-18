@@ -125,28 +125,37 @@ class Specs(BaseSpecs):
     ANGR_ARCH = archinfo.ArchARMCortexM(endness=archinfo.Endness.LE)
 
     # --- Parameters ---
+    # BOUND_LOOPS 如果 firmware 有異動，要重新計算
     match MODE:
         case STM32F4XX_HAL():
             BOUND_LOOPS = {
                 # BLOCKING
-                0x800AF79: 2,
-                0x800B0BD: 2,
-                0x800B181: 2,
-                0x800B211: 2,
+                # I2C_WaitOnFlagUntilTimeout()
+                0x800AF4D: 2,
+                # I2C_WaitOnMasterAddressFlagUntilTimeout()
+                0x800B091: 2,
+                # I2C_WaitOnTXEFlagUntilTimeout()
+                0x800B155: 2,
+                # I2C_WaitOnBTFFlagUntilTimeout()
+                0x800B1E5: 2,
                 # INTERRUPT
-                0x8005E09: 0,
+                # HAL_I2C_Master_Transmit_IT()
+                0x8005DE1: 0,
                 # DMA
-                0x80063B9: 0,
-                0x800AF0D: 0,
+                # HAL_I2C_Master_Transmit_DMA()
+                0x8006391: 0,
+                # I2C_DMAAbort()
+                0x800AEDD: 0,
             }
 
         case OPENCM3():
             BOUND_LOOPS = {
                 # BLOCKING
-                0x8000453: 0,
-                0x8000461: 0,
-                0x8000485: 0,
-                0x8000497: 0,
+                # i2c_write7_v1()
+                0x800045B: 0,
+                0x8000469: 0,
+                0x800048D: 0,
+                0x800049F: 0,
             }
 
     def _define_specs(self):

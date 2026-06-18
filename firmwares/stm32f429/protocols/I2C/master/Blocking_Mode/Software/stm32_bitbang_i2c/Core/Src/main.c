@@ -21,7 +21,6 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "utils.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -88,7 +87,8 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
-
+  uint8_t data[256];
+  I2C_transmit(0x68 << 1, data, 2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -100,8 +100,6 @@ int main(void)
     
   // }
 
-  uint8_t data[256];
-  I2C_transmit(0x68 << 1, data, 1);
   /* USER CODE END 3 */
 }
 
