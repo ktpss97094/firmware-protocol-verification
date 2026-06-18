@@ -35,7 +35,12 @@ app = typer.Typer(name="verify")
 found_cnt, violated_cnt, step_cnt = 0, 0, 0
 
 
-def init_logging():
+def init_logging(log_file=None):
+    if log_file:
+        config.LOGGING_CONFIG["handlers"]["file"]["filename"] = str(
+            config.LOG_DIR / log_file
+        )
+
     logging.config.dictConfig(config.LOGGING_CONFIG)
 
     # 關閉 pcode error
@@ -325,6 +330,7 @@ def main(
     search: Literal["dfs", "bfs"] = "dfs",
     renode: bool = False,
     automatic_merge: bool = True,
+    log: str = "project.log",
     debug: Annotated[bool, typer.Option(hidden=True)] = False,
 ):
     global found_cnt, violated_cnt, step_cnt
@@ -335,7 +341,7 @@ def main(
 
     Specs = load_specs_class(spec)
 
-    init_logging()
+    init_logging(log)
 
     avatar = avatar2.Avatar(
         arch=Specs.AVATAR_ARCH, output_directory=config.AVATAR_LOG_PATH

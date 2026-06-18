@@ -35,7 +35,7 @@ LOGGING_CONFIG = {
         },
         "file": {
             "class": "logging.FileHandler",
-            "filename": str(LOG_DIR / "project.log"),
+            # "filename": str(LOG_DIR / "project.log"),
             "mode": "w",
             "formatter": "standard",
             "level": "DEBUG",
