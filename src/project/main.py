@@ -9,7 +9,7 @@ from collections import Counter
 from functools import partial
 from pathlib import Path
 from types import ModuleType
-from typing import Annotated, Any, Literal, Type
+from typing import Annotated, Any, Literal, Optional, Type
 
 import angr
 import avatar2
@@ -324,11 +324,28 @@ def LoopSeer_bound_reached_handler(seer, state, bound_loops):
         seer.cut_succs.append(state)
 
 
+def gdb_callback(ctx: typer.Context, value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+
+    if ctx.params.get("renode"):
+        raise typer.BadParameter("--gdb cannot be used with --renode.")
+
+
 @app.command()
 def main(
     spec: str,
     search: Literal["dfs", "bfs"] = "dfs",
-    renode: bool = False,
+    renode: Annotated[
+        bool, typer.Option(help="Use Renode to extract initial state.")
+    ] = False,
+    gdb: Annotated[
+        bool,
+        typer.Option(
+            callback=gdb_callback,
+            help="Connect to a GDB server. It can be used to extract initial state from a remote OpenOCD process.",
+        ),
+    ] = False,
     automatic_merge: bool = True,
     log: str = "project.log",
     debug: Annotated[bool, typer.Option(hidden=True)] = False,
@@ -366,6 +383,10 @@ def main(
             gdb_serial_device="127.0.0.1",
             serial=False,
             gdb_additional_args=[Specs.FIRMWARE_PATH],
+        )
+    elif gdb:
+        avatar_target = avatar.add_target(
+            avatar2.GDBTarget, gdb_port=3333, gdb_serial_device="127.0.0.1"
         )
     else:
         avatar_target = avatar.add_target(
