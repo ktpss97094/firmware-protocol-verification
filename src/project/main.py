@@ -331,6 +331,8 @@ def gdb_callback(ctx: typer.Context, value: Optional[str]) -> Optional[str]:
     if ctx.params.get("renode"):
         raise typer.BadParameter("--gdb cannot be used with --renode.")
 
+    return value
+
 
 @app.command()
 def main(
