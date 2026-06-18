@@ -208,7 +208,7 @@ def configure_search_techniques(
                     merge_key=state_merge_key,
                     max_wait_steps=1024,
                     max_waiting_states=32,
-                    max_merge_depth=8,
+                    max_merge_depth=32,
                 )
             )
         else:
