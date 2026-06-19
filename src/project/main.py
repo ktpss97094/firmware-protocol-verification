@@ -418,6 +418,11 @@ def main(
 
     avatar.init_targets()
 
+    if gdb:
+        try:
+            avatar_target.protocols.execution.console_command("monitor reset halt")
+        except Exception as e:
+            logger.warning(f"Failed to reset/halt GDB target: {e}")
     avatar_target.set_breakpoint(specs.BEGIN_ADDR)
     avatar_target.cont()
     avatar_target.wait()
