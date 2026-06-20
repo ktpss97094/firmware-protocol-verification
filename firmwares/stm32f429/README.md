@@ -10,7 +10,7 @@ sudo apt install cmake gcc-arm-none-eabi binutils-arm-none-eabi
 ## Build
 
 ```sh
-cmake -DCMAKE_TOOLCHAIN_FILE=../cmake/arm-none-eabi-toolchain.cmake -B build
+cmake -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/arm-none-eabi.cmake -B build
 ```
 
 ## Compile
