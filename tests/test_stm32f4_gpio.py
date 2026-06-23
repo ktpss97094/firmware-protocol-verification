@@ -5,7 +5,9 @@ import angr
 import archinfo
 import claripy
 
-from project.peripherals.stm32f4.gpio import GPIO
+from firmwares.stm32f429.protocols.I2C.spec_sw import GPIO as SoftwareI2CGPIO
+from project.peripherals.stm32f4.gpio import GPIO, Globals
+from project.protocols.i2c import I2CBus
 
 
 class STM32F4GPIOTest(unittest.TestCase):
@@ -118,6 +120,46 @@ class STM32F4GPIOTest(unittest.TestCase):
         self.assertEqual(1, self.state.solver.eval(value[GPIO.GPIO_IDR.IDR13.bit]))
         self.assertEqual(1, self.state.solver.eval(stored_idr[GPIO.GPIO_IDR.IDR13.bit]))
         self.assertEqual(0, self.state.solver.eval(value[GPIO.GPIO_IDR.IDR15.bit]))
+
+    def test_software_i2c_bsrr_post_write_keeps_bus_flags_as_bool_asts(self):
+        gpio = SoftwareI2CGPIO(
+            start=self.gpio.start,
+            size=self.gpio.size,
+            spec=self.gpio.spec,
+            name=self.gpio.name,
+        )
+        self.state.register_plugin("GPIOC_globals", Globals())
+        self.state.register_plugin("i2c_bus", I2CBus())
+
+        for _ in range(2):
+            self.state.inspect.mem_write_address = claripy.BVV(
+                gpio.start + GPIO.GPIO_BSRR.OFFSET, self.arch.bits
+            )
+            self.state.inspect.mem_write_expr = claripy.BVV(
+                1 << GPIO.GPIO_BSRR.BS13.bit, 32
+            )
+            self.state.inspect.mem_write_length = 4
+            self.state.inspect.mem_write_condition = None
+            self.state.inspect.mem_write_endness = self.arch.memory_endness
+
+            gpio.pre_write(self.state)
+            self.state.memory.store(
+                gpio.start + GPIO.GPIO_BSRR.OFFSET,
+                self.state.inspect.mem_write_expr,
+                size=self.arch.bytes,
+                endness=self.arch.memory_endness,
+                inspect=False,
+            )
+            gpio.post_write(self.state)
+
+            self.assertIsInstance(
+                self.state.i2c_bus.arbitration_lost, claripy.ast.bool.Bool
+            )
+            self.assertIsInstance(
+                self.state.i2c_bus.arbitration_lost_byte_end,
+                claripy.ast.bool.Bool,
+            )
+            self.assertIsInstance(self.state.i2c_bus.wait_state, claripy.ast.bool.Bool)
 
 
 if __name__ == "__main__":

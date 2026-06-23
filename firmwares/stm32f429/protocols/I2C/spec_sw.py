@@ -196,17 +196,15 @@ class GPIO(STM32F4_GPIO):
                     ),
                 )
 
-                state.i2c_bus.arbitration_lost = (
-                    claripy.If(
-                        is_rising_edge,
-                        claripy.Or(
-                            state.i2c_bus.arbitration_lost,
-                            claripy.And(
-                                sda_out == 1, sda_in == 0
-                            ),  # 當前 SDA 輸出 1，但實際讀到的是 0
-                        ),
+                state.i2c_bus.arbitration_lost = claripy.If(
+                    is_rising_edge,
+                    claripy.Or(
                         state.i2c_bus.arbitration_lost,
+                        claripy.And(
+                            sda_out == 1, sda_in == 0
+                        ),  # 當前 SDA 輸出 1，但實際讀到的是 0
                     ),
+                    state.i2c_bus.arbitration_lost,
                 )
 
                 state.i2c_bus.wait_state = claripy.If(
