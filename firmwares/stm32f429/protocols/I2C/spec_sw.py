@@ -150,10 +150,7 @@ class GPIO(STM32F4_GPIO):
                 )
 
                 state.i2c_bus.wait_state = claripy.If(
-                    claripy.And(
-                        state.i2c_bus.wait_state,
-                        readout_value[GPIO.GPIO_IDR.IDR13.bit] == 1,
-                    ),
+                    claripy.And(state.i2c_bus.wait_state, scl_in == 1),
                     claripy.false(),
                     state.i2c_bus.wait_state,
                 )
@@ -173,6 +170,8 @@ class GPIO(STM32F4_GPIO):
         match offset:
             case GPIO.GPIO_BSRR.OFFSET | GPIO.GPIO_ODR.OFFSET:
                 idr = self.get_idr(state)
+                scl_in = idr[GPIO.GPIO_IDR.IDR13.bit]
+                sda_in = idr[GPIO.GPIO_IDR.IDR15.bit]
 
                 is_rising_edge = claripy.And(
                     state.i2c_bus.prev_scl_out == 0, scl_out == 1
@@ -203,7 +202,7 @@ class GPIO(STM32F4_GPIO):
                         claripy.Or(
                             state.i2c_bus.arbitration_lost,
                             claripy.And(
-                                sda_out == 1, idr[GPIO.GPIO_IDR.IDR15.bit] == 0
+                                sda_out == 1, sda_in == 0
                             ),  # 當前 SDA 輸出 1，但實際讀到的是 0
                         ),
                         state.i2c_bus.arbitration_lost,
@@ -212,7 +211,7 @@ class GPIO(STM32F4_GPIO):
 
                 state.i2c_bus.wait_state = claripy.If(
                     claripy.And(
-                        is_rising_edge, idr[GPIO.GPIO_IDR.IDR13.bit] == 0
+                        is_rising_edge, scl_in == 0
                     ),  # 已經 rising edge (controller SCL 輸出 1) 了，但卻讀到 0
                     claripy.true(),
                     state.i2c_bus.wait_state,
