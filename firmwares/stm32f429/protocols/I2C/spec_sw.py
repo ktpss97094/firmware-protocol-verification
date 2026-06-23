@@ -127,9 +127,28 @@ class GPIO(STM32F4_GPIO):
 
     def post_read(self, state):
         _, offset, readout_value = super().post_read(state)
+        scl_in = readout_value[GPIO.GPIO_IDR.IDR13.bit]
+        sda_in = readout_value[GPIO.GPIO_IDR.IDR15.bit]
 
         match offset:
             case GPIO.GPIO_IDR.OFFSET:
+                is_stop_condition = claripy.And(
+                    state.i2c_bus.prev_scl_in == 1,
+                    scl_in == 1,
+                    state.i2c_bus.prev_sda_in == 0,
+                    sda_in == 1,
+                )
+
+                state.i2c_bus.arbitration_lost = claripy.If(
+                    is_stop_condition, claripy.false(), state.i2c_bus.arbitration_lost
+                )
+
+                state.i2c_bus.arbitration_lost_byte_end = claripy.If(
+                    is_stop_condition,
+                    claripy.false(),
+                    state.i2c_bus.arbitration_lost_byte_end,
+                )
+
                 state.i2c_bus.wait_state = claripy.If(
                     claripy.And(
                         state.i2c_bus.wait_state,
@@ -138,6 +157,9 @@ class GPIO(STM32F4_GPIO):
                     claripy.false(),
                     state.i2c_bus.wait_state,
                 )
+
+                state.i2c_bus.prev_scl_in = scl_in
+                state.i2c_bus.prev_sda_in = sda_in
 
         return _, offset, readout_value
 
@@ -159,10 +181,10 @@ class GPIO(STM32F4_GPIO):
                     state.i2c_bus.prev_scl_out == 1, scl_out == 0
                 )
                 is_start_condition = claripy.And(
-                    scl_out == 1, state.i2c_bus.prev_sda_out == 1, sda_out == 0
-                )
-                is_stop_condition = claripy.And(
-                    scl_out == 1, state.i2c_bus.prev_sda_out == 0, sda_out == 1
+                    state.i2c_bus.prev_scl_out == 1,
+                    scl_out == 1,
+                    state.i2c_bus.prev_sda_out == 1,
+                    sda_out == 0,
                 )
 
                 state.i2c_bus.bit_count = claripy.If(
@@ -175,9 +197,7 @@ class GPIO(STM32F4_GPIO):
                     ),
                 )
 
-                state.i2c_bus.arbitration_lost = claripy.If(
-                    is_stop_condition,
-                    claripy.false(),
+                state.i2c_bus.arbitration_lost = (
                     claripy.If(
                         is_rising_edge,
                         claripy.Or(
@@ -199,19 +219,14 @@ class GPIO(STM32F4_GPIO):
                 )
 
                 state.i2c_bus.arbitration_lost_byte_end = claripy.If(
-                    is_stop_condition,
-                    claripy.false(),
-                    claripy.If(
-                        is_falling_edge,
-                        claripy.Or(
-                            state.i2c_bus.arbitration_lost_byte_end,
-                            claripy.And(
-                                state.i2c_bus.arbitration_lost,
-                                state.i2c_bus.bit_count == 0,
-                            ),
-                        ),
+                    is_falling_edge,
+                    claripy.Or(
                         state.i2c_bus.arbitration_lost_byte_end,
+                        claripy.And(
+                            state.i2c_bus.arbitration_lost, state.i2c_bus.bit_count == 0
+                        ),
                     ),
+                    state.i2c_bus.arbitration_lost_byte_end,
                 )
 
                 state.i2c_bus.prev_scl_out = scl_out
