@@ -23,6 +23,7 @@ class STM32F4GPIOTest(unittest.TestCase):
             (GPIO.GPIO_MODER.OFFSET, moder),
             (GPIO.GPIO_OTYPER.OFFSET, otyper),
             (GPIO.GPIO_PUPDR.OFFSET, 0),
+            (GPIO.GPIO_IDR.OFFSET, 0),
             (GPIO.GPIO_ODR.OFFSET, odr),
             (GPIO.GPIO_BSRR.OFFSET, 0),
         ):
@@ -37,7 +38,7 @@ class STM32F4GPIOTest(unittest.TestCase):
         self.state.inspect.mem_write_address = claripy.BVV(
             self.gpio.start + GPIO.GPIO_BSRR.OFFSET, self.arch.bits
         )
-        self.state.inspect.mem_write_expr = claripy.BVV(1 << 13, 32)
+        self.state.inspect.mem_write_expr = claripy.BVV(1 << (13 + 16), 32)
         self.state.inspect.mem_write_length = 4
         self.state.inspect.mem_write_condition = None
         self.state.inspect.mem_write_endness = self.arch.memory_endness
@@ -47,6 +48,76 @@ class STM32F4GPIOTest(unittest.TestCase):
 
         self.gpio.post_write(self.state)
         self.assertIsNone(self.state.GPIOC_globals.bsrr_write_value)
+
+        odr = self.state.memory.load(
+            self.gpio.start + GPIO.GPIO_ODR.OFFSET,
+            self.arch.bytes,
+            endness=self.arch.memory_endness,
+        )
+        bsrr = self.state.memory.load(
+            self.gpio.start + GPIO.GPIO_BSRR.OFFSET,
+            self.arch.bytes,
+            endness=self.arch.memory_endness,
+        )
+        self.assertEqual(0, self.state.solver.eval(odr[GPIO.GPIO_ODR.ODR13.bit]))
+        self.assertEqual(0, self.state.solver.eval(bsrr))
+
+    def test_bsrr_upper_halfword_write_resets_odr_bit(self):
+        self.gpio.set_handlers(cpu=None, state=self.state, cfg=None, specs=None)
+        self.state.inspect.mem_write_address = claripy.BVV(
+            self.gpio.start + GPIO.GPIO_BSRR.OFFSET + 2, self.arch.bits
+        )
+        self.state.inspect.mem_write_expr = claripy.BVV(1 << GPIO.GPIO_ODR.ODR13.bit, 16)
+        self.state.inspect.mem_write_length = 2
+        self.state.inspect.mem_write_condition = None
+        self.state.inspect.mem_write_endness = self.arch.memory_endness
+
+        self.gpio.pre_write(self.state)
+        self.gpio.post_write(self.state)
+
+        odr = self.state.memory.load(
+            self.gpio.start + GPIO.GPIO_ODR.OFFSET,
+            self.arch.bytes,
+            endness=self.arch.memory_endness,
+        )
+        bsrr = self.state.memory.load(
+            self.gpio.start + GPIO.GPIO_BSRR.OFFSET,
+            self.arch.bytes,
+            endness=self.arch.memory_endness,
+        )
+        self.assertEqual(0, self.state.solver.eval(odr[GPIO.GPIO_ODR.ODR13.bit]))
+        self.assertEqual(0, self.state.solver.eval(bsrr))
+
+    def test_idr_read_returns_fresh_transaction_value(self):
+        self.state.memory.store(
+            self.gpio.start + GPIO.GPIO_OTYPER.OFFSET,
+            claripy.BVV(0, 32),
+            endness=self.arch.memory_endness,
+        )
+        self.state.memory.store(
+            self.gpio.start + GPIO.GPIO_ODR.OFFSET,
+            claripy.BVV(1 << GPIO.GPIO_ODR.ODR13.bit, 32),
+            endness=self.arch.memory_endness,
+        )
+        self.state.inspect.mem_read_address = claripy.BVV(
+            self.gpio.start + GPIO.GPIO_IDR.OFFSET, self.arch.bits
+        )
+        self.state.inspect.mem_read_expr = self.state.memory.load(
+            self.gpio.start + GPIO.GPIO_IDR.OFFSET,
+            self.arch.bytes,
+            endness=self.arch.memory_endness,
+        )
+
+        _, _, value = self.gpio.post_read(self.state)
+        stored_idr = self.state.memory.load(
+            self.gpio.start + GPIO.GPIO_IDR.OFFSET,
+            self.arch.bytes,
+            endness=self.arch.memory_endness,
+        )
+
+        self.assertEqual(1, self.state.solver.eval(value[GPIO.GPIO_IDR.IDR13.bit]))
+        self.assertEqual(1, self.state.solver.eval(stored_idr[GPIO.GPIO_IDR.IDR13.bit]))
+        self.assertEqual(0, self.state.solver.eval(value[GPIO.GPIO_IDR.IDR15.bit]))
 
 
 if __name__ == "__main__":

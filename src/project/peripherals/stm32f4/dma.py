@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from functools import cache
 
 import angr
@@ -92,20 +93,15 @@ class DMA(BaseDMA):
         return _, offset, state.inspect.mem_read_expr
 
     def post_write(self, state):
-        _, offset, value = super().post_write(state)
+        addr, offset, value = super().post_write(state)
 
-        if offset == DMA.DMA_HIFCR.OFFSET:
-            hisr = utils.load(state, self.start + DMA.DMA_HISR.OFFSET)
-            clear_mask = value & (
-                DMA.DMA_HIFCR.CTCIF6.mask
-                | DMA.DMA_HIFCR.CHTIF6.mask
-                | DMA.DMA_HIFCR.CTEIF6.mask
-                | DMA.DMA_HIFCR.CDMEIF6.mask
-                | DMA.DMA_HIFCR.CFEIF6.mask
-            )
-            utils.store(state, self.start + DMA.DMA_HISR.OFFSET, hisr & ~clear_mask)
+        match offset:
+            case DMA.DMA_HIFCR.OFFSET:
+                transaction = DMATransaction.begin(self, state)
+                transaction.event_hifcr_write(value)
+                transaction.commit()
 
-        return _, offset, value
+        return addr, offset, value
 
     def get_pending_irqs(self, state):
         s6cr = utils.load(state, self.start + DMA.DMA_S6CR.OFFSET)
@@ -391,3 +387,39 @@ class DMA(BaseDMA):
         self.dma_handler = DMA._DMAHandler(
             cpu=cpu, state=state, cfg=cfg, specs=specs, dma=self
         )
+
+
+@dataclass
+class DMARegisterState:
+    hisr: object
+
+
+class DMATransaction:
+    HIFCR_CLEAR_MASK = (
+        DMA.DMA_HIFCR.CTCIF6.mask
+        | DMA.DMA_HIFCR.CHTIF6.mask
+        | DMA.DMA_HIFCR.CTEIF6.mask
+        | DMA.DMA_HIFCR.CDMEIF6.mask
+        | DMA.DMA_HIFCR.CFEIF6.mask
+    )
+
+    def __init__(self, dma, state, old, new):
+        self.dma = dma
+        self.state = state
+        self.old = old
+        self.new = new
+
+    @classmethod
+    def begin(cls, dma, state):
+        snapshot = DMARegisterState(
+            hisr=utils.load(state, dma.start + DMA.DMA_HISR.OFFSET)
+        )
+        working = DMARegisterState(hisr=snapshot.hisr)
+        return cls(dma, state, snapshot, working)
+
+    def commit(self):
+        utils.store(self.state, self.dma.start + DMA.DMA_HISR.OFFSET, self.new.hisr)
+
+    def event_hifcr_write(self, value):
+        clear_mask = value & self.HIFCR_CLEAR_MASK
+        self.new.hisr = self.new.hisr & ~clear_mask

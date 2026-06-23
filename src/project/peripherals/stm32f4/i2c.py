@@ -181,7 +181,7 @@ class I2C(MMIOMemoryRegion):
         )
 
     def post_read(self, state):
-        addr, offset, readout_value = super().post_read(self, state)
+        addr, offset, readout_value = super().post_read(state)
         transaction = I2CTransaction.begin(self, state)
 
         match offset:
@@ -197,7 +197,7 @@ class I2C(MMIOMemoryRegion):
         return addr, offset, state.inspect.mem_read_expr
 
     def post_write(self, state):
-        addr, offset, value = super().post_write(self, state)
+        addr, offset, value = super().post_write(state)
         transaction = I2CTransaction.begin(self, state)
 
         match offset:
