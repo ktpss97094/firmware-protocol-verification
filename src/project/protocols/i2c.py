@@ -9,6 +9,7 @@ class I2CBus(SimStatePlugin):
     def __init__(
         self,
         prev_scl_out=None,
+        prev_sda_out=None,
         arbitration_lost=None,
         bit_count=None,
         arbitration_lost_byte_end=None,
@@ -17,6 +18,7 @@ class I2CBus(SimStatePlugin):
         super().__init__()
 
         self.prev_scl_out = claripy.true() if prev_scl_out is None else prev_scl_out
+        self.prev_sda_out = claripy.true() if prev_sda_out is None else prev_sda_out
         self.arbitration_lost = (
             claripy.false() if arbitration_lost is None else arbitration_lost
         )
@@ -32,6 +34,7 @@ class I2CBus(SimStatePlugin):
         o = super().copy(memo)
 
         o.prev_scl_out = self.prev_scl_out
+        o.prev_sda_out = self.prev_sda_out
         o.arbitration_lost = self.arbitration_lost
         o.bit_count = self.bit_count
         o.arbitration_lost_byte_end = self.arbitration_lost_byte_end
@@ -40,7 +43,11 @@ class I2CBus(SimStatePlugin):
         return o
 
     def merge_key(self):
-        return (self.bit_count.hash(), self.prev_scl_out.hash())
+        return (
+            self.bit_count.hash(),
+            self.prev_scl_out.hash(),
+            self.prev_sda_out.hash(),
+        )
 
     def merge(self, others, merge_conditions, common_ancestor=None):
         del common_ancestor
@@ -48,10 +55,11 @@ class I2CBus(SimStatePlugin):
         if any(
             not utils.same_ast(self.bit_count, other.bit_count)
             or not utils.same_ast(self.prev_scl_out, other.prev_scl_out)
+            or not utils.same_ast(self.prev_sda_out, other.prev_sda_out)
             for other in others
         ):
             raise SimMergeError(
-                "Cannot merge STM32F4 I2CBus (bit_count or prev_scl_out)"
+                "Cannot merge STM32F4 I2CBus (bit_count or prev_scl_out or prev_sda_out)"
             )
 
         changed = False

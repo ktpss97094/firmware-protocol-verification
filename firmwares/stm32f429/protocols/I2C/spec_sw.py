@@ -155,39 +155,67 @@ class GPIO(STM32F4_GPIO):
                 is_rising_edge = claripy.And(
                     state.i2c_bus.prev_scl_out == 0, scl_out == 1
                 )
+                is_falling_edge = claripy.And(
+                    state.i2c_bus.prev_scl_out == 1, scl_out == 0
+                )
+                is_start_condition = claripy.And(
+                    scl_out == 1, state.i2c_bus.prev_sda_out == 1, sda_out == 0
+                )
+                is_stop_condition = claripy.And(
+                    scl_out == 1, state.i2c_bus.prev_sda_out == 0, sda_out == 1
+                )
+
                 state.i2c_bus.bit_count = claripy.If(
-                    is_rising_edge,
-                    (state.i2c_bus.bit_count + 1) % 9,
-                    state.i2c_bus.bit_count,
-                )
-                state.i2c_bus.arbitration_lost = claripy.If(
-                    is_rising_edge,
-                    claripy.Or(
-                        state.i2c_bus.arbitration_lost,
-                        claripy.And(
-                            sda_out == 1, idr[GPIO.GPIO_IDR.IDR15.bit] == 0
-                        ),  # 先前 SDA 輸出 1，但實際讀到的是 0
+                    is_start_condition,
+                    claripy.BVV(0, 4),
+                    claripy.If(
+                        is_rising_edge,
+                        (state.i2c_bus.bit_count + 1) % 9,
+                        state.i2c_bus.bit_count,
                     ),
-                    state.i2c_bus.arbitration_lost,
                 )
+
+                state.i2c_bus.arbitration_lost = claripy.If(
+                    is_stop_condition,
+                    claripy.false(),
+                    claripy.If(
+                        is_rising_edge,
+                        claripy.Or(
+                            state.i2c_bus.arbitration_lost,
+                            claripy.And(
+                                sda_out == 1, idr[GPIO.GPIO_IDR.IDR15.bit] == 0
+                            ),  # 當前 SDA 輸出 1，但實際讀到的是 0
+                        ),
+                        state.i2c_bus.arbitration_lost,
+                    ),
+                )
+
                 state.i2c_bus.wait_state = claripy.If(
-                    claripy.And(is_rising_edge, idr[GPIO.GPIO_IDR.IDR13.bit] == 0),
+                    claripy.And(
+                        is_rising_edge, idr[GPIO.GPIO_IDR.IDR13.bit] == 0
+                    ),  # 已經 rising edge (controller SCL 輸出 1) 了，但卻讀到 0
                     claripy.true(),
                     state.i2c_bus.wait_state,
                 )
 
                 state.i2c_bus.arbitration_lost_byte_end = claripy.If(
-                    is_rising_edge,
-                    claripy.Or(
-                        state.i2c_bus.arbitration_lost_byte_end,
-                        claripy.And(
-                            state.i2c_bus.arbitration_lost, state.i2c_bus.bit_count == 0
+                    is_stop_condition,
+                    claripy.false(),
+                    claripy.If(
+                        is_falling_edge,
+                        claripy.Or(
+                            state.i2c_bus.arbitration_lost_byte_end,
+                            claripy.And(
+                                state.i2c_bus.arbitration_lost,
+                                state.i2c_bus.bit_count == 0,
+                            ),
                         ),
+                        state.i2c_bus.arbitration_lost_byte_end,
                     ),
-                    state.i2c_bus.arbitration_lost_byte_end,
                 )
 
                 state.i2c_bus.prev_scl_out = scl_out
+                state.i2c_bus.prev_sda_out = sda_out
 
         return _, offset, value
 
