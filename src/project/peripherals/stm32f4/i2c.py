@@ -83,26 +83,6 @@ class Globals(SimStatePlugin):
         return changed
 
 
-def _bool_ast(value):
-    if value is True:
-        return claripy.true()
-    if value is False or value is None:
-        return claripy.false()
-    return value
-
-
-def _zero():
-    return claripy.BVV(0, 1)
-
-
-@dataclass
-class I2CRegisterState:
-    cr1: claripy.ast.BV
-    sr1: claripy.ast.BV
-    sr2: claripy.ast.BV
-    globals: Globals
-
-
 class I2C(MMIOMemoryRegion):
     IRQ_NUMBERS = [31, 32]  # I2C1_EV, I2C1_ER
 
@@ -257,6 +237,26 @@ class I2C(MMIOMemoryRegion):
 
     def set_handlers(self, cpu, state, cfg, specs):
         Globals.register_default(f"{self.name}_globals")
+
+
+def _bool_ast(value):
+    if value is True:
+        return claripy.true()
+    if value is False or value is None:
+        return claripy.false()
+    return value
+
+
+def _zero():
+    return claripy.BVV(0, 1)
+
+
+@dataclass
+class I2CRegisterState:
+    cr1: claripy.ast.BV
+    sr1: claripy.ast.BV
+    sr2: claripy.ast.BV
+    globals: Globals
 
 
 class I2CTransaction:
