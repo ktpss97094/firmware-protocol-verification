@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
 import claripy
 from angr.errors import SimMergeError
 from angr.state_plugins.plugin import SimStatePlugin
@@ -79,6 +83,26 @@ class Globals(SimStatePlugin):
         return changed
 
 
+def _bool_ast(value):
+    if value is True:
+        return claripy.true()
+    if value is False or value is None:
+        return claripy.false()
+    return value
+
+
+def _zero():
+    return claripy.BVV(0, 1)
+
+
+@dataclass
+class I2CRegisterState:
+    cr1: claripy.ast.BV
+    sr1: claripy.ast.BV
+    sr2: claripy.ast.BV
+    globals: Globals
+
+
 class I2C(MMIOMemoryRegion):
     IRQ_NUMBERS = [31, 32]  # I2C1_EV, I2C1_ER
 
@@ -89,68 +113,6 @@ class I2C(MMIOMemoryRegion):
         START = BitsField(8, AccessType.RW, 0)
         NOSTRETCH = BitsField(7, AccessType.RW, 0)
         PE = BitsField(0, AccessType.RW, 0)
-
-        @classmethod
-        def update_STOP(cls, i2c, state, cr1, sr1, sr2, force=False):
-            if force or not state.solver.unique(cr1[cls.STOP.bit]):
-                # (STOP) cleared by hardware when a Stop condition is detected
-                cr1 = utils.replace_bit(
-                    cr1,
-                    cls.STOP.bit,
-                    claripy.If(
-                        cr1[cls.STOP.bit] == 0,
-                        cr1[cls.STOP.bit],
-                        utils.generate_symbolic(state, f"{i2c.name}_STOP", size=1),
-                    ),
-                )
-
-                # (TxE) Cleared ... or by hardware after ... or a stop condition
-                sr1 = utils.replace_bit(
-                    sr1,
-                    I2C.I2C_SR1.TXE.bit,
-                    claripy.If(
-                        cr1[cls.STOP.bit] == 0,
-                        claripy.BVV(0, 1),
-                        sr1[I2C.I2C_SR1.TXE.bit],
-                    ),
-                )
-
-                # (BTF) Cleared ... or by hardware after ... or a stop condition in transmission
-                sr1 = utils.replace_bit(
-                    sr1,
-                    I2C.I2C_SR1.BTF.bit,
-                    claripy.If(
-                        claripy.And(
-                            cr1[cls.STOP.bit] == 0, sr2[I2C.I2C_SR2.TRA.bit] == 1
-                        ),
-                        claripy.BVV(0, 1),
-                        sr1[I2C.I2C_SR1.BTF.bit],
-                    ),
-                )
-
-                # (MSL) Cleared by hardware after detecting a Stop condition
-                sr2 = utils.replace_bit(
-                    sr2,
-                    I2C.I2C_SR2.MSL.bit,
-                    claripy.If(
-                        cr1[cls.STOP.bit] == 0,
-                        claripy.BVV(0, 1),
-                        sr2[I2C.I2C_SR2.MSL.bit],
-                    ),
-                )
-
-                # (BUSY) cleared by hardware on detection of a Stop condition
-                sr2 = utils.replace_bit(
-                    sr2,
-                    I2C.I2C_SR2.BUSY.bit,
-                    claripy.If(
-                        cr1[cls.STOP.bit] == 0,
-                        claripy.BVV(0, 1),
-                        sr2[I2C.I2C_SR2.BUSY.bit],
-                    ),
-                )
-
-            return cr1, sr1, sr2
 
     class I2C_CR2(BaseRegister):
         OFFSET = 0x04
@@ -183,459 +145,12 @@ class I2C(MMIOMemoryRegion):
         ADDR = BitsField(1, AccessType.R, 0)
         SB = BitsField(0, AccessType.R, 0)
 
-        @classmethod
-        def update_AF(cls, i2c, state, sr1, cr1, sr2, force=False, value=None):
-            if force or not state.solver.unique(sr1[cls.AF.bit]):
-                if value is None:
-                    value = claripy.If(
-                        sr1[cls.AF.bit] == 1,
-                        sr1[cls.AF.bit],
-                        utils.generate_symbolic(state, f"{i2c.name}_AF", size=1),
-                    )
-                # (AF) Cleared ... or by hardware when PE=0
-                value = claripy.If(
-                    claripy.And(
-                        cr1[I2C.I2C_CR1.PE.bit] == 0,
-                        sr2[I2C.I2C_SR2.BUSY.bit]
-                        == 0,  # All bit resets due to PE=0 occur at the end of the communication.
-                    ),
-                    claripy.BVV(0, 1),
-                    value,
-                )
-                sr1 = utils.replace_bit(sr1, cls.AF.bit, value)
-
-                # (ARLO) Set by hardware when the interface loses the arbitration of the bus to another master
-                sr1 = utils.replace_bit(
-                    sr1,
-                    cls.ARLO.bit,
-                    claripy.If(
-                        sr1[cls.AF.bit] == 1, claripy.BVV(0, 1), sr1[cls.ARLO.bit]
-                    ),
-                )
-
-            return sr1
-
-        @classmethod
-        def update_ARLO(cls, i2c, state, sr1, cr1, sr2, force=False, value=None):
-            if force or not state.solver.unique(sr1[cls.ARLO.bit]):
-                if value is None:
-                    value = claripy.If(
-                        sr1[cls.ARLO.bit] == 1,
-                        sr1[cls.ARLO.bit],
-                        utils.generate_symbolic(state, f"{i2c.name}_ARLO", size=1),
-                    )
-                # (ARLO) Cleared ... or by hardware when PE=0
-                value = claripy.If(
-                    claripy.And(
-                        cr1[I2C.I2C_CR1.PE.bit] == 0, sr2[I2C.I2C_SR2.BUSY.bit] == 0
-                    ),
-                    claripy.BVV(0, 1),
-                    value,
-                )
-                sr1 = utils.replace_bit(sr1, cls.ARLO.bit, value)
-
-                # (TRA) It is also cleared by hardware after ..., loss of bus arbitration (ARLO=1)
-                sr2 = utils.replace_bit(
-                    sr2,
-                    I2C.I2C_SR2.TRA.bit,
-                    claripy.If(
-                        sr1[cls.ARLO.bit] == 1,
-                        claripy.BVV(0, 1),
-                        sr2[I2C.I2C_SR2.TRA.bit],
-                    ),
-                )
-
-                # (MSL) Cleared by hardware after ... or a loss of arbitration (ARLO=1)
-                sr2 = utils.replace_bit(
-                    sr2,
-                    I2C.I2C_SR2.MSL.bit,
-                    claripy.If(
-                        sr1[cls.ARLO.bit] == 1,
-                        claripy.BVV(0, 1),
-                        sr2[I2C.I2C_SR2.MSL.bit],
-                    ),
-                )
-
-                # (RxNE) RxNE is not set in case of ARLO event
-                sr1 = utils.replace_bit(
-                    sr1,
-                    I2C.I2C_SR1.RXNE.bit,
-                    claripy.If(
-                        sr1[cls.ARLO.bit] == 1,
-                        claripy.BVV(0, 1),
-                        sr1[I2C.I2C_SR1.RXNE.bit],
-                    ),
-                )
-
-            return sr1, sr2
-
-        @classmethod
-        def update_TXE(
-            cls, i2c, state, sr1, cr1, sr2, globals, force=False, value=None
-        ):
-            if force or not state.solver.unique(sr1[cls.TXE.bit]):
-                if value is None:
-                    # (TxE) Set when DR is empty in transmission. TxE is not set during address phase ... TxE is not set if either a NACK is received
-                    value = claripy.If(
-                        claripy.And(
-                            claripy.Not(globals.is_address_phase),
-                            sr2[I2C.I2C_SR2.TRA.bit] == 1,
-                            sr1[cls.AF.bit] == 0,
-                        ),
-                        claripy.If(
-                            sr1[cls.TXE.bit] == 1,
-                            sr1[cls.TXE.bit],
-                            utils.generate_symbolic(state, f"{i2c.name}_TXE", size=1),
-                        ),
-                        claripy.BVV(0, 1),
-                    )
-                # (TxE) Cleared ... or when PE=0
-                value = claripy.If(
-                    claripy.And(
-                        cr1[I2C.I2C_CR1.PE.bit] == 0, sr2[I2C.I2C_SR2.BUSY.bit] == 0
-                    ),
-                    claripy.BVV(0, 1),
-                    value,
-                )
-                sr1 = utils.replace_bit(sr1, cls.TXE.bit, value)
-
-            return sr1
-
-        @classmethod
-        def update_STOPF():
-            pass
-
-            # TODO: (TxE) Cleared ... or by hardware after ... a stop condition
-
-            # TODO: (AF) Set by hardware when no acknowledge is returned
-            # sr1 = utils.replace_bit(
-            #     sr1,
-            #     cls.AF.bit,
-            #     claripy.If(
-            #         sr1[cls.STOPF.bit] == 1, claripy.BVV(0, 1), sr1[cls.AF.bit]
-            #     ),
-            # )
-
-            # TODO: (TRA) It is also cleared by hardware after detection of Stop condition (STOPF=1)
-            # sr2 = utils.replace_bit(
-            #     sr2,
-            #     I2C.I2C_SR2.TRA.bit,
-            #     claripy.If(
-            #         sr1[cls.STOPF.bit] == 1, claripy.BVV(0, 1), sr2[I2C.I2C_SR2.TRA.bit]
-            #     ),
-            # )
-
-        @classmethod
-        def update_ADD10(cls, i2c, state, sr1, cr1, sr2, force=False, value=None):
-            if force or not state.solver.unique(sr1[cls.ADD10.bit]):
-                if value is None:
-                    value = claripy.If(
-                        sr1[cls.ADD10.bit] == 1,
-                        sr1[cls.ADD10.bit],
-                        utils.generate_symbolic(state, f"{i2c.name}_ADD10", size=1),
-                    )
-                # (ADD10) Cleared ... or by hardware when PE=0
-                value = claripy.If(
-                    claripy.And(
-                        cr1[I2C.I2C_CR1.PE.bit] == 0, sr2[I2C.I2C_SR2.BUSY.bit] == 0
-                    ),
-                    claripy.BVV(0, 1),
-                    value,
-                )
-                sr1 = utils.replace_bit(sr1, cls.ADD10.bit, value)
-
-                # (AF) Set by hardware when no acknowledge is returned
-                sr1 = utils.replace_bit(
-                    sr1,
-                    cls.AF.bit,
-                    claripy.If(
-                        sr1[cls.ADD10.bit] == 1, claripy.BVV(0, 1), sr1[cls.AF.bit]
-                    ),
-                )
-
-                # (ARLO) Set by hardware when the interface loses the arbitration of the bus to another master
-                sr1 = utils.replace_bit(
-                    sr1,
-                    cls.ARLO.bit,
-                    claripy.If(
-                        sr1[cls.ADD10.bit] == 1, claripy.BVV(0, 1), sr1[cls.ARLO.bit]
-                    ),
-                )
-
-            return sr1
-
-        @classmethod
-        def update_BTF(cls, i2c, state, sr1, cr1, sr2, force=False, value=None):
-            if force or not state.solver.unique(sr1[cls.BTF.bit]):
-                if value is None:
-                    # (BTF) Set by hardware when NOSTRETCH=0 and: ... In transmission when a new byte should be sent and DR has not been written yet (TxE=1) ... In reception when a new byte is received (including ACK pulse) and DR has not been read yet (RxNE=1) ... The BTF bit is not set after a NACK reception
-                    # 只有 TxE 是 1 時，BTF 才可能是 1
-                    value = claripy.If(
-                        claripy.And(
-                            cr1[I2C.I2C_CR1.NOSTRETCH.bit] == 0,
-                            claripy.Or(
-                                claripy.And(
-                                    sr2[I2C.I2C_SR2.TRA.bit] == 1, sr1[cls.TXE.bit] == 1
-                                ),
-                                claripy.And(
-                                    sr2[I2C.I2C_SR2.TRA.bit] == 0,
-                                    sr1[cls.RXNE.bit] == 1,
-                                ),
-                            ),
-                            sr1[cls.AF.bit] == 0,
-                        ),
-                        claripy.If(
-                            sr1[cls.BTF.bit] == 1,
-                            sr1[cls.BTF.bit],
-                            utils.generate_symbolic(state, f"{i2c.name}_BTF", size=1),
-                        ),
-                        claripy.BVV(0, 1),
-                    )
-                # (BTF) Cleared ... or when PE=0
-                value = claripy.If(
-                    claripy.And(
-                        cr1[I2C.I2C_CR1.PE.bit] == 0, sr2[I2C.I2C_SR2.BUSY.bit] == 0
-                    ),
-                    claripy.BVV(0, 1),
-                    value,
-                )
-                sr1 = utils.replace_bit(sr1, cls.BTF.bit, value)
-
-            return sr1
-
-        @classmethod
-        def update_ADDR(
-            cls, i2c, state, sr1, cr1, sr2, globals, force=False, value=None
-        ):
-            if force or not state.solver.unique(sr1[cls.ADDR.bit]):
-                if value is None:
-                    value = claripy.If(
-                        sr1[cls.ADDR.bit] == 1,
-                        sr1[cls.ADDR.bit],
-                        utils.generate_symbolic(state, f"{i2c.name}_ADDR", size=1),
-                    )
-                # (ADDR) This bit is cleared ... or by hardware when PE=0
-                value = claripy.If(
-                    claripy.And(
-                        cr1[I2C.I2C_CR1.PE.bit] == 0, sr2[I2C.I2C_SR2.BUSY.bit] == 0
-                    ),
-                    claripy.BVV(0, 1),
-                    value,
-                )
-                sr1 = utils.replace_bit(sr1, cls.ADDR.bit, value)
-
-                globals.is_address_phase = claripy.If(
-                    sr1[cls.ADDR.bit] == 1, claripy.false(), globals.is_address_phase
-                )
-
-                # (TRA) This bit is set depending on the R/W bit of the address byte, at the end of total address phase
-                rw_valid, rw_value = globals.rw
-                sr2 = utils.replace_bit(
-                    sr2,
-                    I2C.I2C_SR2.TRA.bit,
-                    claripy.If(
-                        claripy.And(sr1[cls.ADDR.bit] == 1, rw_valid),
-                        ~rw_value,
-                        sr2[I2C.I2C_SR2.TRA.bit],
-                    ),
-                )
-
-                # (TxE) Set when DR is empty in transmission. TxE is not set during address phase
-                sr1 = utils.replace_bit(
-                    sr1,
-                    cls.TXE.bit,
-                    claripy.If(
-                        claripy.And(
-                            sr1[cls.ADDR.bit] == 1, sr2[I2C.I2C_SR2.TRA.bit] == 1
-                        ),
-                        claripy.BVV(1, 1),
-                        sr1[cls.TXE.bit],
-                    ),
-                )
-                sr1 = I2C.I2C_SR1.update_TXE(
-                    i2c,
-                    state,
-                    sr1,
-                    cr1,
-                    sr2,
-                    globals,
-                    force=True,
-                    value=sr1[cls.TXE.bit],
-                )
-
-                # (AF) Set by hardware when no acknowledge is returned
-                sr1 = utils.replace_bit(
-                    sr1,
-                    cls.AF.bit,
-                    claripy.If(
-                        sr1[cls.ADDR.bit] == 1, claripy.BVV(0, 1), sr1[cls.AF.bit]
-                    ),
-                )
-
-                # (ARLO) Set by hardware when the interface loses the arbitration of the bus to another master
-                sr1 = utils.replace_bit(
-                    sr1,
-                    cls.ARLO.bit,
-                    claripy.If(
-                        sr1[cls.ADDR.bit] == 1, claripy.BVV(0, 1), sr1[cls.ARLO.bit]
-                    ),
-                )
-
-            return sr1, sr2, globals
-
-        @classmethod
-        def update_SB(cls, i2c, state, sr1, cr1, sr2, globals, force=False, value=None):
-            if force or not state.solver.unique(sr1[cls.SB.bit]):
-                if value is None:
-                    value = claripy.If(
-                        sr1[cls.SB.bit] == 1,
-                        sr1[cls.SB.bit],
-                        utils.generate_symbolic(state, f"{i2c.name}_SB", size=1),
-                    )
-                # (SB) Cleared ... or by hardware when PE=0
-                value = claripy.If(
-                    claripy.And(
-                        cr1[I2C.I2C_CR1.PE.bit] == 0, sr2[I2C.I2C_SR2.BUSY.bit] == 0
-                    ),
-                    claripy.BVV(0, 1),
-                    value,
-                )
-                sr1 = utils.replace_bit(sr1, cls.SB.bit, value)
-
-                globals.is_address_phase = claripy.If(
-                    sr1[cls.SB.bit] == 1, claripy.true(), globals.is_address_phase
-                )
-
-                # (START) This bit is ... and cleared by hardware when start is sent or PE=0
-                cr1 = utils.replace_bit(
-                    cr1,
-                    I2C.I2C_CR1.START.bit,
-                    claripy.If(
-                        claripy.Or(
-                            sr1[cls.SB.bit] == 1,
-                            claripy.And(
-                                cr1[I2C.I2C_CR1.PE.bit] == 0,
-                                sr2[I2C.I2C_SR2.BUSY.bit] == 0,
-                            ),
-                        ),
-                        claripy.BVV(0, 1),
-                        cr1[
-                            I2C.I2C_CR1.START.bit
-                        ],  # START 不是隨時可能變的，是 SB set 後才會 clear，所以不用 generate symbolic 也不用設定 sticky 1
-                    ),
-                )
-
-                # (TxE) Cleared ... or by hardware after a start ... condition
-                sr1 = utils.replace_bit(
-                    sr1,
-                    cls.TXE.bit,
-                    claripy.If(
-                        sr1[cls.SB.bit] == 1, claripy.BVV(0, 1), sr1[cls.TXE.bit]
-                    ),
-                )
-
-                # (BTF) Cleared ... or by hardware after a start ... condition in transmission
-                sr1 = utils.replace_bit(
-                    sr1,
-                    cls.BTF.bit,
-                    claripy.If(
-                        sr1[cls.SB.bit] == 1, claripy.BVV(0, 1), sr1[cls.BTF.bit]
-                    ),
-                )
-
-                # (TRA) It is also cleared by hardware after ..., repeated Start condition
-                sr2 = utils.replace_bit(
-                    sr2,
-                    I2C.I2C_SR2.TRA.bit,
-                    claripy.If(
-                        sr1[cls.SB.bit] == 1,
-                        claripy.BVV(0, 1),
-                        sr2[I2C.I2C_SR2.TRA.bit],
-                    ),
-                )
-
-                # (MSL) Set by hardware as soon as the interface is in Master mode (SB=1)
-                sr2 = utils.replace_bit(
-                    sr2,
-                    I2C.I2C_SR2.MSL.bit,
-                    claripy.If(
-                        sr1[cls.SB.bit] == 1,
-                        claripy.BVV(1, 1),
-                        sr2[I2C.I2C_SR2.MSL.bit],
-                    ),
-                )
-
-                # (BUSY) Set by hardware on detection of SDA or SCL low
-                sr2 = utils.replace_bit(
-                    sr2,
-                    I2C.I2C_SR2.BUSY.bit,
-                    claripy.If(
-                        sr1[cls.SB.bit] == 1,
-                        claripy.BVV(1, 1),
-                        sr2[I2C.I2C_SR2.BUSY.bit],
-                    ),
-                )
-
-            return sr1, cr1, sr2, globals
-
     class I2C_SR2(BaseRegister):
         OFFSET = 0x18
 
         TRA = BitsField(2, AccessType.R, 0)
         BUSY = BitsField(1, AccessType.R, 0)
         MSL = BitsField(0, AccessType.R, 0)
-
-    @classmethod
-    def _apply_pe_clear_rules(cls, state, cr1, sr1, sr2, globals):
-        def _clear_bits_when(value, bits, condition):
-            for bit in bits:
-                value = utils.replace_bit(
-                    value, bit, claripy.If(condition, claripy.BVV(0, 1), value[bit])
-                )
-            return value
-
-        PE_reset_condition = claripy.And(
-            cr1[cls.I2C_CR1.PE.bit] == 0, sr2[cls.I2C_SR2.BUSY.bit] == 0
-        )
-
-        cr1 = _clear_bits_when(cr1, (cls.I2C_CR1.START.bit,), PE_reset_condition)
-        sr1 = _clear_bits_when(
-            sr1,
-            (
-                cls.I2C_SR1.SMBALERT.bit,
-                cls.I2C_SR1.TIMEOUT.bit,
-                cls.I2C_SR1.PECERR.bit,
-                cls.I2C_SR1.OVR.bit,
-                cls.I2C_SR1.AF.bit,
-                cls.I2C_SR1.ARLO.bit,
-                cls.I2C_SR1.BERR.bit,
-                cls.I2C_SR1.TXE.bit,
-                cls.I2C_SR1.RXNE.bit,
-                cls.I2C_SR1.STOPF.bit,
-                cls.I2C_SR1.ADD10.bit,
-                cls.I2C_SR1.BTF.bit,
-                cls.I2C_SR1.ADDR.bit,
-                cls.I2C_SR1.SB.bit,
-            ),
-            PE_reset_condition,
-        )
-        sr2 = _clear_bits_when(
-            sr2, (cls.I2C_SR2.TRA.bit, cls.I2C_SR2.MSL.bit), PE_reset_condition
-        )
-
-        globals.is_address_phase = claripy.If(
-            PE_reset_condition, claripy.false(), globals.is_address_phase
-        )
-        rw_valid, rw_value = globals.rw
-        globals.rw = (
-            claripy.If(PE_reset_condition, claripy.false(), rw_valid),
-            rw_value,
-        )
-        globals.sr1_read = claripy.If(
-            PE_reset_condition, claripy.false(), globals.sr1_read
-        )
-
-        return cr1, sr1, sr2, globals
 
     def get_access_effects(self, operation, address, size):
         effects = super().get_access_effects(operation, address, size)
@@ -666,210 +181,33 @@ class I2C(MMIOMemoryRegion):
         )
 
     def post_read(self, state):
-        _, offset, readout_value = super().post_read(state)
-
-        globals = state.get_plugin(f"{self.name}_globals")
-        new_cr1 = utils.load(state, self.start + I2C.I2C_CR1.OFFSET)
-        new_sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
-        new_sr2 = utils.load(state, self.start + I2C.I2C_SR2.OFFSET)
-        new_globals = state.get_plugin(f"{self.name}_globals").copy({})
+        addr, offset, readout_value = super().post_read(self, state)
+        transaction = I2CTransaction.begin(self, state)
 
         match offset:
             case I2C.I2C_SR1.OFFSET:
-                new_globals.sr1_read = claripy.true()
-
-                # 目前寫的方式下，ARLO 需要比 AF 早 update，因為 update_AF 會新增 claripy.If(AF == 1, 0, ARLO)。如果 update_AF 先執行，update_ARLO 會被蓋過
-                new_sr1, new_sr2 = I2C.I2C_SR1.update_ARLO(
-                    self, state, new_sr1, new_cr1, new_sr2
-                )
-                # 目前寫的方式下，AF 需要比 ADD10, ADDR, TxE, BTF 等早 update，因為這些 bit 的 update function 會新增 claripy.If(bit == 1, 0, AF)。如果 update_* 先執行，update_AF 會被蓋過
-                new_sr1 = I2C.I2C_SR1.update_AF(self, state, new_sr1, new_cr1, new_sr2)
-                new_sr1 = I2C.I2C_SR1.update_ADD10(
-                    self, state, new_sr1, new_cr1, new_sr2
-                )
-                new_sr1, new_sr2, new_globals = I2C.I2C_SR1.update_ADDR(
-                    self, state, new_sr1, new_cr1, new_sr2, new_globals
-                )
-                # 目前寫的方式下，TXE 需要比 SB 早 update，因為 update_SB 會新增 claripy.If(SB == 1, 0, TxE)。如果 update_SB 先執行，update_TXE 會被蓋過
-                new_sr1 = I2C.I2C_SR1.update_TXE(
-                    self, state, new_sr1, new_cr1, new_sr2, new_globals
-                )
-                new_sr1 = I2C.I2C_SR1.update_BTF(self, state, new_sr1, new_cr1, new_sr2)
-                new_sr1, new_cr1, new_sr2, new_globals = I2C.I2C_SR1.update_SB(
-                    self, state, new_sr1, new_cr1, new_sr2, new_globals
-                )
-
+                transaction.event_sr1_read()
             case I2C.I2C_SR2.OFFSET:
-                if state.solver.is_true(globals.sr1_read):
-                    new_globals.sr1_read = claripy.false()
-
-                    # (ADDR) This bit is cleared by software reading SR1 register followed reading SR2
-                    new_sr1, new_sr2, new_globals = I2C.I2C_SR1.update_ADDR(
-                        self,
-                        state,
-                        new_sr1,
-                        new_cr1,
-                        new_sr2,
-                        new_globals,
-                        force=True,
-                        value=0,
-                    )
-
+                transaction.event_sr2_read()
             case I2C.I2C_DR.OFFSET:
-                # (BTF) Cleared by software by either a read ... in the DR register
-                new_sr1 = I2C.I2C_SR1.update_BTF(
-                    self, state, new_sr1, new_cr1, new_sr2, force=True, value=0
-                )
+                transaction.event_dr_read()
 
-        utils.store(state, self.start + I2C.I2C_CR1.OFFSET, new_cr1)
-        utils.store(state, self.start + I2C.I2C_SR1.OFFSET, new_sr1)
-        utils.store(state, self.start + I2C.I2C_SR2.OFFSET, new_sr2)
-        state.register_plugin(f"{self.name}_globals", new_globals)
-
+        transaction.finish().commit()
         state.inspect.mem_read_expr = self.mask_post_read(offset, readout_value)
-
-        return _, offset, state.inspect.mem_read_expr
+        return addr, offset, state.inspect.mem_read_expr
 
     def post_write(self, state):
-        _, offset, value = super().post_write(state)
-
-        globals = state.get_plugin(f"{self.name}_globals")
-        new_cr1 = utils.load(state, self.start + I2C.I2C_CR1.OFFSET)
-        new_sr1 = utils.load(state, self.start + I2C.I2C_SR1.OFFSET)
-        new_sr2 = utils.load(state, self.start + I2C.I2C_SR2.OFFSET)
-        new_globals = state.get_plugin(f"{self.name}_globals").copy({})
+        addr, offset, value = super().post_write(self, state)
+        transaction = I2CTransaction.begin(self, state)
 
         match offset:
             case I2C.I2C_CR1.OFFSET:
-                # set START bit 時進入 address phase
-                if state.solver.is_true(value[I2C.I2C_CR1.START.bit] == 1):
-                    # (SB) Set when a Start condition generated
-                    new_sr1, new_cr1, new_sr2, new_globals = I2C.I2C_SR1.update_SB(
-                        self, state, new_sr1, new_cr1, new_sr2, new_globals, force=True
-                    )
-
-                # set STOP bit
-                if state.solver.is_true(value[I2C.I2C_CR1.STOP.bit] == 1):
-                    new_cr1, new_sr1, new_sr2 = I2C.I2C_CR1.update_STOP(
-                        self, state, new_cr1, new_sr1, new_sr2, force=True
-                    )
-
-                new_cr1, new_sr1, new_sr2, new_globals = I2C._apply_pe_clear_rules(
-                    state, new_cr1, new_sr1, new_sr2, new_globals
-                )
-
+                transaction.event_cr1_write()
             case I2C.I2C_DR.OFFSET:
-                # (TxE) Cleared by software writing to the DR register
-                # (BTF) Cleared by software by either ... or write in the DR register
-                # 目前寫的方式下，TXE 需要比 BTF 早 update，因為 update_BTF 會使用到 TXE
-                new_sr1 = I2C.I2C_SR1.update_TXE(
-                    self,
-                    state,
-                    new_sr1,
-                    new_cr1,
-                    new_sr2,
-                    new_globals,
-                    force=True,
-                    value=0,
-                )
-                new_sr1 = I2C.I2C_SR1.update_BTF(
-                    self, state, new_sr1, new_cr1, new_sr2, force=True, value=0
-                )
+                transaction.event_dr_write(value)
 
-                if state.solver.is_true(globals.sr1_read):
-                    new_globals.sr1_read = claripy.false()
-
-                    # (SB) Cleared by software by reading the SR1 register followed by writing the DR register
-                    new_sr1, new_cr1, new_sr2, new_globals = I2C.I2C_SR1.update_SB(
-                        self,
-                        state,
-                        new_sr1,
-                        new_cr1,
-                        new_sr2,
-                        new_globals,
-                        force=True,
-                        value=0,
-                    )
-
-                # 目前寫的方式下，ARLO 需要比 AF 早 update，因為 update_AF 會新增 claripy.If(AF == 1, 0, ARLO)。如果 update_AF 先執行，update_ARLO 會被蓋過
-                new_sr1, new_sr2 = I2C.I2C_SR1.update_ARLO(
-                    self, state, new_sr1, new_cr1, new_sr2, force=True
-                )
-                # 目前寫的方式下，AF 需要比 ADD10, ADDR, TxE, BTF 等早 update，因為這些 bit 的 update function 會新增 claripy.If(bit == 1, 0, AF)。如果 update_* 先執行，update_AF 會被蓋過
-                new_sr1 = I2C.I2C_SR1.update_AF(
-                    self, state, new_sr1, new_cr1, new_sr2, force=True
-                )
-                if not state.solver.satisfiable(
-                    extra_constraints=[claripy.Not(new_globals.is_address_phase)]
-                ):
-                    if not state.solver.satisfiable(
-                        extra_constraints=[new_globals.rw[0]]
-                    ):
-                        # 10-bit addressing 的 addressing phase 會 write 兩次 DR。第一次 write (header) 時是 11110XXY (Y 為 R/W)
-                        is_10bit = (value & 0xF8) == 0xF0
-                        # (ADD10) Set by hardware when the master has sent the first byte in 10-bit address mode
-                        sr1_10bit = I2C.I2C_SR1.update_ADD10(
-                            self, state, new_sr1, new_cr1, new_sr2, force=True
-                        )
-                        # (ADDR) For 7-bit addressing, the bit is set after the ACK of the byte
-                        sr1_7bit, sr2_7bit, globals_7bit = I2C.I2C_SR1.update_ADDR(
-                            self,
-                            state,
-                            new_sr1,
-                            new_cr1,
-                            new_sr2,
-                            new_globals.copy({}),
-                            force=True,
-                        )
-                        new_sr1 = claripy.If(is_10bit, sr1_10bit, sr1_7bit)
-                        new_sr2 = claripy.If(is_10bit, new_sr2, sr2_7bit)
-                        new_globals.is_address_phase = claripy.If(
-                            is_10bit,
-                            new_globals.is_address_phase,
-                            globals_7bit.is_address_phase,
-                        )
-
-                        new_globals.rw = claripy.true(), value[0]
-                    else:
-                        if state.solver.is_true(globals.sr1_read):
-                            new_globals.sr1_read = claripy.false()
-
-                            # (ADD10) Cleared by software reading the SR1 register followed by a write in the DR register of the second address byte
-                            new_sr1 = I2C.I2C_SR1.update_ADD10(
-                                self,
-                                state,
-                                new_sr1,
-                                new_cr1,
-                                new_sr2,
-                                force=True,
-                                value=0,
-                            )
-
-                        # (ADDR) For 10-bit addressing, the bit is set after the ACK of the 2nd byte
-                        new_sr1, new_sr2, new_globals = I2C.I2C_SR1.update_ADDR(
-                            self,
-                            state,
-                            new_sr1,
-                            new_cr1,
-                            new_sr2,
-                            new_globals,
-                            force=True,
-                        )
-                else:
-                    # 目前寫的方式下，TXE 需要比 BTF 早 update，因為 update_BTF 會使用到 TXE
-                    new_sr1 = I2C.I2C_SR1.update_TXE(
-                        self, state, new_sr1, new_cr1, new_sr2, new_globals, force=True
-                    )
-                    new_sr1 = I2C.I2C_SR1.update_BTF(
-                        self, state, new_sr1, new_cr1, new_sr2, force=True
-                    )
-
-        utils.store(state, self.start + I2C.I2C_CR1.OFFSET, new_cr1)
-        utils.store(state, self.start + I2C.I2C_SR1.OFFSET, new_sr1)
-        utils.store(state, self.start + I2C.I2C_SR2.OFFSET, new_sr2)
-        state.register_plugin(f"{self.name}_globals", new_globals)
-
-        return _, offset, value
+        transaction.finish().commit()
+        return addr, offset, value
 
     def get_pending_irqs(self, state):
         cr2 = utils.load(state, self.start + I2C.I2C_CR2.OFFSET)
@@ -919,3 +257,382 @@ class I2C(MMIOMemoryRegion):
 
     def set_handlers(self, cpu, state, cfg, specs):
         Globals.register_default(f"{self.name}_globals")
+
+
+class I2CTransaction:
+    CR1_PE_CLEARED_BITS = (I2C.I2C_CR1.START.bit,)
+    SR1_PE_CLEARED_BITS = (
+        I2C.I2C_SR1.SMBALERT.bit,
+        I2C.I2C_SR1.TIMEOUT.bit,
+        I2C.I2C_SR1.PECERR.bit,
+        I2C.I2C_SR1.OVR.bit,
+        I2C.I2C_SR1.AF.bit,
+        I2C.I2C_SR1.ARLO.bit,
+        I2C.I2C_SR1.BERR.bit,
+        I2C.I2C_SR1.TXE.bit,
+        I2C.I2C_SR1.RXNE.bit,
+        I2C.I2C_SR1.STOPF.bit,
+        I2C.I2C_SR1.ADD10.bit,
+        I2C.I2C_SR1.BTF.bit,
+        I2C.I2C_SR1.ADDR.bit,
+        I2C.I2C_SR1.SB.bit,
+    )
+    SR2_PE_CLEARED_BITS = (I2C.I2C_SR2.TRA.bit, I2C.I2C_SR2.MSL.bit)
+
+    def __init__(self, i2c, state, old, new):
+        self.i2c = i2c
+        self.state = state
+        self.old = old
+        self.new = new
+
+    @classmethod
+    def begin(cls, i2c, state):
+        globals_name = f"{i2c.name}_globals"
+        globals_ = state.get_plugin(globals_name) or Globals()
+        new_globals = globals_.copy({})
+        cls._normalize_globals(new_globals)
+
+        snapshot = I2CRegisterState(
+            cr1=utils.load(state, i2c.start + I2C.I2C_CR1.OFFSET),
+            sr1=utils.load(state, i2c.start + I2C.I2C_SR1.OFFSET),
+            sr2=utils.load(state, i2c.start + I2C.I2C_SR2.OFFSET),
+            globals=globals_,
+        )
+        working = I2CRegisterState(
+            cr1=snapshot.cr1, sr1=snapshot.sr1, sr2=snapshot.sr2, globals=new_globals
+        )
+        return cls(i2c, state, snapshot, working)
+
+    @staticmethod
+    def _normalize_globals(globals_):
+        globals_.is_address_phase = _bool_ast(globals_.is_address_phase)
+        globals_.sr1_read = _bool_ast(globals_.sr1_read)
+
+        rw = globals_.rw
+        if not isinstance(rw, tuple):
+            globals_.rw = (_bool_ast(rw), claripy.BVV(0, 1))
+            return
+
+        rw_valid, rw_value = rw
+        if rw_value is None:
+            rw_value = claripy.BVV(0, 1)
+        globals_.rw = (_bool_ast(rw_valid), rw_value)
+
+    def commit(self):
+        utils.store(self.state, self.i2c.start + I2C.I2C_CR1.OFFSET, self.new.cr1)
+        utils.store(self.state, self.i2c.start + I2C.I2C_SR1.OFFSET, self.new.sr1)
+        utils.store(self.state, self.i2c.start + I2C.I2C_SR2.OFFSET, self.new.sr2)
+        self.state.register_plugin(f"{self.i2c.name}_globals", self.new.globals)
+
+    def _interface_enabled(self):
+        return self.new.cr1[I2C.I2C_CR1.PE.bit] == 1
+
+    def _pe_disabled_idle(self):
+        return claripy.And(
+            self.new.cr1[I2C.I2C_CR1.PE.bit] == 0,
+            self.new.sr2[I2C.I2C_SR2.BUSY.bit] == 0,
+        )
+
+    def _fresh_bit(self, suffix):
+        return utils.generate_symbolic(self.state, f"{self.i2c.name}_{suffix}", size=1)
+
+    def _sticky_or_fresh_sr1_bit(self, bit, suffix):
+        current = self.new.sr1[bit]
+        return claripy.If(current == 1, current, self._fresh_bit(suffix))
+
+    @staticmethod
+    def _replace_bit_when(value, bit, new_bit, condition):
+        return utils.replace_bit(value, bit, claripy.If(condition, new_bit, value[bit]))
+
+    def _set_cr1_bit_when(self, bit, bit_value, condition):
+        self.new.cr1 = self._replace_bit_when(
+            self.new.cr1, bit, claripy.BVV(bit_value, 1), condition
+        )
+
+    def _set_sr1_bit_when(self, bit, bit_value, condition):
+        self.new.sr1 = self._replace_bit_when(
+            self.new.sr1, bit, claripy.BVV(bit_value, 1), condition
+        )
+
+    def _set_sr2_bit_when(self, bit, bit_value, condition):
+        self.new.sr2 = self._replace_bit_when(
+            self.new.sr2, bit, claripy.BVV(bit_value, 1), condition
+        )
+
+    def _assign_sr1_bit(self, bit, value):
+        self.new.sr1 = utils.replace_bit(self.new.sr1, bit, value)
+
+    def _assign_sr2_bit(self, bit, value):
+        self.new.sr2 = utils.replace_bit(self.new.sr2, bit, value)
+
+    def _clear_cr1_bits_when(self, bits, condition):
+        for bit in bits:
+            self._set_cr1_bit_when(bit, 0, condition)
+
+    def _clear_sr1_bits_when(self, bits, condition):
+        for bit in bits:
+            self._set_sr1_bit_when(bit, 0, condition)
+
+    def _clear_sr2_bits_when(self, bits, condition):
+        for bit in bits:
+            self._set_sr2_bit_when(bit, 0, condition)
+
+    def apply_peripheral_disabled_idle(self):
+        condition = self._pe_disabled_idle()
+
+        self._clear_cr1_bits_when(self.CR1_PE_CLEARED_BITS, condition)
+        self._clear_sr1_bits_when(self.SR1_PE_CLEARED_BITS, condition)
+        self._clear_sr2_bits_when(self.SR2_PE_CLEARED_BITS, condition)
+
+        self.new.globals.is_address_phase = claripy.If(
+            condition, claripy.false(), self.new.globals.is_address_phase
+        )
+        rw_valid, rw_value = self.new.globals.rw
+        self.new.globals.rw = (
+            claripy.If(condition, claripy.false(), rw_valid),
+            rw_value,
+        )
+        self.new.globals.sr1_read = claripy.If(
+            condition, claripy.false(), self.new.globals.sr1_read
+        )
+
+    def finish(self):
+        self.apply_peripheral_disabled_idle()
+        return self
+
+    def event_sr1_read(self):
+        self.new.globals.sr1_read = claripy.true()
+
+        self.event_arbitration_lost_may_occur()
+        self.event_ack_failure_may_occur()
+        self.event_add10_may_occur()
+        self.event_address_phase_may_complete()
+        self.event_tx_empty_refresh()
+        self.event_byte_transfer_finished_refresh()
+        self.event_start_generated()
+
+    def event_sr2_read(self):
+        sr1_read = _bool_ast(self.old.globals.sr1_read)
+        self._set_sr1_bit_when(I2C.I2C_SR1.ADDR.bit, 0, sr1_read)
+        self.new.globals.sr1_read = claripy.If(
+            sr1_read, claripy.false(), self.new.globals.sr1_read
+        )
+
+    def event_dr_read(self):
+        self._set_sr1_bit_when(I2C.I2C_SR1.BTF.bit, 0, claripy.true())
+        self._set_sr1_bit_when(I2C.I2C_SR1.RXNE.bit, 0, claripy.true())
+
+    def event_cr1_write(self):
+        if self.state.solver.satisfiable(
+            extra_constraints=[self.new.cr1[I2C.I2C_CR1.START.bit] == 1]
+        ):
+            self.event_start_generated()
+
+        if self.state.solver.satisfiable(
+            extra_constraints=[self.new.cr1[I2C.I2C_CR1.STOP.bit] == 1]
+        ):
+            self.event_stop_detected()
+
+    def event_dr_write(self, value):
+        self._set_sr1_bit_when(I2C.I2C_SR1.TXE.bit, 0, claripy.true())
+        self._set_sr1_bit_when(I2C.I2C_SR1.BTF.bit, 0, claripy.true())
+
+        sr1_read = _bool_ast(self.old.globals.sr1_read)
+        self._set_sr1_bit_when(I2C.I2C_SR1.SB.bit, 0, sr1_read)
+        self.new.globals.sr1_read = claripy.If(
+            sr1_read, claripy.false(), self.new.globals.sr1_read
+        )
+
+        self.event_arbitration_lost_may_occur(force=True)
+        self.event_ack_failure_may_occur(force=True)
+
+        if self._address_phase_is_definitely_active():
+            rw_valid, _ = self.new.globals.rw
+            if not self.state.solver.satisfiable(extra_constraints=[rw_valid]):
+                is_10bit_header = (value & 0xF8) == 0xF0
+                self.event_add10_may_occur(condition=is_10bit_header, force=True)
+                self.event_address_phase_may_complete(
+                    condition=claripy.Not(is_10bit_header), force=True
+                )
+                self.new.globals.rw = (claripy.true(), value[0])
+            else:
+                self._set_sr1_bit_when(I2C.I2C_SR1.ADD10.bit, 0, sr1_read)
+                self.event_address_phase_may_complete(force=True)
+        else:
+            self.event_tx_empty_refresh(force=True)
+            self.event_byte_transfer_finished_refresh(force=True)
+
+    def _address_phase_is_definitely_active(self):
+        address_phase = _bool_ast(self.new.globals.is_address_phase)
+        return not self.state.solver.satisfiable(
+            extra_constraints=[claripy.Not(address_phase)]
+        )
+
+    def event_start_generated(self, condition=None):
+        condition = claripy.true() if condition is None else condition
+        can_generate = claripy.And(
+            condition,
+            self._interface_enabled(),
+            self.new.cr1[I2C.I2C_CR1.START.bit] == 1,
+        )
+        next_sb = claripy.If(
+            can_generate,
+            self._sticky_or_fresh_sr1_bit(I2C.I2C_SR1.SB.bit, "SB"),
+            self.new.sr1[I2C.I2C_SR1.SB.bit],
+        )
+        self._assign_sr1_bit(I2C.I2C_SR1.SB.bit, next_sb)
+
+        start_sent = claripy.And(can_generate, next_sb == 1)
+        self._set_cr1_bit_when(I2C.I2C_CR1.START.bit, 0, start_sent)
+        self._set_sr1_bit_when(I2C.I2C_SR1.TXE.bit, 0, start_sent)
+        self._set_sr1_bit_when(I2C.I2C_SR1.BTF.bit, 0, start_sent)
+        self._set_sr2_bit_when(I2C.I2C_SR2.TRA.bit, 0, start_sent)
+        self._set_sr2_bit_when(I2C.I2C_SR2.MSL.bit, 1, start_sent)
+        self._set_sr2_bit_when(I2C.I2C_SR2.BUSY.bit, 1, start_sent)
+        self.new.globals.is_address_phase = claripy.If(
+            start_sent, claripy.true(), self.new.globals.is_address_phase
+        )
+
+    def event_stop_detected(self, condition=None):
+        condition = claripy.true() if condition is None else condition
+        can_detect = claripy.And(condition, self.new.cr1[I2C.I2C_CR1.STOP.bit] == 1)
+        next_stop = claripy.If(
+            can_detect, self._fresh_bit("STOP"), self.new.cr1[I2C.I2C_CR1.STOP.bit]
+        )
+        self.new.cr1 = utils.replace_bit(self.new.cr1, I2C.I2C_CR1.STOP.bit, next_stop)
+
+        stop_detected = claripy.And(can_detect, next_stop == 0)
+        self._set_sr1_bit_when(I2C.I2C_SR1.TXE.bit, 0, stop_detected)
+        self._set_sr1_bit_when(
+            I2C.I2C_SR1.BTF.bit,
+            0,
+            claripy.And(stop_detected, self.new.sr2[I2C.I2C_SR2.TRA.bit] == 1),
+        )
+        self._set_sr2_bit_when(I2C.I2C_SR2.MSL.bit, 0, stop_detected)
+        self._set_sr2_bit_when(I2C.I2C_SR2.BUSY.bit, 0, stop_detected)
+        self.new.globals.is_address_phase = claripy.If(
+            stop_detected, claripy.false(), self.new.globals.is_address_phase
+        )
+
+    def event_arbitration_lost_may_occur(self, condition=None, force=False):
+        condition = claripy.true() if condition is None else condition
+        should_refresh = claripy.And(condition, self._interface_enabled())
+        if force or not self.state.solver.unique(self.new.sr1[I2C.I2C_SR1.ARLO.bit]):
+            next_arlo = claripy.If(
+                should_refresh,
+                self._sticky_or_fresh_sr1_bit(I2C.I2C_SR1.ARLO.bit, "ARLO"),
+                self.new.sr1[I2C.I2C_SR1.ARLO.bit],
+            )
+            self._assign_sr1_bit(I2C.I2C_SR1.ARLO.bit, next_arlo)
+
+        arlo = self.new.sr1[I2C.I2C_SR1.ARLO.bit] == 1
+        self._set_sr2_bit_when(I2C.I2C_SR2.TRA.bit, 0, arlo)
+        self._set_sr2_bit_when(I2C.I2C_SR2.MSL.bit, 0, arlo)
+        self._set_sr1_bit_when(I2C.I2C_SR1.RXNE.bit, 0, arlo)
+
+    def event_ack_failure_may_occur(self, condition=None, force=False):
+        condition = claripy.true() if condition is None else condition
+        should_refresh = claripy.And(condition, self._interface_enabled())
+        if force or not self.state.solver.unique(self.new.sr1[I2C.I2C_SR1.AF.bit]):
+            next_af = claripy.If(
+                should_refresh,
+                self._sticky_or_fresh_sr1_bit(I2C.I2C_SR1.AF.bit, "AF"),
+                self.new.sr1[I2C.I2C_SR1.AF.bit],
+            )
+            self._assign_sr1_bit(I2C.I2C_SR1.AF.bit, next_af)
+
+        af = self.new.sr1[I2C.I2C_SR1.AF.bit] == 1
+        self._set_sr1_bit_when(I2C.I2C_SR1.ARLO.bit, 0, af)
+
+    def event_add10_may_occur(self, condition=None, force=False):
+        condition = claripy.true() if condition is None else condition
+        should_refresh = claripy.And(condition, self._interface_enabled())
+        if force or not self.state.solver.unique(self.new.sr1[I2C.I2C_SR1.ADD10.bit]):
+            next_add10 = claripy.If(
+                should_refresh,
+                self._sticky_or_fresh_sr1_bit(I2C.I2C_SR1.ADD10.bit, "ADD10"),
+                self.new.sr1[I2C.I2C_SR1.ADD10.bit],
+            )
+            self._assign_sr1_bit(I2C.I2C_SR1.ADD10.bit, next_add10)
+
+        add10 = self.new.sr1[I2C.I2C_SR1.ADD10.bit] == 1
+        self._set_sr1_bit_when(I2C.I2C_SR1.AF.bit, 0, add10)
+        self._set_sr1_bit_when(I2C.I2C_SR1.ARLO.bit, 0, add10)
+
+    def event_address_phase_may_complete(self, condition=None, force=False):
+        condition = claripy.true() if condition is None else condition
+        should_refresh = claripy.And(condition, self._interface_enabled())
+        if force or not self.state.solver.unique(self.new.sr1[I2C.I2C_SR1.ADDR.bit]):
+            next_addr = claripy.If(
+                should_refresh,
+                self._sticky_or_fresh_sr1_bit(I2C.I2C_SR1.ADDR.bit, "ADDR"),
+                self.new.sr1[I2C.I2C_SR1.ADDR.bit],
+            )
+            self._assign_sr1_bit(I2C.I2C_SR1.ADDR.bit, next_addr)
+
+        addr_set = self.new.sr1[I2C.I2C_SR1.ADDR.bit] == 1
+        self.new.globals.is_address_phase = claripy.If(
+            addr_set, claripy.false(), self.new.globals.is_address_phase
+        )
+
+        rw_valid, rw_value = self.new.globals.rw
+        self._assign_sr2_bit(
+            I2C.I2C_SR2.TRA.bit,
+            claripy.If(
+                claripy.And(addr_set, rw_valid),
+                ~rw_value,
+                self.new.sr2[I2C.I2C_SR2.TRA.bit],
+            ),
+        )
+        self._set_sr1_bit_when(
+            I2C.I2C_SR1.TXE.bit,
+            1,
+            claripy.And(addr_set, self.new.sr2[I2C.I2C_SR2.TRA.bit] == 1),
+        )
+        self._set_sr1_bit_when(I2C.I2C_SR1.AF.bit, 0, addr_set)
+        self._set_sr1_bit_when(I2C.I2C_SR1.ARLO.bit, 0, addr_set)
+
+    def event_tx_empty_refresh(self, condition=None, force=False):
+        condition = claripy.true() if condition is None else condition
+        should_refresh = claripy.And(condition, self._interface_enabled())
+        eligible = claripy.And(
+            should_refresh,
+            claripy.Not(_bool_ast(self.new.globals.is_address_phase)),
+            self.new.sr2[I2C.I2C_SR2.TRA.bit] == 1,
+            self.new.sr1[I2C.I2C_SR1.AF.bit] == 0,
+        )
+
+        if force or not self.state.solver.unique(self.new.sr1[I2C.I2C_SR1.TXE.bit]):
+            next_txe = claripy.If(
+                eligible,
+                self._sticky_or_fresh_sr1_bit(I2C.I2C_SR1.TXE.bit, "TXE"),
+                claripy.If(should_refresh, _zero(), self.new.sr1[I2C.I2C_SR1.TXE.bit]),
+            )
+            self._assign_sr1_bit(I2C.I2C_SR1.TXE.bit, next_txe)
+
+    def event_byte_transfer_finished_refresh(self, condition=None, force=False):
+        condition = claripy.true() if condition is None else condition
+        should_refresh = claripy.And(condition, self._interface_enabled())
+        eligible = claripy.And(
+            should_refresh,
+            self.new.cr1[I2C.I2C_CR1.NOSTRETCH.bit] == 0,
+            claripy.Or(
+                claripy.And(
+                    self.new.sr2[I2C.I2C_SR2.TRA.bit] == 1,
+                    self.new.sr1[I2C.I2C_SR1.TXE.bit] == 1,
+                ),
+                claripy.And(
+                    self.new.sr2[I2C.I2C_SR2.TRA.bit] == 0,
+                    self.new.sr1[I2C.I2C_SR1.RXNE.bit] == 1,
+                ),
+            ),
+            self.new.sr1[I2C.I2C_SR1.AF.bit] == 0,
+        )
+
+        if force or not self.state.solver.unique(self.new.sr1[I2C.I2C_SR1.BTF.bit]):
+            next_btf = claripy.If(
+                eligible,
+                self._sticky_or_fresh_sr1_bit(I2C.I2C_SR1.BTF.bit, "BTF"),
+                claripy.If(should_refresh, _zero(), self.new.sr1[I2C.I2C_SR1.BTF.bit]),
+            )
+            self._assign_sr1_bit(I2C.I2C_SR1.BTF.bit, next_btf)
