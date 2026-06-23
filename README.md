@@ -41,7 +41,7 @@ Open two terminals.
     ```sh
     ssh -R 3333:localhost:3333 <user>@<IP>
     ```
-    and [verify](#verify) using `--debug` parameter.
+    and [verify](#verify) using `--gdb` parameter.
 
 ### angr-management
 
