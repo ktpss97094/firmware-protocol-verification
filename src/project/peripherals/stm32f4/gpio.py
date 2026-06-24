@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+
+import archinfo
 import claripy
 from angr.state_plugins.plugin import SimStatePlugin
 
@@ -156,7 +159,9 @@ class GPIO(MMIOMemoryRegion):
                 )
             )
 
-        return claripy.Concat(*idr)
+        idr = claripy.Concat(*idr)
+        idr = idr.zero_extend(state.arch.bits - idr.size())
+        return idr
 
     def get_access_effects(self, operation, address, size):
         effects = super().get_access_effects(operation, address, size)
@@ -214,62 +219,140 @@ class GPIO(MMIOMemoryRegion):
             )
         )
 
-    def pre_write(self, state):
-        _, offset, value = super().pre_write(state)
-
-        new_globals = state.get_plugin(f"{self.name}_globals").copy({})
-
-        match offset:
-            case GPIO.GPIO_BSRR.OFFSET:
-                # 寫入 BSRR 不會把寫入值存入暫存器
-                new_globals.bsrr_write_value = value
-                state.inspect.mem_write_expr = claripy.BVV(
-                    0, state.inspect.mem_write_expr.length
-                )
-
-        state.register_plugin(f"{self.name}_globals", new_globals)
-
-        return _, offset, value
-
-    def post_read(self, state):
-        _, offset, readout_value = super().post_read(state)
-
-        new_idr = utils.load(state, self.start + GPIO.GPIO_IDR.OFFSET)
+    def pre_read(self, state):
+        addr, offset = super().pre_read(state)
 
         match offset:
             case GPIO.GPIO_IDR.OFFSET:
-                new_idr = self.get_idr(state)
+                transaction = GPIOTransaction.begin(self, state)
+                transaction.event_idr_read()
+                transaction.commit_idr()
 
-        utils.store(state, self.start + GPIO.GPIO_IDR.OFFSET, new_idr)
+        return addr, offset
 
-        return _, offset, readout_value
+    def pre_write(self, state):
+        addr, offset, value = super().pre_write(state)
+        register_offset = self._register_offset(state, offset)
+
+        match register_offset:
+            case GPIO.GPIO_BSRR.OFFSET:
+                transaction = GPIOTransaction.begin(self, state)
+                transaction.event_bsrr_write_captured(
+                    self._expand_register_write(state, offset, value)
+                )
+                transaction.commit_globals()
+
+                # 寫入 BSRR 不會把寫入值存入暫存器
+                zero = claripy.BVV(0, value.length)
+                pending_key = ("_mmio_pending_write", id(self))
+                pending = state.globals.get(pending_key)
+                if pending is not None:
+                    pending_addr, _, size, condition, endness = pending
+                    state.globals[pending_key] = (
+                        pending_addr,
+                        zero,
+                        size,
+                        condition,
+                        endness,
+                    )
+                state.inspect.mem_write_expr = zero
+
+        return addr, offset, value
 
     def post_write(self, state):
-        _, offset, value = super().post_write(state)
+        addr, offset, value = super().post_write(state)
+        register_offset = self._register_offset(state, offset)
 
-        globals = state.get_plugin(f"{self.name}_globals")
-        new_odr = utils.load(state, self.start + GPIO.GPIO_ODR.OFFSET)
-        new_globals = state.get_plugin(f"{self.name}_globals").copy({})
-
-        match offset:
+        match register_offset:
             case GPIO.GPIO_BSRR.OFFSET:
-                for port in range(16):
-                    # BS 比 BR 有較高優先權
-                    new_odr = claripy.If(
-                        globals.bsrr_write_value[port] == 1,
-                        utils.replace_bit(new_odr, port, 1),
-                        claripy.If(
-                            globals.bsrr_write_value[port + 16] == 1,
-                            utils.replace_bit(new_odr, port, 0),
-                            new_odr,
-                        ),
-                    )
-                    new_globals.bsrr_write_value = None
+                transaction = GPIOTransaction.begin(self, state, load_odr=True)
+                transaction.event_bsrr_write_applied()
+                transaction.commit_odr_and_globals()
 
-        utils.store(state, self.start + GPIO.GPIO_ODR.OFFSET, new_odr)
-        state.register_plugin(f"{self.name}_globals", new_globals)
-
-        return _, offset, value
+        return addr, offset, value
 
     def set_handlers(self, cpu, state, cfg, specs):
         Globals.register_default(f"{self.name}_globals")
+
+    @staticmethod
+    def _register_offset(state, offset):
+        return offset - (offset % state.arch.bytes)
+
+    @staticmethod
+    def _expand_register_write(state, offset, value):
+        byte_offset = offset % state.arch.bytes
+        bit_offset = byte_offset * state.arch.byte_width
+        if state.arch.memory_endness == archinfo.Endness.BE:
+            bit_offset = state.arch.bits - value.size() - bit_offset
+
+        return value.zero_extend(state.arch.bits - value.size()) << bit_offset
+
+
+@dataclass
+class GPIORegisterState:
+    idr: object
+    odr: object
+    globals: Globals
+
+
+class GPIOTransaction:
+    def __init__(self, gpio, state, old, new):
+        self.gpio = gpio
+        self.state = state
+        self.old = old
+        self.new = new
+
+    @classmethod
+    def begin(cls, gpio, state, *, load_odr=False):
+        globals_name = f"{gpio.name}_globals"
+        globals_ = state.get_plugin(globals_name) or Globals()
+        new_globals = globals_.copy({})
+
+        snapshot = GPIORegisterState(
+            idr=None,
+            odr=(
+                utils.load(state, gpio.start + GPIO.GPIO_ODR.OFFSET)
+                if load_odr
+                else None
+            ),
+            globals=globals_,
+        )
+        working = GPIORegisterState(
+            idr=snapshot.idr, odr=snapshot.odr, globals=new_globals
+        )
+        return cls(gpio, state, snapshot, working)
+
+    def commit_globals(self):
+        self.state.register_plugin(f"{self.gpio.name}_globals", self.new.globals)
+
+    def commit_idr(self):
+        utils.store(self.state, self.gpio.start + GPIO.GPIO_IDR.OFFSET, self.new.idr)
+
+    def commit_odr_and_globals(self):
+        utils.store(self.state, self.gpio.start + GPIO.GPIO_ODR.OFFSET, self.new.odr)
+        self.commit_globals()
+
+    def event_idr_read(self):
+        self.new.idr = self.gpio.get_idr(self.state)
+
+    def event_bsrr_write_captured(self, value):
+        self.new.globals.bsrr_write_value = value
+
+    def event_bsrr_write_applied(self):
+        value = self.old.globals.bsrr_write_value
+        if value is None:
+            return
+
+        for port in range(16):
+            # BS 比 BR 有較高優先權
+            self.new.odr = claripy.If(
+                value[port] == 1,
+                utils.replace_bit(self.new.odr, port, 1),
+                claripy.If(
+                    value[port + 16] == 1,
+                    utils.replace_bit(self.new.odr, port, 0),
+                    self.new.odr,
+                ),
+            )
+
+        self.new.globals.bsrr_write_value = None
