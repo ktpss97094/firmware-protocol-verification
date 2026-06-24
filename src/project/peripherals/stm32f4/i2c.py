@@ -40,7 +40,7 @@ class Globals(SimStatePlugin):
         return o
 
     def merge_key(self):
-        return (self.is_address_phase.hash(), self.sr1_read.hash(), self.rw[0].hash())
+        return (self.rw[0].hash(),)
 
     def merge(self, others, merge_conditions, common_ancestor=None):
         """
@@ -50,35 +50,38 @@ class Globals(SimStatePlugin):
         # 如果 plugin 內部沒有更深層的物件需要合併，可以直接忽略 common_ancestor
         del common_ancestor
 
-        if any(
-            not utils.same_ast(self.is_address_phase, other.is_address_phase)
-            or not utils.same_ast(self.sr1_read, other.sr1_read)
-            for other in others
-        ):
-            raise SimMergeError(
-                "Cannot merge STM32F4 I2C globals (is_address_phase or sr1_read)"
-            )
-
         rw_valid, rw_value = self.rw
         if any(not utils.same_ast(rw_valid, other.rw[0]) for other in others):
             raise SimMergeError("Cannot merge STM32F4 I2C globals (rw)")
 
-        # static analysis 時 merge_conditions 可以是 None，依照官方建議用 state.solver.union
-        if merge_conditions is None:
-            if all(utils.same_ast(rw_value, other.rw[1]) for other in others):
-                merged_rw_value = rw_value
-            else:
-                raise SimMergeError(
-                    "Cannot merge STM32F4 I2C globals (rw value without merge conditions)"
-                )
-        else:
-            # merge_conditions[0] 是 self 的
-            # 由於 merge 特性 (有共同 ancestor)，merge_conditions[0] | merge_conditions[1] | ... = True，所以如果 merge_conditions[1] | ... 是 False 的話，那 merge_condition[0] 一定為 True，而這個路徑代表的值就是 self.rw
-            merged_rw_value = claripy.ite_cases(
-                zip(merge_conditions[1:], [other.rw[1] for other in others]), rw_value
-            )
+        merged_is_address_phase = utils.merge_ast_values(
+            self.state,
+            self.is_address_phase,
+            (other.is_address_phase for other in others),
+            merge_conditions,
+        )
+        merged_sr1_read = utils.merge_ast_values(
+            self.state,
+            self.sr1_read,
+            (other.sr1_read for other in others),
+            merge_conditions,
+        )
+        merged_rw_value = utils.merge_ast_values(
+            self.state,
+            rw_value,
+            (other.rw[1] for other in others),
+            merge_conditions,
+        )
 
-        changed = not utils.same_ast(rw_value, merged_rw_value)
+        changed = False
+        if not utils.same_ast(self.is_address_phase, merged_is_address_phase):
+            self.is_address_phase = merged_is_address_phase
+            changed = True
+        if not utils.same_ast(self.sr1_read, merged_sr1_read):
+            self.sr1_read = merged_sr1_read
+            changed = True
+        if not utils.same_ast(rw_value, merged_rw_value):
+            changed = True
         self.rw = rw_valid, merged_rw_value
         return changed
 

@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import archinfo
 import claripy
+from angr.errors import SimMergeError
 from angr.state_plugins.plugin import SimStatePlugin
 
 from project import utils
@@ -29,6 +30,9 @@ class Globals(SimStatePlugin):
 
         return o
 
+    def merge_key(self):
+        return (self.bsrr_write_value is None,)
+
     def merge(self, others, merge_conditions, common_ancestor=None):
         del common_ancestor
 
@@ -37,15 +41,17 @@ class Globals(SimStatePlugin):
         ):
             return False
 
-        if merge_conditions is None:
-            merged_bsrr_write_value = self.state.solver.union(
-                [self.bsrr_write_value] + [other.bsrr_write_value for other in others]
-            )
-        else:
-            merged_bsrr_write_value = claripy.ite_cases(
-                zip(merge_conditions[1:], [other.bsrr_write_value for other in others]),
-                self.bsrr_write_value,
-            )
+        if self.bsrr_write_value is None or any(
+            other.bsrr_write_value is None for other in others
+        ):
+            raise SimMergeError("Cannot merge STM32F4 GPIO globals (bsrr_write_value)")
+
+        merged_bsrr_write_value = utils.merge_ast_values(
+            self.state,
+            self.bsrr_write_value,
+            (other.bsrr_write_value for other in others),
+            merge_conditions,
+        )
 
         changed = not utils.same_ast(self.bsrr_write_value, merged_bsrr_write_value)
         self.bsrr_write_value = merged_bsrr_write_value

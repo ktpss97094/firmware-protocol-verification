@@ -1,11 +1,21 @@
 import claripy
-from angr.errors import SimMergeError
 from angr.state_plugins.plugin import SimStatePlugin
 
 from project import utils
 
 
 class I2CBus(SimStatePlugin):
+    _MERGE_FIELDS = (
+        "prev_scl_in",
+        "prev_sda_in",
+        "prev_scl_out",
+        "prev_sda_out",
+        "arbitration_lost",
+        "bit_count",
+        "arbitration_lost_byte_end",
+        "wait_state",
+    )
+
     def __init__(
         self,
         prev_scl_in=None,
@@ -49,71 +59,23 @@ class I2CBus(SimStatePlugin):
         return o
 
     def merge_key(self):
-        return (
-            self.bit_count.hash(),
-            self.prev_scl_in.hash(),
-            self.prev_sda_in.hash(),
-            self.prev_scl_out.hash(),
-            self.prev_sda_out.hash(),
-        )
+        return ()
 
     def merge(self, others, merge_conditions, common_ancestor=None):
         del common_ancestor
 
-        if any(
-            not utils.same_ast(self.bit_count, other.bit_count)
-            or not utils.same_ast(self.prev_scl_in, other.prev_scl_in)
-            or not utils.same_ast(self.prev_sda_in, other.prev_sda_in)
-            or not utils.same_ast(self.prev_scl_out, other.prev_scl_out)
-            or not utils.same_ast(self.prev_sda_out, other.prev_sda_out)
-            for other in others
-        ):
-            raise SimMergeError(
-                "Cannot merge STM32F4 I2CBus (bit_count or prev_scl_in or prev_sda_in or prev_scl_out or prev_sda_out)"
-            )
-
         changed = False
 
-        if merge_conditions is None:
-            merged_arbitration_lost = self.state.solver.union(
-                [self.arbitration_lost] + [other.arbitration_lost for other in others]
+        for field in self._MERGE_FIELDS:
+            value = getattr(self, field)
+            merged_value = utils.merge_ast_values(
+                self.state,
+                value,
+                (getattr(other, field) for other in others),
+                merge_conditions,
             )
-            merged_arbitration_lost_byte_end = self.state.solver.union(
-                [self.arbitration_lost_byte_end]
-                + [other.arbitration_lost_byte_end for other in others]
-            )
-            merged_wait_state = self.state.solver.union(
-                [self.wait_state] + [other.wait_state for other in others]
-            )
-        else:
-            merged_arbitration_lost = claripy.ite_cases(
-                zip(merge_conditions[1:], [other.arbitration_lost for other in others]),
-                self.arbitration_lost,
-            )
-            merged_arbitration_lost_byte_end = claripy.ite_cases(
-                zip(
-                    merge_conditions[1:],
-                    [other.arbitration_lost_byte_end for other in others],
-                ),
-                self.arbitration_lost_byte_end,
-            )
-            merged_wait_state = claripy.ite_cases(
-                zip(merge_conditions[1:], [other.wait_state for other in others]),
-                self.wait_state,
-            )
-
-        if not utils.same_ast(self.arbitration_lost, merged_arbitration_lost):
-            self.arbitration_lost = merged_arbitration_lost
-            changed = True
-
-        if not utils.same_ast(
-            self.arbitration_lost_byte_end, merged_arbitration_lost_byte_end
-        ):
-            self.arbitration_lost_byte_end = merged_arbitration_lost_byte_end
-            changed = True
-
-        if not utils.same_ast(self.wait_state, merged_wait_state):
-            self.wait_state = merged_wait_state
-            changed = True
+            if not utils.same_ast(value, merged_value):
+                setattr(self, field, merged_value)
+                changed = True
 
         return changed

@@ -234,5 +234,14 @@ def same_ast(left, right):
     return left == right
 
 
+def merge_ast_values(state, value, other_values, merge_conditions):
+    other_values = list(other_values)
+    if not other_values:
+        return value
+    if merge_conditions is None:
+        return state.solver.union([value] + other_values)
+    return claripy.ite_cases(zip(merge_conditions[1:], other_values), value)
+
+
 def stop_and_debug(state):
     state.globals["DEBUG"] = True
