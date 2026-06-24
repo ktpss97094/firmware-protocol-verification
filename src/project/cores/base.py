@@ -424,35 +424,89 @@ class BaseCPU(ABC):
 
             return output
 
+        @staticmethod
+        def _and_conditions(conditions):
+            conditions = list(conditions)
+            if not conditions:
+                return claripy.true()
+            if len(conditions) == 1:
+                return conditions[0]
+            return claripy.And(*conditions)
+
+        @staticmethod
+        def _handler_sort_key(handler):
+            cls = handler.__class__
+            return (cls.__qualname__, cls.__module__, id(handler))
+
+        def _satisfiable(self, state, condition):
+            return condition.is_true() or state.solver.satisfiable(
+                extra_constraints=[condition]
+            )
+
+        def _handler_options(self, state, handler):
+            options = []
+            neg_prev_conds = []
+
+            for trig_cond, handler_kwargs in handler.get_eligible_events(state):
+                option_cond = self._and_conditions((*neg_prev_conds, trig_cond))
+                if self._satisfiable(state, option_cond):
+                    options.append((option_cond, [(handler, handler_kwargs)]))
+
+                neg_prev_conds.append(claripy.Not(trig_cond))
+                none_cond = self._and_conditions(neg_prev_conds)
+                if not self._satisfiable(state, none_cond):
+                    return options, None
+
+            none_cond = self._and_conditions(neg_prev_conds)
+            if self._satisfiable(state, none_cond):
+                return options, none_cond
+            return options, None
+
+        def _compose_handler_options(self, state, handlers):
+            groups = [(claripy.true(), [])]
+            no_event_cond = claripy.true()
+
+            for handler in sorted(handlers, key=self._handler_sort_key):
+                options, handler_no_event_cond = self._handler_options(state, handler)
+                next_groups = []
+
+                handler_choices = list(options)
+                if handler_no_event_cond is not None:
+                    handler_choices.append((handler_no_event_cond, []))
+                    no_event_cond = claripy.And(no_event_cond, handler_no_event_cond)
+                else:
+                    no_event_cond = claripy.false()
+
+                for group_cond, group_events in groups:
+                    for option_cond, option_events in handler_choices:
+                        combined_cond = claripy.And(group_cond, option_cond)
+                        if self._satisfiable(state, combined_cond):
+                            next_groups.append(
+                                (combined_cond, group_events + option_events)
+                            )
+
+                groups = next_groups
+                if not groups:
+                    break
+
+            event_groups = [
+                (condition, events) for condition, events in groups if events
+            ]
+            has_normal = self._satisfiable(state, no_event_cond)
+            return event_groups, has_normal
+
         def _process_event(self, check_items):
             output = []
 
             while check_items:
                 check_state, handlers = check_items.pop(0)
 
-                trig_list = []
-                for handler in handlers:
-                    for trig_cond, handler_kwargs in handler.get_eligible_events(
-                        check_state
-                    ):
-                        trig_list.append((trig_cond, handler, handler_kwargs))
-                trig_list = self._merge(check_state, trig_list)
+                event_groups, has_normal = self._compose_handler_options(
+                    check_state, handlers
+                )
 
-                neg_prev_conds = []
-                pruning = False
-
-                for trig_cond, handler_info_list in trig_list:
-                    if (
-                        not trig_cond.is_true()  # pruning，如果是 concrete true 就不用再算 satisfiable
-                        and not check_state.solver.satisfiable(
-                            extra_constraints=neg_prev_conds + [trig_cond]
-                        )  # 因為加了 neg_prev_conds constraints，所以需要檢查
-                    ):
-                        continue
-
+                for trig_cond, handler_info_list in event_groups:
                     new_state = check_state.copy()
-                    if neg_prev_conds:
-                        new_state.add_constraints(*neg_prev_conds)
                     new_state.add_constraints(trig_cond)
 
                     for handler, handler_kwargs in handler_info_list:
@@ -466,15 +520,8 @@ class BaseCPU(ABC):
                     else:
                         output.append(new_state)
 
-                    neg_prev_conds.append(claripy.Not(trig_cond))
-                    if not check_state.solver.satisfiable(
-                        extra_constraints=neg_prev_conds
-                    ):  # pruning，如果這個 trigger condition 到目前是一定會被觸發，則代表到目前 fork 出的所有 state 已滿足所有可能的情況。所以同等於計算是否不可能有滿足 neg_prev_conds 的情況
-                        pruning = True
-                        break
-
                 # normal state
-                if not pruning:
+                if has_normal:
                     output.append(check_state)
 
             return output

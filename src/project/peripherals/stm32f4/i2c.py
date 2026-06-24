@@ -191,7 +191,6 @@ class I2C(MMIOMemoryRegion):
         event_irq_enabled = cr2[I2C.I2C_CR2.ITEVTEN.bit] == 1
         buffer_irq_enabled = cr2[I2C.I2C_CR2.ITBUFEN.bit] == 1
         error_irq_enabled = cr2[I2C.I2C_CR2.ITERREN.bit] == 1
-        dma_disabled = cr2[I2C.I2C_CR2.DMAEN.bit] == 0
         events_to_check = []
         output = []
 
@@ -222,19 +221,19 @@ class I2C(MMIOMemoryRegion):
                     self.IRQ_NUMBERS[0],
                 ),
                 (
-                    claripy.And(event_irq_enabled, dma_disabled),
+                    event_irq_enabled,
                     I2C.I2C_SR1.OFFSET,
                     I2C.I2C_SR1.BTF.bit,
                     self.IRQ_NUMBERS[0],
                 ),
                 (
-                    claripy.And(event_irq_enabled, buffer_irq_enabled, dma_disabled),
+                    claripy.And(event_irq_enabled, buffer_irq_enabled),
                     I2C.I2C_SR1.OFFSET,
                     I2C.I2C_SR1.TXE.bit,
                     self.IRQ_NUMBERS[0],
                 ),
                 (
-                    claripy.And(event_irq_enabled, buffer_irq_enabled, dma_disabled),
+                    claripy.And(event_irq_enabled, buffer_irq_enabled),
                     I2C.I2C_SR1.OFFSET,
                     I2C.I2C_SR1.RXNE.bit,
                     self.IRQ_NUMBERS[0],

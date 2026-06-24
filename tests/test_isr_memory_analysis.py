@@ -498,7 +498,7 @@ class I2CModelTest(unittest.TestCase):
         self.assertEqual(0, state.solver.eval(stored_sr1[I2C.I2C_SR1.AF.bit]))
         self.assertEqual(state.solver.eval(masked_value), state.solver.eval(stored_sr1))
 
-    def test_pending_buffer_irqs_require_dma_disabled_for_symbolic_dmaen(self):
+    def test_pending_buffer_irqs_do_not_depend_on_symbolic_dmaen(self):
         state, i2c = self.make_i2c_state()
         dmaen = claripy.BVS("dmaen", 1)
         cr2 = (1 << I2C.I2C_CR2.ITEVTEN.bit) | (1 << I2C.I2C_CR2.ITBUFEN.bit)
@@ -522,7 +522,7 @@ class I2CModelTest(unittest.TestCase):
 
         self.assertEqual(3, len(event_irq_conditions))
         for condition in event_irq_conditions:
-            self.assertFalse(
+            self.assertTrue(
                 state.solver.satisfiable(
                     extra_constraints=[condition, dmaen == claripy.BVV(1, 1)]
                 )
@@ -621,6 +621,51 @@ class InterruptSchedulingTest(unittest.TestCase):
 
         self.assertEqual(1, len(output))
         self.assertEqual(0x08000612, output[0].addr)
+
+    def test_overlapping_events_from_different_handlers_fire_together(self):
+        project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
+        state = project.factory.blank_state(addr=0x08000000)
+        manager = BaseCPU.AsynchronousEventManager(cpu=None, end_addrs=())
+        txe = claripy.BVS("txe", 1)
+        itbufen = claripy.BVS("itbufen", 1)
+        dmaen = claripy.BVS("dmaen", 1)
+
+        class Handler(EventForkHandler):
+            def __init__(self, condition, bit, pc):
+                self.condition = condition
+                self.bit = bit
+                self.pc = pc
+
+            def get_eligible_events(self, current_state):
+                del current_state
+                return [(self.condition, {})]
+
+            def trigger_event(self, current_state):
+                current_state.globals["event_mask"] = (
+                    current_state.globals.get("event_mask", 0) | self.bit
+                )
+                current_state.regs.pc = self.pc
+
+        irq_handler = Handler(
+            claripy.And(txe == 1, itbufen == 1),
+            bit=1,
+            pc=0x08000612,
+        )
+        dma_handler = Handler(
+            claripy.And(txe == 1, dmaen == 1),
+            bit=2,
+            pc=0x08000624,
+        )
+
+        output = manager._process_event([(state, [irq_handler, dma_handler])])
+
+        both = [s for s in output if s.globals.get("event_mask") == 3]
+        self.assertEqual(1, len(both))
+        self.assertTrue(
+            both[0].solver.satisfiable(
+                extra_constraints=[txe == 1, itbufen == 1, dmaen == 1]
+            )
+        )
 
     def test_merge_key_separates_interrupt_contexts(self):
         project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
