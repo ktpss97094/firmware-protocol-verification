@@ -8,6 +8,7 @@ import angr
 import claripy
 
 from firmwares.stm32f429.protocols.I2C.spec_hw import Specs
+from project import utils
 from project.analyses.isr_memory import Access, analyze_isr_memory
 from project.cores.arm.cortex_m.cortex_m import CortexM
 from project.cores.base import BaseCPU
@@ -497,6 +498,41 @@ class I2CModelTest(unittest.TestCase):
         self.assertEqual(0, state.solver.eval(stored_sr1[I2C.I2C_SR1.AF.bit]))
         self.assertEqual(state.solver.eval(masked_value), state.solver.eval(stored_sr1))
 
+    def test_pending_buffer_irqs_require_dma_disabled_for_symbolic_dmaen(self):
+        state, i2c = self.make_i2c_state()
+        dmaen = claripy.BVS("dmaen", 1)
+        cr2 = (1 << I2C.I2C_CR2.ITEVTEN.bit) | (1 << I2C.I2C_CR2.ITBUFEN.bit)
+        cr2 = utils.replace_bit(
+            claripy.BVV(cr2, state.arch.bits), I2C.I2C_CR2.DMAEN.bit, dmaen
+        )
+        sr1 = (
+            (1 << I2C.I2C_SR1.BTF.bit)
+            | (1 << I2C.I2C_SR1.TXE.bit)
+            | (1 << I2C.I2C_SR1.RXNE.bit)
+        )
+
+        self.store_register(state, i2c, I2C.I2C_CR2.OFFSET, cr2)
+        self.store_register(state, i2c, I2C.I2C_SR1.OFFSET, sr1)
+
+        event_irq_conditions = [
+            condition
+            for condition, metadata in i2c.get_pending_irqs(state)
+            if metadata["irq"] == I2C.IRQ_NUMBERS[0]
+        ]
+
+        self.assertEqual(3, len(event_irq_conditions))
+        for condition in event_irq_conditions:
+            self.assertFalse(
+                state.solver.satisfiable(
+                    extra_constraints=[condition, dmaen == claripy.BVV(1, 1)]
+                )
+            )
+            self.assertTrue(
+                state.solver.satisfiable(
+                    extra_constraints=[condition, dmaen == claripy.BVV(0, 1)]
+                )
+            )
+
 
 class InterruptSchedulingTest(unittest.TestCase):
     def test_terminal_state_without_event_is_found_and_successor_is_discarded(self):
@@ -603,11 +639,11 @@ class InterruptSchedulingTest(unittest.TestCase):
         right = left.copy()
         left.register_plugin(
             "I2C1_globals",
-            Globals(is_address_phase=claripy.false()),
+            Globals(sr1_read=claripy.false()),
         )
         right.register_plugin(
             "I2C1_globals",
-            Globals(is_address_phase=claripy.true()),
+            Globals(sr1_read=claripy.true()),
         )
 
         self.assertNotEqual(state_merge_key(left), state_merge_key(right))

@@ -40,7 +40,11 @@ class Globals(SimStatePlugin):
         return o
 
     def merge_key(self):
-        return (self.rw[0].hash(),)
+        return (
+            self.is_address_phase.hash(),
+            self.rw[0].hash(),
+            self.sr1_read.hash(),
+        )
 
     def merge(self, others, merge_conditions, common_ancestor=None):
         """
@@ -51,21 +55,17 @@ class Globals(SimStatePlugin):
         del common_ancestor
 
         rw_valid, rw_value = self.rw
-        if any(not utils.same_ast(rw_valid, other.rw[0]) for other in others):
-            raise SimMergeError("Cannot merge STM32F4 I2C globals (rw)")
+        if any(
+            not utils.same_ast(self.is_address_phase, other.is_address_phase)
+            or not utils.same_ast(rw_valid, other.rw[0])
+            or not utils.same_ast(self.sr1_read, other.sr1_read)
+            for other in others
+        ):
+            raise SimMergeError(
+                "Cannot merge STM32F4 I2C globals "
+                "(is_address_phase, rw, or sr1_read)"
+            )
 
-        merged_is_address_phase = utils.merge_ast_values(
-            self.state,
-            self.is_address_phase,
-            (other.is_address_phase for other in others),
-            merge_conditions,
-        )
-        merged_sr1_read = utils.merge_ast_values(
-            self.state,
-            self.sr1_read,
-            (other.sr1_read for other in others),
-            merge_conditions,
-        )
         merged_rw_value = utils.merge_ast_values(
             self.state,
             rw_value,
@@ -74,12 +74,6 @@ class Globals(SimStatePlugin):
         )
 
         changed = False
-        if not utils.same_ast(self.is_address_phase, merged_is_address_phase):
-            self.is_address_phase = merged_is_address_phase
-            changed = True
-        if not utils.same_ast(self.sr1_read, merged_sr1_read):
-            self.sr1_read = merged_sr1_read
-            changed = True
         if not utils.same_ast(rw_value, merged_rw_value):
             changed = True
         self.rw = rw_valid, merged_rw_value
@@ -194,44 +188,105 @@ class I2C(MMIOMemoryRegion):
 
     def get_pending_irqs(self, state):
         cr2 = utils.load(state, self.start + I2C.I2C_CR2.OFFSET)
+        event_irq_enabled = cr2[I2C.I2C_CR2.ITEVTEN.bit] == 1
+        buffer_irq_enabled = cr2[I2C.I2C_CR2.ITBUFEN.bit] == 1
+        error_irq_enabled = cr2[I2C.I2C_CR2.ITERREN.bit] == 1
+        dma_disabled = cr2[I2C.I2C_CR2.DMAEN.bit] == 0
         events_to_check = []
         output = []
 
-        if state.solver.is_true(cr2[I2C.I2C_CR2.ITEVTEN.bit] == 1):
-            events_to_check.extend(
-                [
-                    (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.SB.bit, self.IRQ_NUMBERS[0]),
-                    (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.ADDR.bit, self.IRQ_NUMBERS[0]),
-                    (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.ADD10.bit, self.IRQ_NUMBERS[0]),
-                    (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.BTF.bit, self.IRQ_NUMBERS[0]),
-                    (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.STOPF.bit, self.IRQ_NUMBERS[0]),
-                ]
-            )
+        events_to_check.extend(
+            [
+                (
+                    event_irq_enabled,
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.SB.bit,
+                    self.IRQ_NUMBERS[0],
+                ),
+                (
+                    event_irq_enabled,
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.ADDR.bit,
+                    self.IRQ_NUMBERS[0],
+                ),
+                (
+                    event_irq_enabled,
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.ADD10.bit,
+                    self.IRQ_NUMBERS[0],
+                ),
+                (
+                    event_irq_enabled,
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.STOPF.bit,
+                    self.IRQ_NUMBERS[0],
+                ),
+                (
+                    claripy.And(event_irq_enabled, dma_disabled),
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.BTF.bit,
+                    self.IRQ_NUMBERS[0],
+                ),
+                (
+                    claripy.And(event_irq_enabled, buffer_irq_enabled, dma_disabled),
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.TXE.bit,
+                    self.IRQ_NUMBERS[0],
+                ),
+                (
+                    claripy.And(event_irq_enabled, buffer_irq_enabled, dma_disabled),
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.RXNE.bit,
+                    self.IRQ_NUMBERS[0],
+                ),
+                (
+                    error_irq_enabled,
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.BERR.bit,
+                    self.IRQ_NUMBERS[1],
+                ),
+                (
+                    error_irq_enabled,
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.ARLO.bit,
+                    self.IRQ_NUMBERS[1],
+                ),
+                (
+                    error_irq_enabled,
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.AF.bit,
+                    self.IRQ_NUMBERS[1],
+                ),
+                (
+                    error_irq_enabled,
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.OVR.bit,
+                    self.IRQ_NUMBERS[1],
+                ),
+                (
+                    error_irq_enabled,
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.PECERR.bit,
+                    self.IRQ_NUMBERS[1],
+                ),
+                (
+                    error_irq_enabled,
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.TIMEOUT.bit,
+                    self.IRQ_NUMBERS[1],
+                ),
+                (
+                    error_irq_enabled,
+                    I2C.I2C_SR1.OFFSET,
+                    I2C.I2C_SR1.SMBALERT.bit,
+                    self.IRQ_NUMBERS[1],
+                ),
+            ]
+        )
 
-            if state.solver.is_true(cr2[I2C.I2C_CR2.ITBUFEN.bit] == 1):
-                events_to_check.extend(
-                    [
-                        (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.TXE.bit, self.IRQ_NUMBERS[0]),
-                        (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.RXNE.bit, self.IRQ_NUMBERS[0]),
-                    ]
-                )
-
-        if state.solver.is_true(cr2[I2C.I2C_CR2.ITERREN.bit] == 1):
-            events_to_check.extend(
-                [
-                    (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.BERR.bit, self.IRQ_NUMBERS[1]),
-                    (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.ARLO.bit, self.IRQ_NUMBERS[1]),
-                    (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.AF.bit, self.IRQ_NUMBERS[1]),
-                    (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.OVR.bit, self.IRQ_NUMBERS[1]),
-                    (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.PECERR.bit, self.IRQ_NUMBERS[1]),
-                    (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.TIMEOUT.bit, self.IRQ_NUMBERS[1]),
-                    (I2C.I2C_SR1.OFFSET, I2C.I2C_SR1.SMBALERT.bit, self.IRQ_NUMBERS[1]),
-                ]
-            )
-
-        for event_offset, event_bit, irq_num in events_to_check:
+        for enable_cond, event_offset, event_bit, irq_num in events_to_check:
             event_val = utils.load(state, self.start + event_offset)[event_bit]
-            trigger_cond = event_val == 1
+            trigger_cond = claripy.And(enable_cond, event_val == 1)
 
             if state.solver.satisfiable(extra_constraints=[trigger_cond]):
                 output.append((trigger_cond, {"irq": irq_num}))
@@ -426,14 +481,10 @@ class I2CTransaction:
         self._set_sr1_bit_when(I2C.I2C_SR1.RXNE.bit, 0, claripy.true())
 
     def event_cr1_write(self):
-        if self.state.solver.satisfiable(
-            extra_constraints=[self.new.cr1[I2C.I2C_CR1.START.bit] == 1]
-        ):
+        if self.state.solver.is_true(self.new.cr1[I2C.I2C_CR1.START.bit] == 1):
             self.event_start_generated()
 
-        if self.state.solver.satisfiable(
-            extra_constraints=[self.new.cr1[I2C.I2C_CR1.STOP.bit] == 1]
-        ):
+        if self.state.solver.is_true(self.new.cr1[I2C.I2C_CR1.STOP.bit] == 1):
             self.event_stop_detected()
 
     def event_dr_write(self, value):
@@ -558,7 +609,7 @@ class I2CTransaction:
             )
             self._assign_sr1_bit(I2C.I2C_SR1.ADD10.bit, next_add10)
 
-        add10 = self.new.sr1[I2C.I2C_SR1.ADD10.bit] == 1
+        add10 = claripy.And(condition, self.new.sr1[I2C.I2C_SR1.ADD10.bit] == 1)
         self._set_sr1_bit_when(I2C.I2C_SR1.AF.bit, 0, add10)
         self._set_sr1_bit_when(I2C.I2C_SR1.ARLO.bit, 0, add10)
 
@@ -573,7 +624,7 @@ class I2CTransaction:
             )
             self._assign_sr1_bit(I2C.I2C_SR1.ADDR.bit, next_addr)
 
-        addr_set = self.new.sr1[I2C.I2C_SR1.ADDR.bit] == 1
+        addr_set = claripy.And(condition, self.new.sr1[I2C.I2C_SR1.ADDR.bit] == 1)
         self.new.globals.is_address_phase = claripy.If(
             addr_set, claripy.false(), self.new.globals.is_address_phase
         )
