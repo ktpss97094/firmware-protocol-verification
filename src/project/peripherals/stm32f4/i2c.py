@@ -144,9 +144,15 @@ class I2C(MMIOMemoryRegion):
     def get_access_effects(self, operation, address, size):
         effects = super().get_access_effects(operation, address, size)
 
+        register_read_offsets = (
+            I2C.I2C_CR1.OFFSET,
+            I2C.I2C_CR2.OFFSET,
+            I2C.I2C_SR1.OFFSET,
+            I2C.I2C_SR2.OFFSET,
+        )
         register_effects = {
             MemoryEffect("read", self.start + offset, self.spec.ANGR_ARCH.bytes)
-            for offset in (I2C.I2C_CR1.OFFSET, I2C.I2C_SR1.OFFSET, I2C.I2C_SR2.OFFSET)
+            for offset in register_read_offsets
         }
         register_effects.update(
             MemoryEffect("write", self.start + offset, self.spec.ANGR_ARCH.bytes)
@@ -203,6 +209,13 @@ class I2C(MMIOMemoryRegion):
         event_irq_enabled = cr2[I2C.I2C_CR2.ITEVTEN.bit] == 1
         buffer_irq_enabled = cr2[I2C.I2C_CR2.ITBUFEN.bit] == 1
         error_irq_enabled = cr2[I2C.I2C_CR2.ITERREN.bit] == 1
+        dma_requests_enabled = cr2[I2C.I2C_CR2.DMAEN.bit] == 1
+        non_dma_event_irq_enabled = claripy.And(
+            event_irq_enabled, claripy.Not(dma_requests_enabled)
+        )
+        non_dma_buffer_irq_enabled = claripy.And(
+            non_dma_event_irq_enabled, buffer_irq_enabled
+        )
         events_to_check = []
         output = []
 
@@ -233,19 +246,19 @@ class I2C(MMIOMemoryRegion):
                     self.IRQ_NUMBERS[0],
                 ),
                 (
-                    event_irq_enabled,
+                    non_dma_event_irq_enabled,
                     I2C.I2C_SR1.OFFSET,
                     I2C.I2C_SR1.BTF.bit,
                     self.IRQ_NUMBERS[0],
                 ),
                 (
-                    claripy.And(event_irq_enabled, buffer_irq_enabled),
+                    non_dma_buffer_irq_enabled,
                     I2C.I2C_SR1.OFFSET,
                     I2C.I2C_SR1.TXE.bit,
                     self.IRQ_NUMBERS[0],
                 ),
                 (
-                    claripy.And(event_irq_enabled, buffer_irq_enabled),
+                    non_dma_buffer_irq_enabled,
                     I2C.I2C_SR1.OFFSET,
                     I2C.I2C_SR1.RXNE.bit,
                     self.IRQ_NUMBERS[0],

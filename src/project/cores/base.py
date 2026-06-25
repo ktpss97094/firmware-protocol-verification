@@ -446,6 +446,9 @@ class BaseCPU(ABC):
         def _handler_options(self, state, handler):
             options = []
             neg_prev_conds = []
+            no_event_constrains_state = getattr(
+                handler, "NO_EVENT_CONSTRAINS_STATE", True
+            )
 
             for trig_cond, handler_kwargs in handler.get_eligible_events(state):
                 option_cond = self._and_conditions((*neg_prev_conds, trig_cond))
@@ -454,8 +457,13 @@ class BaseCPU(ABC):
 
                 neg_prev_conds.append(claripy.Not(trig_cond))
                 none_cond = self._and_conditions(neg_prev_conds)
-                if not self._satisfiable(state, none_cond):
+                if no_event_constrains_state and not self._satisfiable(
+                    state, none_cond
+                ):
                     return options, None
+
+            if not no_event_constrains_state:
+                return options, claripy.true()
 
             none_cond = self._and_conditions(neg_prev_conds)
             if self._satisfiable(state, none_cond):
@@ -492,8 +500,8 @@ class BaseCPU(ABC):
             event_groups = [
                 (condition, events) for condition, events in groups if events
             ]
-            has_normal = self._satisfiable(state, no_event_cond)
-            return event_groups, has_normal
+            normal_cond = no_event_cond if self._satisfiable(state, no_event_cond) else None
+            return event_groups, normal_cond
 
         def _process_event(self, check_items):
             output = []
@@ -501,7 +509,7 @@ class BaseCPU(ABC):
             while check_items:
                 check_state, handlers = check_items.pop(0)
 
-                event_groups, has_normal = self._compose_handler_options(
+                event_groups, normal_cond = self._compose_handler_options(
                     check_state, handlers
                 )
 
@@ -521,8 +529,13 @@ class BaseCPU(ABC):
                         output.append(new_state)
 
                 # normal state
-                if has_normal:
-                    output.append(check_state)
+                if normal_cond is not None:
+                    if normal_cond.is_true():
+                        output.append(check_state)
+                    else:
+                        normal_state = check_state.copy()
+                        normal_state.add_constraints(normal_cond)
+                        output.append(normal_state)
 
             return output
 

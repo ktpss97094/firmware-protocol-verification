@@ -1140,6 +1140,8 @@ class BaseSpecs:
 
 
 class EventForkHandler:
+    NO_EVENT_CONSTRAINS_STATE = True
+
     def get_checkpoints(self):
         return set()
 

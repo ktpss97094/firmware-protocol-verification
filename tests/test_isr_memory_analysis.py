@@ -546,7 +546,7 @@ class I2CModelTest(unittest.TestCase):
         self.assertEqual(0, state.solver.eval(stored_sr1[I2C.I2C_SR1.AF.bit]))
         self.assertEqual(state.solver.eval(masked_value), state.solver.eval(stored_sr1))
 
-    def test_pending_buffer_irqs_do_not_depend_on_symbolic_dmaen(self):
+    def test_pending_buffer_irqs_are_disabled_when_dma_requests_are_enabled(self):
         state, i2c = self.make_i2c_state()
         dmaen = claripy.BVS("dmaen", 1)
         cr2 = (1 << I2C.I2C_CR2.ITEVTEN.bit) | (1 << I2C.I2C_CR2.ITBUFEN.bit)
@@ -570,7 +570,7 @@ class I2CModelTest(unittest.TestCase):
 
         self.assertEqual(3, len(event_irq_conditions))
         for condition in event_irq_conditions:
-            self.assertTrue(
+            self.assertFalse(
                 state.solver.satisfiable(
                     extra_constraints=[condition, dmaen == claripy.BVV(1, 1)]
                 )
@@ -711,6 +711,96 @@ class InterruptSchedulingTest(unittest.TestCase):
         self.assertEqual(1, len(both))
         self.assertTrue(
             both[0].solver.satisfiable(
+                extra_constraints=[txe == 1, itbufen == 1, dmaen == 1]
+            )
+        )
+
+    def test_mandatory_event_normal_path_is_constrained(self):
+        project = angr.load_shellcode(b"\x00", arch=Specs.ANGR_ARCH)
+        state = project.factory.blank_state(addr=0x08000000)
+        manager = BaseCPU.AsynchronousEventManager(cpu=None, end_addrs=())
+        pending = claripy.BVS("pending_irq", 1)
+
+        class Handler(EventForkHandler):
+            def get_eligible_events(self, current_state):
+                del current_state
+                return [(pending == 1, {})]
+
+            def trigger_event(self, current_state):
+                current_state.regs.pc = 0x08000612
+
+        output = manager._process_event([(state, [Handler()])])
+
+        event_states = [s for s in output if s.addr == 0x08000612]
+        normal_states = [s for s in output if s.addr == 0x08000000]
+        self.assertEqual(1, len(event_states))
+        self.assertEqual(1, len(normal_states))
+        self.assertFalse(
+            normal_states[0].solver.satisfiable(extra_constraints=[pending == 1])
+        )
+
+    def test_optional_event_normal_path_remains_unconstrained(self):
+        project = angr.load_shellcode(b"\x00", arch=Specs.ANGR_ARCH)
+        state = project.factory.blank_state(addr=0x08000000)
+        manager = BaseCPU.AsynchronousEventManager(cpu=None, end_addrs=())
+        eligible = claripy.BVS("eligible_dma", 1)
+
+        class Handler(EventForkHandler):
+            NO_EVENT_CONSTRAINS_STATE = False
+
+            def get_eligible_events(self, current_state):
+                del current_state
+                return [(eligible == 1, {})]
+
+            def trigger_event(self, current_state):
+                current_state.regs.pc = 0x08000624
+
+        output = manager._process_event([(state, [Handler()])])
+
+        normal_states = [s for s in output if s.addr == 0x08000000]
+        self.assertEqual(1, len(normal_states))
+        self.assertTrue(
+            normal_states[0].solver.satisfiable(extra_constraints=[eligible == 1])
+        )
+        self.assertTrue(
+            normal_states[0].solver.satisfiable(extra_constraints=[eligible == 0])
+        )
+
+    def test_optional_handler_does_not_constrain_other_event_paths(self):
+        project = angr.load_shellcode(b"\x00", arch=Specs.ANGR_ARCH)
+        state = project.factory.blank_state(addr=0x08000000)
+        manager = BaseCPU.AsynchronousEventManager(cpu=None, end_addrs=())
+        txe = claripy.BVS("shared_txe", 1)
+        itbufen = claripy.BVS("irq_itbufen", 1)
+        dmaen = claripy.BVS("dma_dmaen", 1)
+
+        class Handler(EventForkHandler):
+            def __init__(self, condition, bit):
+                self.condition = condition
+                self.bit = bit
+
+            def get_eligible_events(self, current_state):
+                del current_state
+                return [(self.condition, {})]
+
+            def trigger_event(self, current_state):
+                current_state.globals["event_mask"] = (
+                    current_state.globals.get("event_mask", 0) | self.bit
+                )
+                current_state.regs.pc = 0x08000612
+
+        class OptionalHandler(Handler):
+            NO_EVENT_CONSTRAINS_STATE = False
+
+        irq_handler = Handler(claripy.And(txe == 1, itbufen == 1), bit=1)
+        dma_handler = OptionalHandler(claripy.And(txe == 1, dmaen == 1), bit=2)
+
+        output = manager._process_event([(state, [irq_handler, dma_handler])])
+
+        irq_only = [s for s in output if s.globals.get("event_mask") == 1]
+        self.assertEqual(1, len(irq_only))
+        self.assertTrue(
+            irq_only[0].solver.satisfiable(
                 extra_constraints=[txe == 1, itbufen == 1, dmaen == 1]
             )
         )

@@ -17,6 +17,10 @@ from project.types import (
 
 
 class DMA(BaseDMA):
+    DMA1_STREAM0_IRQ = 11
+    DMA_MEMORY_TO_PERIPH = 1
+    DMA1_STREAM6_IRQ = 17
+
     IRQ_NUMBERS = [11, 12, 13, 14, 15, 16, 17]  # DMA1_Stream0 to DMA1_Stream6
 
     class DMA_HISR(BaseRegister):
@@ -52,6 +56,7 @@ class DMA(BaseDMA):
         MINC = BitsField(10, AccessType.RW, 0)  # Memory increment mode
         PINC = BitsField(9, AccessType.RW, 0)  # Peripheral increment mode
         CIRC = BitsField(8, AccessType.RW, 0)  # Circular mode
+        DIR = BitsField(6, AccessType.RW, 0, size=2)  # Data transfer direction
         TCIE = BitsField(4, AccessType.RW, 0)  # TC (transfer complete) interrupt enable
         HTIE = BitsField(3, AccessType.RW, 0)  # HT (half transfer) interrupt enable
         TEIE = BitsField(2, AccessType.RW, 0)  # TE (transfer error) interrupt enable
@@ -115,31 +120,31 @@ class DMA(BaseDMA):
                     s6cr[DMA.DMA_S6CR.HTIE.bit] == 1,
                     DMA.DMA_HISR.OFFSET,
                     DMA.DMA_HISR.HTIF6.bit,
-                    self.IRQ_NUMBERS[6],
+                    DMA.DMA1_STREAM6_IRQ,
                 ),
                 (
                     s6cr[DMA.DMA_S6CR.TCIE.bit] == 1,
                     DMA.DMA_HISR.OFFSET,
                     DMA.DMA_HISR.TCIF6.bit,
-                    self.IRQ_NUMBERS[6],
+                    DMA.DMA1_STREAM6_IRQ,
                 ),
                 (
                     s6cr[DMA.DMA_S6CR.TEIE.bit] == 1,
                     DMA.DMA_HISR.OFFSET,
                     DMA.DMA_HISR.TEIF6.bit,
-                    self.IRQ_NUMBERS[6],
+                    DMA.DMA1_STREAM6_IRQ,
                 ),
                 (
                     s6fcr[DMA.DMA_S6FCR.FEIE.bit] == 1,
                     DMA.DMA_HISR.OFFSET,
                     DMA.DMA_HISR.FEIF6.bit,
-                    self.IRQ_NUMBERS[6],
+                    DMA.DMA1_STREAM6_IRQ,
                 ),
                 (
                     s6cr[DMA.DMA_S6CR.DMEIE.bit] == 1,
                     DMA.DMA_HISR.OFFSET,
                     DMA.DMA_HISR.DMEIF6.bit,
-                    self.IRQ_NUMBERS[6],
+                    DMA.DMA1_STREAM6_IRQ,
                 ),
             ]
         )
@@ -154,6 +159,8 @@ class DMA(BaseDMA):
         return output
 
     class _DMAHandler(EventForkHandler):
+        NO_EVENT_CONSTRAINS_STATE = False
+
         def __init__(self, cpu, state, cfg, specs, dma):
             self.cpu = cpu
             self.specs = specs
@@ -189,24 +196,52 @@ class DMA(BaseDMA):
         def get_eligible_events(self, state):
             s6cr = utils.load(state, self.dma.start + DMA.DMA_S6CR.OFFSET)
             s6ndtr = utils.load(state, self.dma.start + DMA.DMA_S6NDTR.OFFSET)
+            s6par = utils.load(state, self.dma.start + DMA.DMA_S6PAR.OFFSET)
             i2c1_cr2 = utils.load(
                 state, self.specs.MEMORY_REGIONS["I2C1"].start + I2C.I2C_CR2.OFFSET
             )
             i2c1_sr1 = utils.load(
                 state, self.specs.MEMORY_REGIONS["I2C1"].start + I2C.I2C_SR1.OFFSET
             )
+            i2c1_dr_addr = (
+                self.specs.MEMORY_REGIONS["I2C1"].start + I2C.I2C_DR.OFFSET
+            )
             channel = s6cr[
                 DMA.DMA_S6CR.CHSEL.bit
                 + DMA.DMA_S6CR.CHSEL.size
                 - 1 : DMA.DMA_S6CR.CHSEL.bit
+            ]
+            direction = s6cr[
+                DMA.DMA_S6CR.DIR.bit
+                + DMA.DMA_S6CR.DIR.size
+                - 1 : DMA.DMA_S6CR.DIR.bit
+            ]
+            msize = s6cr[
+                DMA.DMA_S6CR.MSIZE.bit
+                + DMA.DMA_S6CR.MSIZE.size
+                - 1 : DMA.DMA_S6CR.MSIZE.bit
+            ]
+            psize = s6cr[
+                DMA.DMA_S6CR.PSIZE.bit
+                + DMA.DMA_S6CR.PSIZE.size
+                - 1 : DMA.DMA_S6CR.PSIZE.bit
             ]
             ndt = s6ndtr[
                 DMA.DMA_S6NDTR.NDT.bit
                 + DMA.DMA_S6NDTR.NDT.size
                 - 1 : DMA.DMA_S6NDTR.NDT.bit
             ]
+            par = s6par[
+                DMA.DMA_S6PAR.PAR.bit
+                + DMA.DMA_S6PAR.PAR.size
+                - 1 : DMA.DMA_S6PAR.PAR.bit
+            ]
             trigger_cond = claripy.And(
                 channel == 1,  # I2C1_TX
+                direction == DMA.DMA_MEMORY_TO_PERIPH,
+                par == i2c1_dr_addr,
+                msize == 0,
+                psize == 0,
                 i2c1_cr2[I2C.I2C_CR2.DMAEN.bit] == 1,
                 s6cr[DMA.DMA_S6CR.EN.bit] == 1,
                 ndt > 0,
