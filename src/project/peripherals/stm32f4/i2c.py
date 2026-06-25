@@ -40,11 +40,7 @@ class Globals(SimStatePlugin):
         return o
 
     def merge_key(self):
-        return (
-            self.is_address_phase.hash(),
-            self.rw[0].hash(),
-            self.sr1_read.hash(),
-        )
+        return (self.rw[0].hash(),)
 
     def merge(self, others, merge_conditions, common_ancestor=None):
         """
@@ -56,27 +52,43 @@ class Globals(SimStatePlugin):
 
         rw_valid, rw_value = self.rw
         if any(
-            not utils.same_ast(self.is_address_phase, other.is_address_phase)
-            or not utils.same_ast(rw_valid, other.rw[0])
-            or not utils.same_ast(self.sr1_read, other.sr1_read)
+            not utils.same_ast(rw_valid, other.rw[0])
             for other in others
         ):
             raise SimMergeError(
-                "Cannot merge STM32F4 I2C globals "
-                "(is_address_phase, rw, or sr1_read)"
+                "Cannot merge STM32F4 I2C globals (rw validity)"
             )
 
+        merged_is_address_phase = utils.merge_ast_values(
+            self.state,
+            self.is_address_phase,
+            (other.is_address_phase for other in others),
+            merge_conditions,
+        )
         merged_rw_value = utils.merge_ast_values(
             self.state,
             rw_value,
             (other.rw[1] for other in others),
             merge_conditions,
         )
+        merged_sr1_read = utils.merge_ast_values(
+            self.state,
+            self.sr1_read,
+            (other.sr1_read for other in others),
+            merge_conditions,
+        )
 
         changed = False
+        if not utils.same_ast(self.is_address_phase, merged_is_address_phase):
+            changed = True
         if not utils.same_ast(rw_value, merged_rw_value):
             changed = True
+        if not utils.same_ast(self.sr1_read, merged_sr1_read):
+            changed = True
+
+        self.is_address_phase = merged_is_address_phase
         self.rw = rw_valid, merged_rw_value
+        self.sr1_read = merged_sr1_read
         return changed
 
 
@@ -499,26 +511,51 @@ class I2CTransaction:
         self.event_arbitration_lost_may_occur(force=True)
         self.event_ack_failure_may_occur(force=True)
 
-        if self._address_phase_is_definitely_active():
-            rw_valid, _ = self.new.globals.rw
-            if not self.state.solver.satisfiable(extra_constraints=[rw_valid]):
-                is_10bit_header = (value & 0xF8) == 0xF0
-                self.event_add10_may_occur(condition=is_10bit_header, force=True)
-                self.event_address_phase_may_complete(
-                    condition=claripy.Not(is_10bit_header), force=True
-                )
-                self.new.globals.rw = (claripy.true(), value[0])
-            else:
-                self._set_sr1_bit_when(I2C.I2C_SR1.ADD10.bit, 0, sr1_read)
-                self.event_address_phase_may_complete(force=True)
-        else:
-            self.event_tx_empty_refresh(force=True)
-            self.event_byte_transfer_finished_refresh(force=True)
+        address_phase = _bool_ast(self.new.globals.is_address_phase)
+        rw_valid, rw_value = self.new.globals.rw
+        first_address_byte = claripy.And(address_phase, claripy.Not(rw_valid))
+        next_address_byte = claripy.And(address_phase, rw_valid)
+        data_phase = claripy.Not(address_phase)
+
+        if not self._condition_is_definitely_false(first_address_byte):
+            is_10bit_header = (value & 0xF8) == 0xF0
+            self.event_add10_may_occur(
+                condition=claripy.And(first_address_byte, is_10bit_header),
+                force=True,
+            )
+            self.event_address_phase_may_complete(
+                condition=claripy.And(first_address_byte, claripy.Not(is_10bit_header)),
+                force=True,
+            )
+            self.new.globals.rw = (
+                claripy.If(first_address_byte, claripy.true(), rw_valid),
+                claripy.If(first_address_byte, value[0], rw_value),
+            )
+
+        if not self._condition_is_definitely_false(next_address_byte):
+            self._set_sr1_bit_when(
+                I2C.I2C_SR1.ADD10.bit, 0, claripy.And(next_address_byte, sr1_read)
+            )
+            self.event_address_phase_may_complete(
+                condition=next_address_byte, force=True
+            )
+
+        if not self._condition_is_definitely_false(data_phase):
+            self.event_tx_empty_refresh(condition=data_phase, force=True)
+            self.event_byte_transfer_finished_refresh(condition=data_phase, force=True)
 
     def _address_phase_is_definitely_active(self):
         address_phase = _bool_ast(self.new.globals.is_address_phase)
+        return self._condition_is_definitely_true(address_phase)
+
+    def _condition_is_definitely_true(self, condition):
         return not self.state.solver.satisfiable(
-            extra_constraints=[claripy.Not(address_phase)]
+            extra_constraints=[claripy.Not(condition)]
+        )
+
+    def _condition_is_definitely_false(self, condition):
+        return not self.state.solver.satisfiable(
+            extra_constraints=[condition]
         )
 
     def event_start_generated(self, condition=None):

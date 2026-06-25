@@ -456,6 +456,54 @@ class I2CModelTest(unittest.TestCase):
                 state.solver.satisfiable(extra_constraints=[stored_sr1[bit] == 1])
             )
 
+    def test_symbolic_address_phase_dr_write_keeps_address_and_data_behaviors(self):
+        state, i2c = self.make_i2c_state()
+        address_phase = claripy.BoolS("address_phase")
+        state.register_plugin(
+            "I2C1_globals",
+            Globals(
+                is_address_phase=address_phase,
+                rw=(claripy.false(), claripy.BVV(0, 1)),
+            ),
+        )
+        self.store_register(
+            state,
+            i2c,
+            I2C.I2C_CR1.OFFSET,
+            1 << I2C.I2C_CR1.PE.bit,
+        )
+        self.store_register(
+            state,
+            i2c,
+            I2C.I2C_SR2.OFFSET,
+            (1 << I2C.I2C_SR2.TRA.bit) | (1 << I2C.I2C_SR2.MSL.bit),
+        )
+
+        self.run_write(state, i2c, I2C.I2C_DR.OFFSET, 0xD0)
+
+        stored_sr1 = self.load_register(state, i2c, I2C.I2C_SR1.OFFSET)
+        stored_globals = state.get_plugin("I2C1_globals")
+
+        self.assertTrue(
+            state.solver.satisfiable(
+                extra_constraints=[
+                    address_phase,
+                    stored_globals.rw[0],
+                    stored_globals.rw[1] == 0,
+                    stored_sr1[I2C.I2C_SR1.ADDR.bit] == 1,
+                    stored_globals.is_address_phase == claripy.false(),
+                ]
+            )
+        )
+        self.assertTrue(
+            state.solver.satisfiable(
+                extra_constraints=[
+                    claripy.Not(address_phase),
+                    stored_globals.rw[0] == claripy.false(),
+                ]
+            )
+        )
+
     def test_post_write_reapplies_rc_w0_mask_before_side_effects(self):
         state, i2c = self.make_i2c_state()
 
@@ -678,7 +726,7 @@ class InterruptSchedulingTest(unittest.TestCase):
             state_merge_key(thread_state), state_merge_key(handler_state)
         )
 
-    def test_merge_key_separates_plugin_states_that_reject_merge(self):
+    def test_merge_key_allows_i2c_latch_states_that_merge_conditionally(self):
         project = angr.Project(str(ELF), auto_load_libs=False, arch=Specs.ANGR_ARCH)
         left = project.factory.blank_state(addr=0x08000000)
         right = left.copy()
@@ -691,7 +739,24 @@ class InterruptSchedulingTest(unittest.TestCase):
             Globals(sr1_read=claripy.true()),
         )
 
-        self.assertNotEqual(state_merge_key(left), state_merge_key(right))
+        self.assertEqual(state_merge_key(left), state_merge_key(right))
+
+        left_globals = left.get_plugin("I2C1_globals")
+        right_globals = right.get_plugin("I2C1_globals")
+        other_condition = claripy.BoolS("other_condition")
+        left_globals.merge(
+            [right_globals],
+            [claripy.Not(other_condition), other_condition],
+        )
+
+        self.assertTrue(
+            left.solver.satisfiable(extra_constraints=[left_globals.sr1_read])
+        )
+        self.assertTrue(
+            left.solver.satisfiable(
+                extra_constraints=[claripy.Not(left_globals.sr1_read)]
+            )
+        )
 
 
 if __name__ == "__main__":
