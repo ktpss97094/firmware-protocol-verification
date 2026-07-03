@@ -324,9 +324,9 @@ def LoopSeer_bound_reached_handler(seer, state, bound_loops):
         seer.cut_succs.append(state)
 
 
-def gdb_callback(ctx: typer.Context, value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
+def gdb_callback(ctx: typer.Context, value: Optional[bool]) -> Optional[bool]:
+    if not value:
+        return value
 
     if ctx.params.get("renode"):
         raise typer.BadParameter("--gdb cannot be used with --renode.")
