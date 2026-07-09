@@ -6,7 +6,6 @@ import re
 import resource
 import warnings
 from collections import Counter
-from functools import partial
 from pathlib import Path
 from types import ModuleType
 from typing import Annotated, Any, Literal, Optional, Type
@@ -304,26 +303,6 @@ def explore_step_func(simgr):
     return simgr
 
 
-def LoopSeer_bound_reached_handler(seer, state, bound_loops):
-    loop = state.loop_data.current_loop[-1][0]
-    header_addr = loop.entry.addr
-
-    bound = bound_loops.get(header_addr, None)
-    if bound is None:
-        return
-
-    counts = 0
-    if seer.use_header:
-        counts = state.loop_data.header_trip_counts[header_addr][-1]
-    else:
-        if state.addr in state.loop_data.back_edge_trip_counts:
-            counts = state.loop_data.back_edge_trip_counts[state.addr][-1]
-
-    if counts > bound:
-        logger.info(f"Loop bound reached at {hex(state.addr)}. Truncating state.")
-        seer.cut_succs.append(state)
-
-
 def gdb_callback(ctx: typer.Context, value: Optional[bool]) -> Optional[bool]:
     if not value:
         return value
@@ -595,11 +574,7 @@ def main(
                 for loop in loop_finder.loops
                 if loop.entry.addr in Specs.BOUND_LOOPS
             ],
-            bound=0,  # bound 判斷由 bound_reached function 處理
-            bound_reached=partial(
-                LoopSeer_bound_reached_handler, bound_loops=Specs.BOUND_LOOPS
-            ),
-            use_header=True,
+            loop_bounds=Specs.BOUND_LOOPS,
             discard_stash="loopseer",
         )
     )
