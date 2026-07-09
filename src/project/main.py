@@ -599,6 +599,7 @@ def main(
             bound_reached=partial(
                 LoopSeer_bound_reached_handler, bound_loops=Specs.BOUND_LOOPS
             ),
+            use_header=True,
             discard_stash="loopseer",
         )
     )

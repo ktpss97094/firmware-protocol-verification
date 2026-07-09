@@ -246,7 +246,10 @@ class Specs(BaseSpecs):
     ANGR_ARCH = archinfo.ArchARMCortexM(endness=archinfo.Endness.LE)
 
     # --- Parameters ---
-    BOUND_LOOPS = {0x80008CF: 0}
+    BOUND_LOOPS = {
+        # DWT_Delay_us()
+        0x80008CF: 0
+    }
 
     # --- Constants ---
 

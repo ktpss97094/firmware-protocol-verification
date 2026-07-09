@@ -125,19 +125,19 @@ class Specs(BaseSpecs):
     ANGR_ARCH = archinfo.ArchARMCortexM(endness=archinfo.Endness.LE)
 
     # --- Parameters ---
-    # BOUND_LOOPS 如果 firmware 有異動，要重新計算
+    # BOUND_LOOPS key 是 loop entry address，如果 firmware 有異動，要重新計算
     match MODE:
         case STM32F4XX_HAL():
             BOUND_LOOPS = {
                 # BLOCKING
                 # I2C_WaitOnFlagUntilTimeout()
-                0x800AF4D: 2,
+                0x800AF4D: 0,
                 # I2C_WaitOnMasterAddressFlagUntilTimeout()
-                0x800B091: 2,
+                0x800B091: 1,
                 # I2C_WaitOnTXEFlagUntilTimeout()
-                0x800B155: 2,
+                0x800B155: 1,
                 # I2C_WaitOnBTFFlagUntilTimeout()
-                0x800B1E5: 2,
+                0x800B1E5: 1,
                 # INTERRUPT
                 # HAL_I2C_Master_Transmit_IT()
                 0x8005DE1: 0,
