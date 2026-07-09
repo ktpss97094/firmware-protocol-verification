@@ -86,13 +86,17 @@ class CustomLoopSeer(LoopSeer):
         loop_counts = counts.get(addr)
         return loop_counts[-1] if loop_counts else 0
 
-    def _header_instruction_addrs(self, header):
-        node = self.cfg.model.get_any_node(header, anyaddr=True)
+    def _block_addr(self, addr):
+        node = self.cfg.model.get_any_node(addr, anyaddr=True)
+        return node.addr if node is not None else addr
+
+    def _block_instruction_addrs(self, addr):
+        node = self.cfg.model.get_any_node(addr, anyaddr=True)
         if node is None or not node.instruction_addrs:
-            return {header}
+            return {addr}
         return set(node.instruction_addrs)
 
-    def _bounded_guard(self, state):
+    def _bounded_exit_decision(self, state):
         if not state.loop_data.current_loop:
             return None
 
@@ -102,18 +106,19 @@ class CustomLoopSeer(LoopSeer):
         if bound is None:
             return None
 
-        header_addrs = self._header_instruction_addrs(header)
-        if state.addr not in header_addrs:
+        block_addr = self._block_addr(state.addr)
+        break_sources = {self._block_addr(edge[0].addr) for edge in loop.break_edges}
+        if block_addr not in break_sources:
             return None
 
-        return header, exits, header_addrs, bound
+        return header, exits, self._block_instruction_addrs(state.addr), bound
 
-    def _should_cut_new_iteration(self, state, succ_state, bounded_guard):
-        if bounded_guard is None:
+    def _should_cut_new_iteration(self, state, succ_state, bounded_decision):
+        if bounded_decision is None:
             return False
 
-        header, exits, header_addrs, bound = bounded_guard
-        if succ_state.addr in exits or succ_state.addr in header_addrs:
+        header, exits, decision_addrs, bound = bounded_decision
+        if succ_state.addr in exits or succ_state.addr in decision_addrs:
             return False
         if not succ_state.loop_data.current_loop:
             return False
@@ -135,7 +140,7 @@ class CustomLoopSeer(LoopSeer):
             )
 
         succs = simgr.successors(state, **kwargs)
-        bounded_guard = self._bounded_guard(state)
+        bounded_decision = self._bounded_exit_decision(state)
 
         at_loop_exit = False
         for succ_state in succs.successors:
@@ -146,7 +151,7 @@ class CustomLoopSeer(LoopSeer):
                 at_loop_exit = True
 
         for succ_state in succs.successors:
-            if self._should_cut_new_iteration(state, succ_state, bounded_guard):
+            if self._should_cut_new_iteration(state, succ_state, bounded_decision):
                 l.info(
                     "Loop bound reached at %s. Truncating next loop iteration.",
                     hex(succ_state.addr),
@@ -193,13 +198,13 @@ class CustomLoopSeer(LoopSeer):
                         ] += 1
 
                 loop_bound = self._get_loop_bound(header)
-                skip_guard_instruction = (
-                    bounded_guard is not None and succ_state.addr in bounded_guard[2]
+                skip_decision_instruction = (
+                    bounded_decision is not None and succ_state.addr in bounded_decision[2]
                 )
                 if (
                     loop_bound is not None
                     and succ_state.loop_data.current_loop
-                    and not skip_guard_instruction
+                    and not skip_decision_instruction
                 ):
                     counts = 0
                     if self.loop_bounds is not None:

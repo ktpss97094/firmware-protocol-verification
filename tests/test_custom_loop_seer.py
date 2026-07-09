@@ -20,7 +20,8 @@ class FakeCFGNode:
 class FakeCFGModel:
     def __init__(self):
         self.nodes = [
-            FakeCFGNode(HEADER, [HEADER, GUARD_BRANCH]),
+            FakeCFGNode(HEADER),
+            FakeCFGNode(GUARD_BRANCH),
             FakeCFGNode(BODY),
             FakeCFGNode(CONTINUE),
             FakeCFGNode(EXIT),
@@ -42,8 +43,12 @@ class FakeLoop:
     def __init__(self):
         self.entry = FakeCFGNode(HEADER)
         self.continue_edges = [(FakeCFGNode(CONTINUE), FakeCFGNode(HEADER))]
-        self.break_edges = [(FakeCFGNode(HEADER), FakeCFGNode(EXIT))]
-        self.body_nodes = [FakeCFGNode(HEADER), FakeCFGNode(BODY)]
+        self.break_edges = [(FakeCFGNode(GUARD_BRANCH), FakeCFGNode(EXIT))]
+        self.body_nodes = [
+            FakeCFGNode(HEADER),
+            FakeCFGNode(GUARD_BRANCH),
+            FakeCFGNode(BODY),
+        ]
 
 
 class FakeLoopData:
@@ -105,14 +110,14 @@ class CustomLoopSeerTest(unittest.TestCase):
             history_addr,
         )
 
-    def test_bound_zero_allows_guard_instruction_before_branch(self):
+    def test_bound_zero_allows_guard_block_before_branch(self):
         seer = self.seer(bound=0)
         state = self.state(HEADER)
-        next_guard_instruction = self.state(GUARD_BRANCH)
+        guard_block = self.state(GUARD_BRANCH)
 
-        seer.successors(FakeSimulationManager([next_guard_instruction]), state)
+        seer.successors(FakeSimulationManager([guard_block]), state)
 
-        self.assertNotIn(next_guard_instruction, seer.cut_succs)
+        self.assertNotIn(guard_block, seer.cut_succs)
 
     def test_bound_zero_cuts_body_successor_but_keeps_exit_successor(self):
         seer = self.seer(bound=0)
