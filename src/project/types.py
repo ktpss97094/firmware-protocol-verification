@@ -9,7 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partial
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Optional
 
 import angr
 import archinfo
@@ -68,69 +68,9 @@ class DFSPickFirstSuccessor(DFS):
 
 class CustomLoopSeer(LoopSeer):
     """
-    1. 支援 num_inst=1 (單步執行) 的 LoopSeer
-    2. bound k 表示執行最多 k 次 iteration
+    1. 支援 num_inst=1 (單步執行) 的 LoopSeer.
+    2. bound k 表示 restricts the number of back-edge traversals for the loop to at most k
     """
-
-    def __init__(self, *args, loop_bounds: Mapping[int, int] | None = None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.loop_bounds = dict(loop_bounds) if loop_bounds is not None else None
-
-    def _get_loop_bound(self, header):
-        if self.loop_bounds is not None:
-            return self.loop_bounds.get(header)
-        return self.bound
-
-    @staticmethod
-    def _trip_count(counts, addr):
-        loop_counts = counts.get(addr)
-        return loop_counts[-1] if loop_counts else 0
-
-    def _block_addr(self, addr):
-        node = self.cfg.model.get_any_node(addr, anyaddr=True)
-        return node.addr if node is not None else addr
-
-    def _block_instruction_addrs(self, addr):
-        node = self.cfg.model.get_any_node(addr, anyaddr=True)
-        if node is None or not node.instruction_addrs:
-            return {addr}
-        return set(node.instruction_addrs)
-
-    def _bounded_exit_decision(self, state):
-        if not state.loop_data.current_loop:
-            return None
-
-        loop, exits = state.loop_data.current_loop[-1]
-        header = loop.entry.addr
-        bound = self._get_loop_bound(header)
-        if bound is None:
-            return None
-
-        block_addr = self._block_addr(state.addr)
-        break_sources = {self._block_addr(edge[0].addr) for edge in loop.break_edges}
-        if block_addr not in break_sources:
-            return None
-
-        return header, exits, self._block_instruction_addrs(state.addr), bound
-
-    def _should_cut_new_iteration(self, state, succ_state, bounded_decision):
-        if bounded_decision is None:
-            return False
-
-        header, exits, decision_addrs, bound = bounded_decision
-        if succ_state.addr in exits or succ_state.addr in decision_addrs:
-            return False
-        if not succ_state.loop_data.current_loop:
-            return False
-
-        completed_iterations = self._trip_count(
-            state.loop_data.back_edge_trip_counts, header
-        )
-        return completed_iterations >= bound
-
-    def _cut_succ(self, succ_state):
-        if not any(state is succ_state for state in self.cut_succs):
-            self.cut_succs.append(succ_state)
 
     def successors(self, simgr, state, **kwargs):
         node = self.cfg.model.get_any_node(state.addr, anyaddr=True)
@@ -140,7 +80,6 @@ class CustomLoopSeer(LoopSeer):
             )
 
         succs = simgr.successors(state, **kwargs)
-        bounded_decision = self._bounded_exit_decision(state)
 
         at_loop_exit = False
         for succ_state in succs.successors:
@@ -151,14 +90,6 @@ class CustomLoopSeer(LoopSeer):
                 at_loop_exit = True
 
         for succ_state in succs.successors:
-            if self._should_cut_new_iteration(state, succ_state, bounded_decision):
-                l.info(
-                    "Loop bound reached at %s. Truncating next loop iteration.",
-                    hex(succ_state.addr),
-                )
-                self._cut_succ(succ_state)
-                continue
-
             if succ_state.loop_data.current_loop:
                 loop = succ_state.loop_data.current_loop[-1][0]
                 header = loop.entry.addr
@@ -197,21 +128,9 @@ class CustomLoopSeer(LoopSeer):
                             -1
                         ] += 1
 
-                loop_bound = self._get_loop_bound(header)
-                skip_decision_instruction = (
-                    bounded_decision is not None and succ_state.addr in bounded_decision[2]
-                )
-                if (
-                    loop_bound is not None
-                    and succ_state.loop_data.current_loop
-                    and not skip_decision_instruction
-                ):
+                if self.bound is not None and succ_state.loop_data.current_loop:
                     counts = 0
-                    if self.loop_bounds is not None:
-                        counts = self._trip_count(
-                            succ_state.loop_data.back_edge_trip_counts, header
-                        )
-                    elif self.use_header:
+                    if self.use_header:
                         counts = succ_state.loop_data.header_trip_counts[header][-1]
                     else:
                         if (
@@ -222,15 +141,11 @@ class CustomLoopSeer(LoopSeer):
                                 succ_state.addr
                             ][-1]
 
-                    if counts > loop_bound:
+                    if counts > self.bound:
                         if self.bound_reached is not None:
                             self.bound_reached(self, succ_state)
                         else:
-                            l.info(
-                                "Loop bound reached at %s. Truncating state.",
-                                hex(succ_state.addr),
-                            )
-                            self._cut_succ(succ_state)
+                            self.cut_succs.append(succ_state)
 
             else:
                 if succ_state.addr in self.loops and not self._inside_current_loops(

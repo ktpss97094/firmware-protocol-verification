@@ -133,11 +133,11 @@ class Specs(BaseSpecs):
                 # I2C_WaitOnFlagUntilTimeout()
                 0x800AF4D: 0,
                 # I2C_WaitOnMasterAddressFlagUntilTimeout()
-                0x800B091: 1,
+                0x800B091: 0,
                 # I2C_WaitOnTXEFlagUntilTimeout()
-                0x800B155: 1,
+                0x800B155: 0,
                 # I2C_WaitOnBTFFlagUntilTimeout()
-                0x800B1E5: 1,
+                0x800B1E5: 0,
                 # INTERRUPT
                 # HAL_I2C_Master_Transmit_IT()
                 0x8005DE1: 0,

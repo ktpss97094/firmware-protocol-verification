@@ -5,7 +5,6 @@ from project.types import CustomLoopSeer
 
 
 HEADER = 0x1000
-GUARD_BRANCH = 0x1002
 BODY = 0x2000
 CONTINUE = 0x2004
 EXIT = 0x3000
@@ -21,7 +20,6 @@ class FakeCFGModel:
     def __init__(self):
         self.nodes = [
             FakeCFGNode(HEADER),
-            FakeCFGNode(GUARD_BRANCH),
             FakeCFGNode(BODY),
             FakeCFGNode(CONTINUE),
             FakeCFGNode(EXIT),
@@ -43,12 +41,8 @@ class FakeLoop:
     def __init__(self):
         self.entry = FakeCFGNode(HEADER)
         self.continue_edges = [(FakeCFGNode(CONTINUE), FakeCFGNode(HEADER))]
-        self.break_edges = [(FakeCFGNode(GUARD_BRANCH), FakeCFGNode(EXIT))]
-        self.body_nodes = [
-            FakeCFGNode(HEADER),
-            FakeCFGNode(GUARD_BRANCH),
-            FakeCFGNode(BODY),
-        ]
+        self.break_edges = [(FakeCFGNode(HEADER), FakeCFGNode(EXIT))]
+        self.body_nodes = [FakeCFGNode(HEADER), FakeCFGNode(BODY)]
 
 
 class FakeLoopData:
@@ -95,8 +89,8 @@ class CustomLoopSeerTest(unittest.TestCase):
     def seer(self, bound):
         return CustomLoopSeer(
             cfg=FakeCFG(),
-            loop_bounds={HEADER: bound},
-            use_header=True,
+            bound=bound,
+            use_header=False,
             discard_stash="loopseer",
         )
 
@@ -110,63 +104,54 @@ class CustomLoopSeerTest(unittest.TestCase):
             history_addr,
         )
 
-    def test_bound_zero_allows_guard_block_before_branch(self):
+    def test_bound_zero_allows_body_before_first_backedge(self):
         seer = self.seer(bound=0)
         state = self.state(HEADER)
-        guard_block = self.state(GUARD_BRANCH)
-
-        seer.successors(FakeSimulationManager([guard_block]), state)
-
-        self.assertNotIn(guard_block, seer.cut_succs)
-
-    def test_bound_zero_cuts_body_successor_but_keeps_exit_successor(self):
-        seer = self.seer(bound=0)
-        state = self.state(GUARD_BRANCH)
         body = self.state(BODY)
-        exit_state = self.state(EXIT)
-
-        seer.successors(FakeSimulationManager([body, exit_state]), state)
-
-        self.assertIn(body, seer.cut_succs)
-        self.assertNotIn(exit_state, seer.cut_succs)
-        self.assertEqual([], exit_state.loop_data.current_loop)
-
-    def test_allows_body_successor_before_bound(self):
-        seer = self.seer(bound=2)
-        state = self.state(GUARD_BRANCH, back_edge_count=1)
-        body = self.state(BODY, back_edge_count=1)
 
         seer.successors(FakeSimulationManager([body]), state)
 
         self.assertNotIn(body, seer.cut_succs)
 
-    def test_cuts_body_successor_after_completed_bound(self):
-        seer = self.seer(bound=2)
-        state = self.state(GUARD_BRANCH, back_edge_count=2)
-        body = self.state(BODY, back_edge_count=2)
+    def test_bound_zero_cuts_first_backedge_traversal(self):
+        seer = self.seer(bound=0)
+        state = self.state(CONTINUE, back_edge_count=0)
+        header = self.state(HEADER, back_edge_count=0, history_addr=CONTINUE)
 
-        seer.successors(FakeSimulationManager([body]), state)
+        seer.successors(FakeSimulationManager([header]), state)
 
-        self.assertIn(body, seer.cut_succs)
+        self.assertEqual([1], header.loop_data.back_edge_trip_counts[HEADER])
+        self.assertIn(header, seer.cut_succs)
 
-    def test_allows_final_guard_after_last_iteration(self):
+    def test_bound_one_allows_first_backedge_traversal(self):
         seer = self.seer(bound=1)
         state = self.state(CONTINUE, back_edge_count=0)
         header = self.state(HEADER, back_edge_count=0, history_addr=CONTINUE)
 
         seer.successors(FakeSimulationManager([header]), state)
 
-        self.assertNotIn(header, seer.cut_succs)
         self.assertEqual([1], header.loop_data.back_edge_trip_counts[HEADER])
+        self.assertNotIn(header, seer.cut_succs)
 
-    def test_cuts_backedge_after_over_bound(self):
+    def test_bound_one_cuts_second_backedge_traversal(self):
         seer = self.seer(bound=1)
         state = self.state(CONTINUE, back_edge_count=1)
         header = self.state(HEADER, back_edge_count=1, history_addr=CONTINUE)
 
         seer.successors(FakeSimulationManager([header]), state)
 
+        self.assertEqual([2], header.loop_data.back_edge_trip_counts[HEADER])
         self.assertIn(header, seer.cut_succs)
+
+    def test_exit_successor_is_not_cut(self):
+        seer = self.seer(bound=0)
+        state = self.state(HEADER)
+        exit_state = self.state(EXIT)
+
+        seer.successors(FakeSimulationManager([exit_state]), state)
+
+        self.assertNotIn(exit_state, seer.cut_succs)
+        self.assertEqual([], exit_state.loop_data.current_loop)
 
 
 if __name__ == "__main__":
