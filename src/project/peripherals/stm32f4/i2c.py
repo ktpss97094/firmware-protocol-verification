@@ -51,13 +51,8 @@ class Globals(SimStatePlugin):
         del common_ancestor
 
         rw_valid, rw_value = self.rw
-        if any(
-            not utils.same_ast(rw_valid, other.rw[0])
-            for other in others
-        ):
-            raise SimMergeError(
-                "Cannot merge STM32F4 I2C globals (rw validity)"
-            )
+        if any(not utils.same_ast(rw_valid, other.rw[0]) for other in others):
+            raise SimMergeError("Cannot merge STM32F4 I2C globals (rw validity)")
 
         merged_is_address_phase = utils.merge_ast_values(
             self.state,
@@ -66,10 +61,7 @@ class Globals(SimStatePlugin):
             merge_conditions,
         )
         merged_rw_value = utils.merge_ast_values(
-            self.state,
-            rw_value,
-            (other.rw[1] for other in others),
-            merge_conditions,
+            self.state, rw_value, (other.rw[1] for other in others), merge_conditions
         )
         merged_sr1_read = utils.merge_ast_values(
             self.state,
@@ -209,13 +201,6 @@ class I2C(MMIOMemoryRegion):
         event_irq_enabled = cr2[I2C.I2C_CR2.ITEVTEN.bit] == 1
         buffer_irq_enabled = cr2[I2C.I2C_CR2.ITBUFEN.bit] == 1
         error_irq_enabled = cr2[I2C.I2C_CR2.ITERREN.bit] == 1
-        dma_requests_enabled = cr2[I2C.I2C_CR2.DMAEN.bit] == 1
-        non_dma_event_irq_enabled = claripy.And(
-            event_irq_enabled, claripy.Not(dma_requests_enabled)
-        )
-        non_dma_buffer_irq_enabled = claripy.And(
-            non_dma_event_irq_enabled, buffer_irq_enabled
-        )
         events_to_check = []
         output = []
 
@@ -246,19 +231,19 @@ class I2C(MMIOMemoryRegion):
                     self.IRQ_NUMBERS[0],
                 ),
                 (
-                    non_dma_event_irq_enabled,
+                    event_irq_enabled,
                     I2C.I2C_SR1.OFFSET,
                     I2C.I2C_SR1.BTF.bit,
                     self.IRQ_NUMBERS[0],
                 ),
                 (
-                    non_dma_buffer_irq_enabled,
+                    claripy.And(event_irq_enabled, buffer_irq_enabled),
                     I2C.I2C_SR1.OFFSET,
                     I2C.I2C_SR1.TXE.bit,
                     self.IRQ_NUMBERS[0],
                 ),
                 (
-                    non_dma_buffer_irq_enabled,
+                    claripy.And(event_irq_enabled, buffer_irq_enabled),
                     I2C.I2C_SR1.OFFSET,
                     I2C.I2C_SR1.RXNE.bit,
                     self.IRQ_NUMBERS[0],
@@ -533,8 +518,7 @@ class I2CTransaction:
         if not self._condition_is_definitely_false(first_address_byte):
             is_10bit_header = (value & 0xF8) == 0xF0
             self.event_add10_may_occur(
-                condition=claripy.And(first_address_byte, is_10bit_header),
-                force=True,
+                condition=claripy.And(first_address_byte, is_10bit_header), force=True
             )
             self.event_address_phase_may_complete(
                 condition=claripy.And(first_address_byte, claripy.Not(is_10bit_header)),
@@ -567,9 +551,7 @@ class I2CTransaction:
         )
 
     def _condition_is_definitely_false(self, condition):
-        return not self.state.solver.satisfiable(
-            extra_constraints=[condition]
-        )
+        return not self.state.solver.satisfiable(extra_constraints=[condition])
 
     def event_start_generated(self, condition=None):
         condition = claripy.true() if condition is None else condition
