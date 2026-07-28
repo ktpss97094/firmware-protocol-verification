@@ -1,3 +1,9 @@
+# Firmware Protocol Verification
+
+## Environment
+
+Ubuntu 24.04 LTS
+
 ## Prerequisite
 
 1. Install [uv](https://github.com/astral-sh/uv)
@@ -11,7 +17,7 @@
     sudo apt update
     sudo apt install openocd
     ```
-3. Install [Renode](https://github.com/renode/renode)
+4. Install [Renode](https://github.com/renode/renode)
 
 ## Build
 
@@ -29,6 +35,11 @@ uv run verify <spec file>
 
 ### Renode
 
+```sh
+cd renode
+renode <renode script>
+```
+
 ### Remote OpenOCD
 
 Open two terminals.
@@ -43,8 +54,14 @@ Open two terminals.
     ```
     and [verify](#verify) using `--gdb` parameter.
 
-### angr-management
+### [angr-management](https://github.com/angr/angr-management)
 
-可協助找 loop entry block address
-1. 可視覺化顯示 control-flow graph
-2. 按 Tab 可切換 assembly 與 disassembly 對照
+Can help to find loop entry block addresses using a GUI.
+
+```sh
+uv run angr-management <firmware file>
+```
+
+> [!TIP]
+> 1. Use the search bar to locate the position.
+> 2. Use the tab key to switch between assembly and disassembly code.

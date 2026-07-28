@@ -13,12 +13,6 @@
 [submodule "firmwares/stm32f429/lib/stm32_bitbang_i2c"]
 	path = firmwares/stm32f429/lib/stm32_bitbang_i2c
 	url = https://github.com/ktpss97094/stm32_bitbang_i2c.git
-[submodule "firmwares/nrf52840"]
-	path = firmwares/nrf52840
-	url = https://git.epl.tw/nrf52840-case-study/firmware-examples.git
-[submodule "evaluation/uEmu"]
-	path = evaluation/uEmu
-	url = https://github.com/ktpss97094/uEmu.git
 [submodule "evaluation/automated-firmware-verification-using-firmware-hardware-interaction-patterns"]
 	path = evaluation/automated-firmware-verification-using-firmware-hardware-interaction-patterns
 	url = https://git.epl.tw/DavidPeng/automated-firmware-verification-using-firmware-hardware-interaction-patterns.git

@@ -1,1 +1,4 @@
-build/
+# exclude firmware binary
+build/**
+!build/**/
+!build/**/firmware.elf
