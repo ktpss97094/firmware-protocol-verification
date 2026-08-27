@@ -1,3 +1,6 @@
+> [!NOTE]
+> This repository is currently undergoing refactoring and code cleanup to improve readability and usability.
+
 # Firmware Protocol Verification
 
 ## Environment
