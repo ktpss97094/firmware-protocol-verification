@@ -7,7 +7,7 @@ set(LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib")
 set(MCU_FLAGS -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 --specs=nosys.specs)
 
 add_library(cortex_m4_flags INTERFACE)
-target_compile_options(cortex_m4_flags INTERFACE ${MCU_FLAGS} -Wall -g)
+target_compile_options(cortex_m4_flags INTERFACE ${MCU_FLAGS} -Wall -g "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=.")
 target_link_options(cortex_m4_flags INTERFACE ${MCU_FLAGS})
 
 add_library(cmsis INTERFACE)
@@ -43,7 +43,7 @@ ExternalProject_Add(
     SOURCE_DIR "${LIB_DIR}/libopencm3"
     BUILD_IN_SOURCE 1
     CONFIGURE_COMMAND ""
-    BUILD_COMMAND make TARGETS=stm32/f4
+    BUILD_COMMAND make TARGETS=stm32/f4 "CPPFLAGS=-ffile-prefix-map=${CMAKE_SOURCE_DIR}=."
     INSTALL_COMMAND ""
     BUILD_BYPRODUCTS "${LIB_DIR}/libopencm3/lib/libopencm3_stm32f4.a"
     BUILD_ALWAYS 1

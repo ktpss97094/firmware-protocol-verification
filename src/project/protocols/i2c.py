@@ -1,10 +1,10 @@
 import claripy
-from angr.state_plugins.plugin import SimStatePlugin
 
 from project import utils
+from project.types import CustomSimStatePlugin
 
 
-class I2CBus(SimStatePlugin):
+class I2CBus(CustomSimStatePlugin):
     _MERGE_FIELDS = (
         "prev_scl_in",
         "prev_sda_in",
@@ -57,9 +57,6 @@ class I2CBus(SimStatePlugin):
         o.wait_state = self.wait_state
 
         return o
-
-    def merge_key(self):
-        return ()
 
     def merge(self, others, merge_conditions, common_ancestor=None):
         del common_ancestor

@@ -13,7 +13,7 @@ from angr import SimProcedure
 
 from project import config, utils
 from project.peripherals.efm32gg11.usart import USART as EFM32GG11_USART
-from project.types import BaseSpecs, MemoryRegion
+from project.types import BaseSpec, MemoryRegion
 
 
 class USART(EFM32GG11_USART):
@@ -52,7 +52,7 @@ class Delay(SimProcedure):
         ) + self.state.solver.eval(dlyTicks)
 
 
-class Specs(BaseSpecs):
+class Specs(BaseSpec):
     # --- Paths ---
     FIRMWARE_PATH = str(
         config.PROJECT_ROOT

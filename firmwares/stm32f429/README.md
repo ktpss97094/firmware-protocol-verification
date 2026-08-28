@@ -1,11 +1,26 @@
 # STM32F429 Firmware
 
+## Environment
+
+* arm-none-eabi-gcc 13.2.1 20231009
+
 ## Prerequisite
 
-```sh
-sudo apt update
-sudo apt install cmake gcc-arm-none-eabi binutils-arm-none-eabi
-```
+1. Install CMake
+    ```sh
+    sudo apt update
+    sudo apt install cmake
+    ```
+2. Install GNU Arm Embedded Toolchain
+    ```sh
+    sudo apt update
+    sudo apt install gcc-arm-none-eabi
+    ```
+3. Install stlink
+    ```sh
+    sudo apt update
+    sudo apt install stlink-tools
+    ```
 
 ## Build
 

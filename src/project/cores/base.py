@@ -8,10 +8,14 @@ import angr
 import claripy
 import pyvex
 from angr.errors import SimMergeError
-from angr.state_plugins.plugin import SimStatePlugin
 
 from project.analyses.isr_memory import ISRTarget, analyze_isr_memory
-from project.types import AccessEffects, BPConfig, MMIOMemoryRegion
+from project.types import (
+    AccessEffects,
+    BPConfig,
+    CustomSimStatePlugin,
+    MMIOMemoryRegion,
+)
 
 logging.getLogger("angr.analyses.variable_recovery.engine_vex.SimEngineVRVEX").setLevel(
     logging.CRITICAL
@@ -47,7 +51,7 @@ class _MemoryAccessRegions:
         return next_index < len(self._starts) and self._starts[next_index] < end
 
 
-class AsynchronousEventGlobals(SimStatePlugin):
+class AsynchronousEventGlobals(CustomSimStatePlugin):
     def __init__(
         self,
         before_check_handlers=None,
@@ -75,7 +79,7 @@ class AsynchronousEventGlobals(SimStatePlugin):
 
         return o
 
-    def merge_key(self):
+    def _merge_key(self):
         return (
             frozenset(self.before_check_handlers),
             frozenset(self.after_check_handlers),
@@ -500,7 +504,9 @@ class BaseCPU(ABC):
             event_groups = [
                 (condition, events) for condition, events in groups if events
             ]
-            normal_cond = no_event_cond if self._satisfiable(state, no_event_cond) else None
+            normal_cond = (
+                no_event_cond if self._satisfiable(state, no_event_cond) else None
+            )
             return event_groups, normal_cond
 
         def _process_event(self, check_items):

@@ -3,7 +3,6 @@ from dataclasses import dataclass
 import archinfo
 import claripy
 from angr.errors import SimMergeError
-from angr.state_plugins.plugin import SimStatePlugin
 
 from project import utils
 from project.types import (
@@ -11,13 +10,14 @@ from project.types import (
     AccessType,
     BaseRegister,
     BitsField,
+    CustomSimStatePlugin,
     MemoryEffect,
     MMIOMemoryRegion,
     PluginEffect,
 )
 
 
-class Globals(SimStatePlugin):
+class Globals(CustomSimStatePlugin):
     def __init__(self, bsrr_write_value=None):
         super().__init__()
 
@@ -30,7 +30,7 @@ class Globals(SimStatePlugin):
 
         return o
 
-    def merge_key(self):
+    def _merge_key(self):
         return (self.bsrr_write_value is None,)
 
     def merge(self, others, merge_conditions, common_ancestor=None):

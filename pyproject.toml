@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-avatar2 = { git = "https://github.com/ktpss97094/avatar2.git" }
+avatar2 = { url = "https://github.com/ktpss97094/avatar2/releases/download/v1.4.7+fpv/avatar2-1.4.7+fpv-py3-none-any.whl" }
 
 [tool.uv]
 package = true

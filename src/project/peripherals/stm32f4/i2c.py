@@ -4,7 +4,6 @@ from dataclasses import dataclass
 
 import claripy
 from angr.errors import SimMergeError
-from angr.state_plugins.plugin import SimStatePlugin
 
 from project import utils
 from project.types import (
@@ -12,13 +11,14 @@ from project.types import (
     AccessType,
     BaseRegister,
     BitsField,
+    CustomSimStatePlugin,
     MemoryEffect,
     MMIOMemoryRegion,
     PluginEffect,
 )
 
 
-class Globals(SimStatePlugin):
+class Globals(CustomSimStatePlugin):
     def __init__(self, is_address_phase=None, rw=None, sr1_read=None):
         super().__init__()
 
@@ -39,7 +39,7 @@ class Globals(SimStatePlugin):
 
         return o
 
-    def merge_key(self):
+    def _merge_key(self):
         return (self.rw[0].hash(),)
 
     def merge(self, others, merge_conditions, common_ancestor=None):
@@ -171,6 +171,8 @@ class I2C(MMIOMemoryRegion):
         addr, offset, readout_value = super().post_read(state)
         transaction = I2CTransaction.begin(self, state)
 
+        transaction.event_bus_busy_may_change()
+
         match offset:
             case I2C.I2C_SR1.OFFSET:
                 transaction.event_sr1_read()
@@ -186,6 +188,8 @@ class I2C(MMIOMemoryRegion):
     def post_write(self, state):
         addr, offset, value = super().post_write(state)
         transaction = I2CTransaction.begin(self, state)
+
+        transaction.event_bus_busy_may_change()
 
         match offset:
             case I2C.I2C_CR1.OFFSET:
@@ -559,6 +563,11 @@ class I2CTransaction:
             condition,
             self._interface_enabled(),
             self.new.cr1[I2C.I2C_CR1.START.bit] == 1,
+            # (START): In Slave mode (MSL=0): 1: Start generation when the bus is free
+            claripy.Or(
+                self.new.sr2[I2C.I2C_SR2.MSL.bit] == 1,
+                self.new.sr2[I2C.I2C_SR2.BUSY.bit] == 0,
+            ),
         )
         next_sb = claripy.If(
             can_generate,
@@ -577,6 +586,14 @@ class I2CTransaction:
         self.new.globals.is_address_phase = claripy.If(
             start_sent, claripy.true(), self.new.globals.is_address_phase
         )
+
+    def event_bus_busy_may_change(self):
+        next_busy = claripy.If(
+            self.new.sr2[I2C.I2C_SR2.MSL.bit] == 1,
+            claripy.BVV(1, 1),
+            self._fresh_bit("BUSY"),
+        )
+        self._assign_sr2_bit(I2C.I2C_SR2.BUSY.bit, next_busy)
 
     def event_stop_detected(self, condition=None):
         condition = claripy.true() if condition is None else condition

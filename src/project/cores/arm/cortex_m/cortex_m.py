@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import warnings
+import logging
 from collections import defaultdict
 from functools import cache
 
@@ -12,6 +12,8 @@ from project.analyses.isr_memory import ISRTarget
 from project.cores.arm.arm import ARM
 from project.cores.arm.cortex_m.nvic import NVIC
 from project.types import BPConfig, EventForkHandler
+
+logger = logging.getLogger(__name__)
 
 
 class CortexM(ARM):
@@ -109,9 +111,7 @@ class CortexM(ARM):
 
     def _get_exception_handler_address(self, state, int_no: int):
         excp_no = int_no + 16
-        vector_addr = self._get_vector_table_base(state) + (
-            excp_no * state.arch.bytes
-        )
+        vector_addr = self._get_vector_table_base(state) + (excp_no * state.arch.bytes)
         isr_addr = self._concrete_state_value(
             state,
             utils.load(state, vector_addr),
@@ -147,7 +147,7 @@ class CortexM(ARM):
         if stack_limit is not None:
             return self._compute_initial_sp(state) - stack_limit
         else:
-            warnings.warn(
+            logger.warning(
                 f"Cannot find stack limit symbol, using default stack size {state.arch.stack_size}"
             )
             return state.arch.stack_size

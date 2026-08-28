@@ -2,48 +2,48 @@ import hashlib
 import importlib
 import importlib.util
 import logging
+import logging.config
 import re
-import resource
-import warnings
-from collections import Counter
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 from types import ModuleType
-from typing import Annotated, Any, Literal, Optional, Type
+from typing import Annotated, Any, Type
 
 import angr
 import avatar2
 import typer
+from angr.exploration_techniques import DFS
 
 import project.utils as utils
 from project import config
-from project.types import (
-    BaseSpecs,
-    CFGJoinMerge,
-    CustomEngine,
+from project.exploration import (
     CustomLoopSeer,
-    DFSJoinMerge,
+    DFSAutomaticMerge,
     DFSPickFirstSuccessor,
-    ExploreTermination,
-    MMIOMemoryRegion,
-    VariableMemoryRegion,
+    ExplorationMonitor,
+    ExplorationTermination,
     discover_acyclic_merge_plan,
 )
+from project.types import BaseSpec, CustomEngine, MMIOMemoryRegion, VariableMemoryRegion
+from project.verification import VerificationSession
 
 logger = logging.getLogger(__name__)
 app = typer.Typer(name="verify")
-found_cnt, violated_cnt, step_cnt = 0, 0, 0
 
 
-def init_logging(log_file=None):
-    if log_file:
-        config.LOGGING_CONFIG["handlers"]["file"]["filename"] = str(
-            config.LOG_DIR / log_file
-        )
+def init_logging(log_name: str | None = None) -> None:
+    if log_name == "":
+        raise typer.BadParameter("Log filename cannot be empty string")
+    elif log_name is None:
+        log_name = f"{datetime.now().astimezone().strftime('%Y%m%d-%H%M%S%z')}.log"
+    config.LOGGING_CONFIG["handlers"]["file"]["filename"] = str(
+        config.LOG_DIR / log_name
+    )
 
     logging.config.dictConfig(config.LOGGING_CONFIG)
 
-    # 關閉 pcode error
+    # pcode error
     logging.getLogger("angr.engines.pcode.lifter").setLevel(logging.CRITICAL)
     # loop_data is only merged when state_merge_key() proves both copies identical.
     logging.getLogger("angr.state_plugins.loop_data").setLevel(logging.ERROR)
@@ -51,16 +51,9 @@ def init_logging(log_file=None):
     logging.getLogger("angr.sim_manager").setLevel(logging.ERROR)
 
 
-def add_violated_cnt(val):
-    global violated_cnt
-    violated_cnt += val
-
-
-def load_specs_class(spec_arg: str | None) -> Type[Any]:
+def load_spec_class(spec_arg: Path) -> Type[Any]:
     def load_module_from_file(path: Path) -> ModuleType:
-        unique_name = (
-            "user_specs_" + hashlib.sha256(str(path).encode()).hexdigest()[:16]
-        )
+        unique_name = "user_spec_" + hashlib.sha256(str(path).encode()).hexdigest()[:16]
         spec = importlib.util.spec_from_file_location(unique_name, str(path))
         if spec is None or spec.loader is None:
             raise ImportError(f"Unable to create module spec from file: {path}")
@@ -68,23 +61,23 @@ def load_specs_class(spec_arg: str | None) -> Type[Any]:
         spec.loader.exec_module(mod)
         return mod
 
-    if spec_arg.endswith(".py"):
-        path = Path(spec_arg).expanduser().resolve()
+    if spec_arg.suffix.lower() == ".py":
+        path = spec_arg.expanduser().resolve()
         if not path.exists():
             raise FileNotFoundError(f"Spec file doesn't exist: {path}")
         mod = load_module_from_file(path)
     else:
         mod = importlib.import_module(spec_arg)
 
-    if not hasattr(mod, "Specs"):
-        raise AttributeError(f"Spec file doesn't provide 'Specs' class: {spec_arg}")
+    if not hasattr(mod, "Spec"):
+        raise AttributeError(f"Spec file doesn't provide 'Spec' class: {spec_arg}")
 
-    return getattr(mod, "Specs")
+    return getattr(mod, "Spec")
 
 
-def read_MMIO_renode(avatar_target, base_addr, size):
+def read_renode_mmio(avatar_target: avatar2.Target, base_addr: int, size: int) -> bytes:
     """
-    避免 Renode peripheral 的 ReadByte() 實作可能有問題，導致 avatar2 read_memory() 失敗
+    Avoid potential issues with Renode peripheral's ReadByte() implementation that may cause avatar2 read_memory() to fail.
     """
 
     data = bytearray(size)
@@ -105,203 +98,9 @@ def read_MMIO_renode(avatar_target, base_addr, size):
             val = int(matches[-1], 16)
             data[offset : offset + 4] = val.to_bytes(4, "little")
         except Exception as e:
-            warnings.warn(f"Failed to read reg at {target_addr:#x}: {e}")
+            logger.warning(f"Failed to read reg at {target_addr:#x}: {e}")
 
     return bytes(data)
-
-
-def step_explore(simgr, proj, monitor_exploration=None):
-    while simgr.active:
-
-        def get_local_var(state, frame_reg_name="r7", offset=-20, size=4):
-            fp = getattr(state.regs, frame_reg_name)
-            addr = fp + offset
-            val = state.memory.load(addr, size, endness=state.arch.memory_endness)
-            return val
-
-        simgr.step()
-        for state in simgr.active:
-            pc_addr = state.solver.eval(state.regs.pc) & ~1
-            addr_map = proj.loader.main_object.addr_to_line
-
-            if pc_addr in addr_map:
-                source_info = addr_map[pc_addr]
-                print(f"Address: {hex(pc_addr)} maps to: {source_info}")
-            else:
-                print(f"No debug info found for address {hex(pc_addr)}")
-
-        if monitor_exploration:
-            monitor_exploration(simgr)
-
-
-def _loop_data_key(state):
-    if not state.has_plugin("loop_data"):
-        return None
-
-    return (
-        tuple(
-            sorted(
-                (addr, tuple(counts))
-                for addr, counts in state.loop_data.header_trip_counts.items()
-            )
-        ),
-        tuple(
-            sorted(
-                (addr, tuple(counts))
-                for addr, counts in state.loop_data.back_edge_trip_counts.items()
-            )
-        ),
-        tuple(
-            (loop.entry.addr, tuple(exits))
-            for loop, exits in state.loop_data.current_loop
-        ),
-    )
-
-
-def state_merge_key(state):
-    ip = state.regs._ip
-    ip_key = ip.hash() if ip.symbolic else state.addr
-    plugin_keys = tuple(
-        sorted(
-            (name, plugin.merge_key())
-            for name, plugin in state.plugins.items()
-            if callable(getattr(plugin, "merge_key", None))
-        )
-    )
-
-    return (
-        ip_key,
-        tuple(
-            (frame.func_addr, frame.stack_ptr, frame.ret_addr)
-            for frame in state.callstack
-        ),
-        _loop_data_key(state),
-        state.globals.get("current_priority", 256),
-        tuple(state.globals.get("priority_stack", ())),
-        frozenset(state.posix.fd) if state.has_plugin("posix") else None,
-        plugin_keys,
-    )
-
-
-def configure_search_techniques(
-    simgr,
-    *,
-    search: str,
-    automatic_merge: bool,
-    debug: bool,
-    merge_points=(),
-    fork_to_join=None,
-):
-    if search not in {"dfs", "bfs"}:
-        raise ValueError(f"Unsupported search strategy: {search}")
-
-    if debug:
-        simgr.use_technique(DFSPickFirstSuccessor())
-        return
-
-    if automatic_merge and merge_points:
-        if search == "dfs":
-            simgr.use_technique(
-                DFSJoinMerge(
-                    merge_points=merge_points,
-                    fork_to_join=fork_to_join or {},
-                    merge_key=state_merge_key,
-                    max_wait_steps=1024,
-                    max_waiting_states=32,
-                    max_merge_depth=32,
-                )
-            )
-        else:
-            simgr.use_technique(
-                CFGJoinMerge(merge_points=merge_points, merge_key=state_merge_key)
-            )
-    elif search == "dfs":
-        simgr.use_technique(angr.exploration_techniques.DFS())
-
-
-def _format_active_pcs(states, limit=8):
-    locations = Counter()
-    for state in states:
-        ip = state.regs._ip
-        if ip.symbolic:
-            locations["symbolic"] += 1
-        else:
-            locations[hex(state.addr)] += 1
-
-    entries = [
-        f"{location}={count}"
-        for location, count in locations.most_common(limit)
-        if count
-    ]
-    remaining = len(locations) - len(entries)
-    if remaining > 0:
-        entries.append(f"+{remaining} more")
-    return ", ".join(entries)
-
-
-def explore_step_func(simgr):
-    global found_cnt, violated_cnt, step_cnt
-
-    # 取出 violated states
-    # for err in simgr.errored.copy():
-    #     if isinstance(err.error, Violation):
-    #         print(
-    #             err.error.args[0] + f" violation (ins_addr: {hex(err.error.ins_addr)})"
-    #         )
-    #         simgr.violated.append(err.state)
-    #         simgr.errored.remove(err)
-
-    # for state in simgr.active:
-    #     state.history.trim()
-    # This is a count of terminal symbolic states after merging, not path count.
-    found_cnt += len(simgr.found)
-    add_violated_cnt(len(simgr.violated))
-    simgr.stashes["found"].clear()
-    # simgr.stashes["violated"].clear()
-    simgr.stashes["loopseer"].clear()
-
-    step_cnt += 1
-    if step_cnt == 1 or step_cnt % 64 == 0 or not simgr.active:
-        max_rss_mib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-        deferred_count = len(simgr.stashes.get("deferred", ()))
-        nonempty_stashes = ", ".join(
-            f"{name}={len(states)}"
-            for name, states in simgr.stashes.items()
-            if states and name not in {"active", "deferred", "found", "violated"}
-        )
-        dfs_join = next(
-            (
-                technique
-                for technique in simgr._techniques
-                if isinstance(technique, DFSJoinMerge)
-            ),
-            None,
-        )
-        merge_status = (
-            "disabled"
-            if dfs_join is None
-            else (
-                f"tokens={len(dfs_join._tokens)} merged={dfs_join.states_merged} "
-                f"expired={dfs_join.expired_tokens} "
-                f"depth_limited={dfs_join.depth_limited_groups}"
-            )
-        )
-        logger.info(
-            "Step=%d Active=%d Deferred=%d Found=%d Violated=%d "
-            "ActivePCs=[%s] OtherStashes=[%s] DFSJoin=[%s] MaxRSS=%.1f MiB",
-            step_cnt,
-            len(simgr.active),
-            deferred_count,
-            found_cnt,
-            violated_cnt,
-            _format_active_pcs(simgr.active),
-            nonempty_stashes,
-            merge_status,
-            max_rss_mib,
-        )
-    # print(f"pc: {[hex(state.solver.eval(state.regs.pc)) for state in simgr.active]}")
-
-    return simgr
 
 
 def LoopSeer_bound_reached_handler(seer, state, bound_loops):
@@ -317,15 +116,14 @@ def LoopSeer_bound_reached_handler(seer, state, bound_loops):
 
     if counts > bound:
         logger.info(
-            "Loop bound reached at %s after %d back-edge traversals. "
-            "Truncating state.",
+            "Loop bound reached at %s after %d back-edge traversals. Truncating state.",
             hex(state.addr),
             counts,
         )
         seer.cut_succs.append(state)
 
 
-def gdb_callback(ctx: typer.Context, value: Optional[bool]) -> Optional[bool]:
+def gdb_callback(ctx: typer.Context, value: bool | None) -> bool | None:
     if not value:
         return value
 
@@ -337,43 +135,48 @@ def gdb_callback(ctx: typer.Context, value: Optional[bool]) -> Optional[bool]:
 
 @app.command()
 def main(
-    spec: str,
-    search: Literal["dfs", "bfs"] = "dfs",
+    spec: Annotated[Path, typer.Argument(help="Path to the specification file.")],
     renode: Annotated[
-        bool, typer.Option(help="Use Renode to extract initial state.")
+        bool, typer.Option(help="Use Renode to extract the initial state.")
     ] = False,
     gdb: Annotated[
         bool,
         typer.Option(
             callback=gdb_callback,
-            help="Connect to a GDB server. It can be used to extract initial state from a remote OpenOCD process.",
+            help="Connect to a GDB server. This can be used to extract the initial state from a remote OpenOCD process.",
         ),
     ] = False,
-    automatic_merge: bool = True,
-    log: str = "project.log",
-    debug: Annotated[bool, typer.Option(hidden=True)] = False,
+    deterministic_dfs: Annotated[
+        bool, typer.Option(help="Always pick the first successor on a DFS.")
+    ] = False,
+    automatic_merge: Annotated[
+        bool, typer.Option(help="Use automatic state-merging mechanism.")
+    ] = True,
+    log: Annotated[
+        str | None,
+        typer.Option(
+            help="The log name under the log directory. Uses a timestamp if omitted."
+        ),
+    ] = None,
 ):
-    global found_cnt, violated_cnt, step_cnt
-    found_cnt, violated_cnt, step_cnt = 0, 0, 0
-
-    if debug:
-        automatic_merge = False
-
-    Specs = load_specs_class(spec)
+    spec_class = load_spec_class(spec)
 
     init_logging(log)
 
     avatar = avatar2.Avatar(
-        arch=Specs.AVATAR_ARCH, output_directory=config.AVATAR_LOG_PATH
+        arch=spec_class.AVATAR_ARCH, output_directory=config.AVATAR_LOG_PATH
     )
     proj = angr.Project(
-        Specs.FIRMWARE_PATH,
+        spec_class.FIRMWARE_PATH,
         auto_load_libs=False,
-        arch=Specs.ANGR_ARCH,
+        arch=spec_class.ANGR_ARCH,
         engine=CustomEngine,
     )
-
-    specs: BaseSpecs = Specs(proj)
+    specs: BaseSpec = spec_class(proj)
+    proj.verification = VerificationSession(specs)
+    exploration_monitor = ExplorationMonitor(
+        violated_count_func=lambda: proj.verification.violated_count
+    )
 
     """
     avatar2 部分
@@ -385,7 +188,7 @@ def main(
             gdb_port=config.RENODE_GDB_PORT,
             gdb_serial_device="127.0.0.1",
             serial=False,
-            gdb_additional_args=[Specs.FIRMWARE_PATH],
+            gdb_additional_args=[spec_class.FIRMWARE_PATH],
         )
     elif gdb:
         avatar_target = avatar.add_target(
@@ -394,8 +197,8 @@ def main(
     else:
         avatar_target = avatar.add_target(
             avatar2.OpenOCDTarget,
-            openocd_script=Specs.OPENOCD_INTERFACE_SCRIPT_PATH,
-            additional_args=["-f", Specs.OPENOCD_TARGET_SCRIPT_PATH],
+            openocd_script=spec_class.OPENOCD_INTERFACE_SCRIPT_PATH,
+            additional_args=["-f", spec_class.OPENOCD_TARGET_SCRIPT_PATH],
         )
 
     # 過濾出需要處理的 memory regions
@@ -466,7 +269,7 @@ def main(
 
         try:
             if renode and isinstance(memory_region, MMIOMemoryRegion):
-                dumps[memory_region_name] = read_MMIO_renode(
+                dumps[memory_region_name] = read_renode_mmio(
                     avatar_target, memory_region.physical_addr, memory_region.size
                 )
             else:
@@ -532,10 +335,6 @@ def main(
                 f"Failed to transfer {memory_region_name} at {map_memory_regions[memory_region_name].start:#x} to angr: {e}"
             )
 
-    # with open("specs/STM32/I2C/Blocking_Mode/Hardware/state.pkl", "wb") as f:
-    #     pickle.dump(state, f)
-    #     exit(0)
-
     # 計算 API 參數
     if specs.API_PROTOTYPE is not None:
         for index in range(len(specs.API_PROTOTYPE.args)):
@@ -563,7 +362,7 @@ def main(
 
     merge_points = set()
     fork_to_join = {}
-    if automatic_merge and not debug:
+    if automatic_merge:
         merge_roots = {specs.BEGIN_ADDR}
         merge_roots.update(
             isr.address
@@ -580,35 +379,45 @@ def main(
             len(merge_roots),
             ", ".join(hex(addr) for addr in sorted(merge_points)),
         )
-    configure_search_techniques(
-        simgr,
-        search=search,
-        automatic_merge=automatic_merge,
-        debug=debug,
-        merge_points=merge_points,
-        fork_to_join=fork_to_join,
-    )
+    if deterministic_dfs:
+        simgr.use_technique(DFSPickFirstSuccessor())
+    elif automatic_merge:
+        if not merge_points:
+            logger.warning("Automatic merge is enabled, but no merge points can found.")
+        else:
+            simgr.use_technique(
+                DFSAutomaticMerge(
+                    merge_points=merge_points,
+                    fork_to_join=fork_to_join or {},
+                    max_wait_steps=1024,
+                    max_waiting_states=32,
+                    max_merge_depth=32,
+                )
+            )
+    else:
+        simgr.use_technique(DFS())
     simgr.use_technique(
         CustomLoopSeer(
             cfg=cfg,
             loops=[
                 loop
                 for loop in loop_finder.loops
-                if loop.entry.addr in Specs.BOUND_LOOPS
+                if loop.entry.addr in spec_class.BOUND_LOOPS
             ],
             bound=0,
             bound_reached=partial(
-                LoopSeer_bound_reached_handler, bound_loops=Specs.BOUND_LOOPS
+                LoopSeer_bound_reached_handler, bound_loops=spec_class.BOUND_LOOPS
             ),
             discard_stash="loopseer",
         )
     )
 
     try:
-        simgr.explore(num_find=float("inf"), step_func=explore_step_func, num_inst=1)
-    except ExploreTermination as e:
+        simgr.explore(
+            num_find=float("inf"), step_func=exploration_monitor.step, num_inst=1
+        )
+    except ExplorationTermination as e:
         logger.info(e)
-    # step_explore(simgr, proj, monitor_exploration=explore_step_func)
 
     print(simgr)
     if len(simgr.errored) > 0:
@@ -641,15 +450,19 @@ def main(
                 print(f"  Could not extract debug info: {e}")
 
             print("-" * 30)
-    elif found_cnt > 0 or violated_cnt > 0:
+    elif exploration_monitor.found_count > 0 or proj.verification.violated_count > 0:
         specs.final(simgr)
 
-        if violated_cnt > 0:
-            print(f"Verification FAILURE! Found {violated_cnt} violation state(s)")
+        if proj.verification.violated_count > 0:
+            print(
+                f"Verification FAILURE! Found {proj.verification.violated_count} violation(s): {', '.join(proj.verification.violation_names)}"
+            )
         else:
-            print(f"Verification SUCCESS! Found {found_cnt} terminal symbolic state(s)")
+            print(
+                f"Verification SUCCESS! Found {exploration_monitor.found_count} terminal state(s)"
+            )
     else:
-        raise AssertionError("No valid paths found or no violations detected")
+        raise AssertionError("No terminal states found")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 r"""
-read_back_verification
+arbitration
 1. Trigger: write CR1
     Condition: value[START] = 1 \implies (MSL = 1 \implies ARLO = 0)
 2. Trigger: write DR
@@ -26,7 +26,7 @@ from project import config, utils
 from project.cores.arm.cortex_m.systick import SysTickVariable
 from project.peripherals.stm32f4.dma import DMA
 from project.peripherals.stm32f4.i2c import I2C as STM32F4_I2C
-from project.types import BaseSpecs, MemoryRegion, MMIOMemoryRegion, VerificationManager
+from project.types import BaseSpec, MemoryRegion, MMIOMemoryRegion
 
 
 class STM32F4XX_HAL(Enum):
@@ -40,7 +40,7 @@ class OPENCM3(Enum):
 
 
 type FirmwareMode = STM32F4XX_HAL | OPENCM3
-MODE: FirmwareMode = STM32F4XX_HAL.DMA
+MODE: FirmwareMode = STM32F4XX_HAL.BLOCKING
 
 
 class I2C(STM32F4_I2C):
@@ -53,48 +53,42 @@ class I2C(STM32F4_I2C):
         match offset:
             case I2C.I2C_CR1.OFFSET:
                 # --- Spec 1 ---
-                violation_name = "read_back_verification (spec 1)"
-                if VerificationManager.should_check(
-                    violation_name
-                ) and state.solver.satisfiable(
+                state.project.verification.verify(
+                    state,
+                    "arbitration (spec 1)",
                     extra_constraints=[
                         value[I2C.I2C_CR1.START.bit] == 1,
                         sr2[I2C.I2C_SR2.MSL.bit] == 1,
                         sr1[I2C.I2C_SR1.ARLO.bit] == 1,
-                    ]
-                ):
-                    VerificationManager.violation(state, violation_name)
+                    ],
+                )
 
                 # --- Spec 3 ---
-                violation_name = "read_back_verification (spec 3)"
-                if VerificationManager.should_check(
-                    violation_name
-                ) and state.solver.satisfiable(
+                state.project.verification.verify(
+                    state,
+                    "arbitration (spec 3)",
                     extra_constraints=[
                         value[I2C.I2C_CR1.STOP.bit] == 1,
                         sr2[I2C.I2C_SR2.MSL.bit] == 1,
                         sr1[I2C.I2C_SR1.ARLO.bit] == 1,
-                    ]
-                ):
-                    VerificationManager.violation(state, violation_name)
+                    ],
+                )
 
             case I2C.I2C_DR.OFFSET:
                 # --- Spec 2 ---
-                violation_name = "read_back_verification (spec 2)"
-                if VerificationManager.should_check(
-                    violation_name
-                ) and state.solver.satisfiable(
+                state.project.verification.verify(
+                    state,
+                    "arbitration (spec 2)",
                     extra_constraints=[
                         sr2[I2C.I2C_SR2.MSL.bit] == 1,
                         sr1[I2C.I2C_SR1.ARLO.bit] == 1,
-                    ]
-                ):
-                    VerificationManager.violation(state, violation_name)
+                    ],
+                )
 
         return _, offset, value
 
 
-class Specs(BaseSpecs):
+class Spec(BaseSpec):
     # --- Paths ---
     match MODE:
         case STM32F4XX_HAL.BLOCKING:
@@ -157,6 +151,11 @@ class Specs(BaseSpecs):
                 0x800048D: 0,
                 0x800049F: 0,
             }
+    PROPERTY_NAMES = [
+        "arbitration (spec 1)",
+        "arbitration (spec 2)",
+        "arbitration (spec 3)",
+    ]
 
     def _define_specs(self):
         self.MEMORY_REGIONS = {

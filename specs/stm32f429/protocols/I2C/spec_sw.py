@@ -1,5 +1,5 @@
 r"""
-read_back_verification
+arbitration
 1. Trigger: write ODR
     Condition: value[ODRy] (SDA) = 0 \implies arbitration_lost = 0
 2. Trigger: write BSRR
@@ -28,7 +28,7 @@ from project import config, utils
 from project.cores.arm.cortex_m.dwt import DWT
 from project.peripherals.stm32f4.gpio import GPIO as STM32F4_GPIO
 from project.protocols.i2c import I2CBus
-from project.types import BaseSpecs, MemoryRegion, VerificationManager
+from project.types import BaseSpec, MemoryRegion
 
 
 class GPIO(STM32F4_GPIO):
@@ -41,87 +41,75 @@ class GPIO(STM32F4_GPIO):
 
         match offset:
             case GPIO.GPIO_ODR.OFFSET:
-                violation_name = "read_back_verification (spec 1)"
-                if VerificationManager.should_check(
-                    violation_name
-                ) and state.solver.satisfiable(
+                state.project.verification.verify(
+                    state,
+                    "arbitration (spec 1)",
                     extra_constraints=[
                         claripy.And(
                             value[GPIO.GPIO_ODR.ODR15.bit] == 0,
                             state.i2c_bus.arbitration_lost,
                         )
-                    ]
-                ):
-                    VerificationManager.violation(state, violation_name)
+                    ],
+                )
 
-                violation_name = "read_back_verification (spec 3)"
-                if VerificationManager.should_check(
-                    violation_name
-                ) and state.solver.satisfiable(
+                state.project.verification.verify(
+                    state,
+                    "arbitration (spec 3)",
                     extra_constraints=[
                         claripy.And(
                             value[GPIO.GPIO_ODR.ODR13.bit] == 0,
                             state.i2c_bus.arbitration_lost_byte_end,
                         )
-                    ]
-                ):
-                    VerificationManager.violation(state, violation_name)
+                    ],
+                )
 
-                violation_name = "clock_stretching (spec 1)"
-                if VerificationManager.should_check(
-                    violation_name
-                ) and state.solver.satisfiable(
+                state.project.verification.verify(
+                    state,
+                    "clock_stretching (spec 1)",
                     extra_constraints=[
                         claripy.And(
                             value[GPIO.GPIO_ODR.ODR13.bit] == 0,
                             state.i2c_bus.wait_state,
                         )
-                    ]
-                ):
-                    VerificationManager.violation(state, violation_name)
+                    ],
+                )
 
             case GPIO.GPIO_BSRR.OFFSET:
-                violation_name = "read_back_verification (spec 2)"
-                if VerificationManager.should_check(
-                    violation_name
-                ) and state.solver.satisfiable(
+                state.project.verification.verify(
+                    state,
+                    "arbitration (spec 2)",
                     extra_constraints=[
                         claripy.And(
                             value[GPIO.GPIO_BSRR.BS15.bit] == 0,
                             value[GPIO.GPIO_BSRR.BR15.bit] == 1,
                         ),
                         state.i2c_bus.arbitration_lost,
-                    ]
-                ):
-                    VerificationManager.violation(state, violation_name)
+                    ],
+                )
 
-                violation_name = "read_back_verification (spec 4)"
-                if VerificationManager.should_check(
-                    violation_name
-                ) and state.solver.satisfiable(
+                state.project.verification.verify(
+                    state,
+                    "arbitration (spec 4)",
                     extra_constraints=[
                         claripy.And(
                             value[GPIO.GPIO_BSRR.BS13.bit] == 0,
                             value[GPIO.GPIO_BSRR.BR13.bit] == 1,
                         ),
                         state.i2c_bus.arbitration_lost_byte_end,
-                    ]
-                ):
-                    VerificationManager.violation(state, violation_name)
+                    ],
+                )
 
-                violation_name = "clock_stretching (spec 2)"
-                if VerificationManager.should_check(
-                    violation_name
-                ) and state.solver.satisfiable(
+                state.project.verification.verify(
+                    state,
+                    "clock_stretching (spec 2)",
                     extra_constraints=[
                         claripy.And(
                             value[GPIO.GPIO_BSRR.BS13.bit] == 0,
                             value[GPIO.GPIO_BSRR.BR13.bit] == 1,
                         ),
                         state.i2c_bus.wait_state,
-                    ]
-                ):
-                    VerificationManager.violation(state, violation_name)
+                    ],
+                )
 
         return _, offset, value
 
@@ -232,7 +220,7 @@ class GPIO(STM32F4_GPIO):
         return _, offset, value
 
 
-class Specs(BaseSpecs):
+class Spec(BaseSpec):
     # --- Paths ---
     FIRMWARE_PATH = str(
         config.PROJECT_ROOT
@@ -250,8 +238,14 @@ class Specs(BaseSpecs):
         # DWT_Delay_us()
         0x80008CF: 0
     }
-
-    # --- Constants ---
+    PROPERTY_NAMES = {
+        "arbitration (spec 1)",
+        "arbitration (spec 2)",
+        "arbitration (spec 3)",
+        "arbitration (spec 4)",
+        "clock_stretching (spec 1)",
+        "clock_stretching (spec 2)",
+    }
 
     def _define_specs(self):
         self.MEMORY_REGIONS = {
