@@ -272,9 +272,7 @@ class Spec(BaseSpec):
             "DWT": DWT(start=0xE0001000, size=0x1000, spec=self, name="DWT"),
         }
 
-        self.BEGIN_ADDR = utils.get_symbol_addr(
-            self.proj, "I2C_transmit", is_variable=False
-        )
+        self.BEGIN_ADDR = utils.get_symbol_addr(self.proj, "I2C_transmit")
 
         self.API_PROTOTYPE = SimTypeFunction(
             args=[

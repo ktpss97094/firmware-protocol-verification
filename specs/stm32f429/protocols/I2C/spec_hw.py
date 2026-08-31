@@ -182,7 +182,7 @@ class Spec(BaseSpec):
         }
         if MODE == STM32F4XX_HAL.BLOCKING:
             self.MEMORY_REGIONS["SysTickVariable"] = SysTickVariable(
-                start=utils.get_symbol_addr(self.proj, "uwTick", is_variable=True),
+                start=utils.get_symbol_addr(self.proj, "uwTick"),
                 size=0x4,
                 spec=self,
                 name="SysTickVariable",
@@ -200,20 +200,18 @@ class Spec(BaseSpec):
         match MODE:
             case STM32F4XX_HAL.BLOCKING:
                 self.BEGIN_ADDR = utils.get_symbol_addr(
-                    self.proj, "HAL_I2C_Master_Transmit", is_variable=False
+                    self.proj, "HAL_I2C_Master_Transmit"
                 )
             case STM32F4XX_HAL.INTERRUPT:
                 self.BEGIN_ADDR = utils.get_symbol_addr(
-                    self.proj, "HAL_I2C_Master_Transmit_IT", is_variable=False
+                    self.proj, "HAL_I2C_Master_Transmit_IT"
                 )
             case STM32F4XX_HAL.DMA:
                 self.BEGIN_ADDR = utils.get_symbol_addr(
-                    self.proj, "HAL_I2C_Master_Transmit_DMA", is_variable=False
+                    self.proj, "HAL_I2C_Master_Transmit_DMA"
                 )
             case OPENCM3.BLOCKING:
-                self.BEGIN_ADDR = utils.get_symbol_addr(
-                    self.proj, "i2c_transfer7", is_variable=False
-                )
+                self.BEGIN_ADDR = utils.get_symbol_addr(self.proj, "i2c_transfer7")
 
         match MODE:
             case STM32F4XX_HAL():

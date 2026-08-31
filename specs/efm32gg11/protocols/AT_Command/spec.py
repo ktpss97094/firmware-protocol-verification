@@ -81,14 +81,8 @@ class Specs(BaseSpec):
             "USART0": USART(start=0x40010000, size=0x400, name="USART0"),
         }
 
-        self.BEGIN_ADDR = utils.get_symbol_addr(
-            self.proj, "LTE_SwitchToCmdMode", is_variable=False
-        )
-        self.END_ADDRS = [
-            utils.get_symbol_addr(
-                self.proj, "END_SYMBOLIC_EXECUTION", is_variable=False
-            )
-        ]
+        self.BEGIN_ADDR = utils.get_symbol_addr(self.proj, "LTE_SwitchToCmdMode")
+        self.END_ADDRS = [utils.get_symbol_addr(self.proj, "END_SYMBOLIC_EXECUTION")]
         # self.DEBUG_FUNC_ADDR = utils.get_symbol_addr(self.proj, "SYMBOL_FUNCTION", is_variable=False)
 
     def init_inspect(self, state):
