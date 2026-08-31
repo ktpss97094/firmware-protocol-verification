@@ -44,8 +44,7 @@ class CustomEngine(
 
 class CustomSimStatePlugin(SimStatePlugin):
     def _merge_key(self):
-        """
-        Return the merge key that must match before states containing this plugin may attempt to merge.
+        """Return the merge key that must match before states containing this plugin may attempt to merge.
 
         Subclasses can optionally override this method.
         """
@@ -337,15 +336,16 @@ class MMIOMemoryRegion(MemoryRegion):
                     reset_value
                     & (
                         mask_w | undefined_mask
-                    )  # TODO: mask_w 也許可改成 base class 用 symbolic、derived class 再依照 reference manual 上的說明實作是否有明說回傳的是 reset value
+                    )  # TODO: Maybe mask_w could be changed to use symbolic in the base class, and the derived classes could be implemented based on whether the reference manual explicitly states that the return value is the reset value
                 )
             )
         return val
 
     def get_pending_irqs(self, state):
-        """
-        回傳此 peripheral 目前可能觸發的 IRQ
-        格式: [(trigger condition, kwargs), ...]
+        """Returns the IRQs that this peripheral may currently trigger.
+
+        Returns:
+            [(trigger condition, kwargs), ...]
         """
         return []
 
@@ -422,16 +422,15 @@ class EventForkHandler:
         return set()
 
     def get_eligible_events(self, state):
-        """
-        Return:
-            [(trigger conditions, handler kwargs), ...]
+        """Returns the events that are eligible to be triggered currently.
+
+        Returns:
+            [(trigger condition, kwargs), ...]
         """
         return []
 
     def trigger_event(self, state, **kwargs):
-        """
-        對 state 執行該事件的行為
-        """
+        """Event handler."""
         pass
 
 
