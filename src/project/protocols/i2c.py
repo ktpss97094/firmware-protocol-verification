@@ -1,3 +1,5 @@
+import inspect
+
 import claripy
 
 from project import utils
@@ -5,16 +7,14 @@ from project.types import CustomSimStatePlugin
 
 
 class I2CBus(CustomSimStatePlugin):
-    _MERGE_FIELDS = (
-        "prev_scl_in",
-        "prev_sda_in",
-        "prev_scl_out",
-        "prev_sda_out",
-        "arbitration_lost",
-        "bit_count",
-        "arbitration_lost_byte_end",
-        "wait_state",
-    )
+    prev_scl_in: claripy.ast.Bool
+    prev_sda_in: claripy.ast.Bool
+    prev_scl_out: claripy.ast.Bool
+    prev_sda_out: claripy.ast.Bool
+    arbitration_lost: claripy.ast.Bool
+    bit_count: claripy.ast.BV
+    arbitration_lost_byte_end: claripy.ast.Bool
+    wait_state: claripy.ast.Bool
 
     def __init__(
         self,
@@ -47,14 +47,8 @@ class I2CBus(CustomSimStatePlugin):
     def copy(self, memo):
         o = super().copy(memo)
 
-        o.prev_scl_in = self.prev_scl_in
-        o.prev_sda_in = self.prev_sda_in
-        o.prev_scl_out = self.prev_scl_out
-        o.prev_sda_out = self.prev_sda_out
-        o.arbitration_lost = self.arbitration_lost
-        o.bit_count = self.bit_count
-        o.arbitration_lost_byte_end = self.arbitration_lost_byte_end
-        o.wait_state = self.wait_state
+        for field in inspect.get_annotations(type(self)):
+            setattr(o, field, getattr(self, field))
 
         return o
 
@@ -63,14 +57,16 @@ class I2CBus(CustomSimStatePlugin):
 
         changed = False
 
-        for field in self._MERGE_FIELDS:
+        for field in inspect.get_annotations(type(self)):
             value = getattr(self, field)
+
             merged_value = utils.merge_ast_values(
                 self.state,
                 value,
                 (getattr(other, field) for other in others),
                 merge_conditions,
             )
+
             if not utils.same_ast(value, merged_value):
                 setattr(self, field, merged_value)
                 changed = True

@@ -46,6 +46,7 @@ class CustomSimStatePlugin(SimStatePlugin):
     def _merge_key(self):
         """Return the merge key that must match before states containing this plugin may attempt to merge.
 
+        This means that if two states have different merge keys, they will never be grouped together for merging.
         Subclasses can optionally override this method.
         """
 

@@ -1,3 +1,4 @@
+import inspect
 import logging
 from abc import ABC, abstractmethod
 from bisect import bisect_right
@@ -52,6 +53,10 @@ class _MemoryAccessRegions:
 
 
 class AsynchronousEventGlobals(CustomSimStatePlugin):
+    before_check_handlers: set
+    after_check_handlers: set
+    prev_after_check_handlers: set
+
     def __init__(
         self,
         before_check_handlers=None,
@@ -73,9 +78,8 @@ class AsynchronousEventGlobals(CustomSimStatePlugin):
     def copy(self, memo):
         o = super().copy(memo)
 
-        o.before_check_handlers = set()
-        o.after_check_handlers = set()
-        o.prev_after_check_handlers = set()
+        for field in inspect.get_annotations(type(self)):
+            setattr(o, field, set())  # handlers are not copied
 
         return o
 

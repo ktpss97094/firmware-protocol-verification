@@ -1,3 +1,4 @@
+import inspect
 from dataclasses import dataclass
 
 import archinfo
@@ -18,6 +19,8 @@ from project.types import (
 
 
 class Globals(CustomSimStatePlugin):
+    bsrr_write_value: claripy.ast.BV | None
+
     def __init__(self, bsrr_write_value=None):
         super().__init__()
 
@@ -26,7 +29,8 @@ class Globals(CustomSimStatePlugin):
     def copy(self, memo):
         o = super().copy(memo)
 
-        o.bsrr_write_value = self.bsrr_write_value
+        for field in inspect.get_annotations(type(self)):
+            setattr(o, field, getattr(self, field))
 
         return o
 
@@ -36,15 +40,14 @@ class Globals(CustomSimStatePlugin):
     def merge(self, others, merge_conditions, common_ancestor=None):
         del common_ancestor
 
-        if self.bsrr_write_value is None and all(
-            other.bsrr_write_value is None for other in others
-        ):
-            return False
-
-        if self.bsrr_write_value is None or any(
-            other.bsrr_write_value is None for other in others
+        if any(
+            (self.bsrr_write_value is None) != (other.bsrr_write_value is None)
+            for other in others
         ):
             raise SimMergeError("Cannot merge STM32F4 GPIO globals (bsrr_write_value)")
+
+        if self.bsrr_write_value is None:
+            return False
 
         merged_bsrr_write_value = utils.merge_ast_values(
             self.state,
@@ -53,9 +56,11 @@ class Globals(CustomSimStatePlugin):
             merge_conditions,
         )
 
-        changed = not utils.same_ast(self.bsrr_write_value, merged_bsrr_write_value)
-        self.bsrr_write_value = merged_bsrr_write_value
-        return changed
+        if not utils.same_ast(self.bsrr_write_value, merged_bsrr_write_value):
+            self.bsrr_write_value = merged_bsrr_write_value
+            return True
+
+        return False
 
 
 class GPIO(MMIOMemoryRegion):

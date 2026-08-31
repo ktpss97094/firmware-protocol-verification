@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 
 import claripy
@@ -19,6 +20,10 @@ from project.types import (
 
 
 class Globals(CustomSimStatePlugin):
+    is_address_phase: claripy.ast.Bool
+    rw: tuple[claripy.ast.Bool, claripy.ast.BV]
+    sr1_read: claripy.ast.Bool
+
     def __init__(self, is_address_phase=None, rw=None, sr1_read=None):
         super().__init__()
 
@@ -33,9 +38,8 @@ class Globals(CustomSimStatePlugin):
     def copy(self, memo):
         o = super().copy(memo)
 
-        o.is_address_phase = self.is_address_phase
-        o.rw = self.rw
-        o.sr1_read = self.sr1_read
+        for field in inspect.get_annotations(type(self)):
+            setattr(o, field, getattr(self, field))
 
         return o
 
@@ -43,16 +47,11 @@ class Globals(CustomSimStatePlugin):
         return (self.rw[0].hash(),)
 
     def merge(self, others, merge_conditions, common_ancestor=None):
-        """
-        回傳值表示 plugins 是否有被 merge，並不是 state 是否有被 merge。只有 raise SimMergeError 時才表示 state 不被 merge
-        """
-
-        # 如果 plugin 內部沒有更深層的物件需要合併，可以直接忽略 common_ancestor
         del common_ancestor
 
         rw_valid, rw_value = self.rw
         if any(not utils.same_ast(rw_valid, other.rw[0]) for other in others):
-            raise SimMergeError("Cannot merge STM32F4 I2C globals (rw validity)")
+            raise SimMergeError("Cannot merge STM32F4 I2C globals (rw valid)")
 
         merged_is_address_phase = utils.merge_ast_values(
             self.state,
@@ -72,15 +71,15 @@ class Globals(CustomSimStatePlugin):
 
         changed = False
         if not utils.same_ast(self.is_address_phase, merged_is_address_phase):
+            self.is_address_phase = merged_is_address_phase
             changed = True
         if not utils.same_ast(rw_value, merged_rw_value):
+            self.rw = rw_valid, merged_rw_value
             changed = True
         if not utils.same_ast(self.sr1_read, merged_sr1_read):
+            self.sr1_read = merged_sr1_read
             changed = True
 
-        self.is_address_phase = merged_is_address_phase
-        self.rw = rw_valid, merged_rw_value
-        self.sr1_read = merged_sr1_read
         return changed
 
 
