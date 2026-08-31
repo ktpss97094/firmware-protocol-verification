@@ -370,17 +370,9 @@ class BaseSpec:
         self.END_ADDRS = []
         self.API_PROTOTYPE = None
         self.API_ARGS = []
-        self.CPU = self._detect_cpu()
+        self.CPU = self.ARCH()
 
         self._define_specs()
-
-    @classmethod
-    def _detect_cpu(cls):
-        if isinstance(cls.ANGR_ARCH, archinfo.ArchARMCortexM):
-            from project.cores.arm.cortex_m.cortex_m import CortexM
-
-            return CortexM()
-        return None
 
     def _define_specs(self):
         pass

@@ -117,8 +117,8 @@ class DFSAutomaticMerge(DFS):
         merge_points,
         fork_to_join,
         deferred_stash="deferred",
-        max_wait_steps=4096,
-        max_waiting_states=64,
+        max_wait_steps=1024,
+        max_waiting_states=32,
         max_merge_depth=32,
     ):
         super().__init__(deferred_stash=deferred_stash)

@@ -41,9 +41,8 @@ class CortexM(ARM):
 
         return cfg
 
-    def normalize_address(self, addr):
-        # Cortex-M 永遠是 thumb mode
-        return addr & ~1
+    def thumb_mode(self, registers) -> bool:
+        return True
 
     def excp_entry(self, state, int_no):
         self._push_basic_frame(state)
@@ -256,3 +255,16 @@ class ARMv7M(CortexM):
     def _push_extended_frame(self, state):
         # TODO: Extended frame type
         raise NotImplementedError("Extended Frame is not implemented yet")
+
+    @classmethod
+    def translate_avatar_registers(cls, regs):
+        # xpsr is split into multiple registers in angr. https://support.arm.com/documentation/100166/0001?lang=en
+        regs["flags"] = regs["xpsr"] & 0xF0000000
+        regs["qflag32"] = (regs["xpsr"] >> 27) & 1
+        regs["iepsr"] = (regs["xpsr"] & 0x1FF) | (regs["xpsr"] & (1 << 24))
+        regs["itstate"] = (((regs["xpsr"] >> 10) & 0x3F) << 2) | (
+            (regs["xpsr"] >> 25) & 0x3
+        )
+        regs.pop("xpsr", None)
+
+        return regs

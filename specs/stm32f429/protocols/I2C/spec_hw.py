@@ -23,6 +23,7 @@ from angr.sim_type import (
 )
 
 from project import config, utils
+from project.cores.arm.cortex_m.cortex_m import ARMv7M
 from project.cores.arm.cortex_m.systick import SysTickVariable
 from project.peripherals.stm32f4.dma import DMA
 from project.peripherals.stm32f4.i2c import I2C as STM32F4_I2C
@@ -117,6 +118,7 @@ class Spec(BaseSpec):
     # --- Architecture ---
     AVATAR_ARCH = avatar2.archs.arm.ARM_CORTEX_M3
     ANGR_ARCH = archinfo.ArchARMCortexM(endness=archinfo.Endness.LE)
+    ARCH = ARMv7M
 
     # --- Parameters ---
     # BOUND_LOOPS key 是 loop entry address，如果 firmware 有異動，要重新計算
@@ -172,6 +174,9 @@ class Spec(BaseSpec):
                 spec=self,
                 name="VECTOR_TABLE_ALIAS",
                 physical_addr=0x08000000,
+            ),
+            "SCB_VTOR": MMIOMemoryRegion(
+                start=0xE000ED08, size=0x4, spec=self, name="SCB_VTOR"
             ),
             "I2C1": I2C(start=0x40005400, size=0x400, spec=self, name="I2C1"),
         }

@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 app = typer.Typer(name="verify")
 
 
-def init_logging(log_name: str | None = None) -> None:
+def init_logging(log_name: Path | None = None) -> None:
     if log_name == "":
         raise typer.BadParameter("Log filename cannot be empty string")
     elif log_name is None:
@@ -153,14 +153,13 @@ def main(
         bool, typer.Option(help="Use automatic state-merging mechanism.")
     ] = True,
     log: Annotated[
-        str | None,
+        Path | None,
         typer.Option(
             help="The log name under the log directory. Uses a timestamp if omitted."
         ),
     ] = None,
 ):
     spec_class = load_spec_class(spec)
-
     init_logging(log)
 
     avatar = avatar2.Avatar(
@@ -172,14 +171,14 @@ def main(
         arch=spec_class.ANGR_ARCH,
         engine=CustomEngine,
     )
-    specs: BaseSpec = spec_class(proj)
-    proj.verification = VerificationSession(specs)
+    spec_obj: BaseSpec = spec_class(proj)
+    proj.verification = VerificationSession(spec_obj)
     exploration_monitor = ExplorationMonitor(
         violated_count_func=lambda: proj.verification.violated_count
     )
 
     """
-    avatar2 部分
+    avatar2
     """
     avatar_target: avatar2.Target | None = None
     if renode:
@@ -201,9 +200,9 @@ def main(
             additional_args=["-f", spec_class.OPENOCD_TARGET_SCRIPT_PATH],
         )
 
-    # 過濾出需要處理的 memory regions
+    # Filter out the memory regions that need to be transfered
     map_memory_regions = {}
-    for memory_region_name, memory_region in specs.MEMORY_REGIONS.items():
+    for memory_region_name, memory_region in spec_obj.MEMORY_REGIONS.items():
         if isinstance(memory_region, VariableMemoryRegion):
             logger.info(
                 f"Skip transfer memory region {memory_region_name}: belongs to class VariableMemoryRegion"
@@ -227,16 +226,14 @@ def main(
             avatar_target.protocols.execution.console_command("monitor reset halt")
         except Exception as e:
             logger.warning(f"Failed to reset/halt GDB target: {e}")
-    avatar_target.set_breakpoint(specs.BEGIN_ADDR)
+    avatar_target.set_breakpoint(spec_obj.BEGIN_ADDR)
     avatar_target.cont()
     avatar_target.wait()
     logger.info("Hit the breakpoint. Extracting state")
 
-    # e.g., Arm Cortex-M4: https://developer.arm.com/documentation/100166/0001/Programmers-Model/Processor-core-register-summary?lang=en
     regs = {}
-    seen_indices = set()
-    for name, idx in avatar_target._arch.registers.items():
-        if idx in seen_indices:
+    for name in avatar_target.protocols.registers.get_register_names():
+        if not name:
             continue
 
         try:
@@ -245,18 +242,14 @@ def main(
             logger.warning(f"avatar2 read register {name} exception: {e}")
             continue
 
-        # 讀取 special_registers 時，read_register() 可能會回傳 list 或一般的 int
+        # When reading special_registers, read_register() may return a list or an int
         try:
             regs[name] = val[0]
         except (TypeError, IndexError):
             regs[name] = val
-
-        seen_indices.add(idx)
-    regs[avatar_target._arch.pc_name] = utils.convert_thumb_mode(
-        proj,
-        regs[avatar_target._arch.pc_name],
-        target=avatar_target,
-        is_executing_pc=True,
+    # Thumb mode
+    regs[avatar_target._arch.pc_name] = proj.arch.x_addr(
+        regs[avatar_target._arch.pc_name], thumb=spec_obj.CPU.thumb_mode(regs)
     )
 
     dumps = {}
@@ -283,7 +276,7 @@ def main(
             logger.warning(f"avatar2 read memory {memory_region_name} exception: {e}")
 
     """
-    angr 部分
+    angr
     """
     logger.info("Setting up angr state")
     state = proj.factory.blank_state(
@@ -299,7 +292,6 @@ def main(
             angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
         },
     )
-
     for opt in {
         angr.options.TRACK_MEMORY_ACTIONS,
         angr.options.TRACK_REGISTER_ACTIONS,
@@ -310,20 +302,10 @@ def main(
         if opt in state.options:
             state.options.remove(opt)
 
+    # Mapping avatar2 registers to angr registers
+    regs = spec_obj.CPU.translate_avatar_registers(regs)
     for reg_name, value in regs.items():
-        if reg_name in state.arch.registers:
-            setattr(state.regs, reg_name, value)
-        elif reg_name == "xpsr":  # xpsr 在 angr 不是單一個 register，需要手動處理
-            if "flags" in state.arch.registers:
-                state.regs.flags = value & 0xF8000000
-                if "cc_op" in state.arch.registers:
-                    state.regs.cc_op = 0
-            if "iepsr" in state.arch.registers:
-                state.regs.iepsr = (value & 0x1FF) | (value & (1 << 24))
-            if "itstate" in state.arch.registers:
-                it_high = (value >> 10) & 0x3F
-                it_low = (value >> 25) & 0x3
-                state.regs.itstate = (it_high << 2) | it_low
+        setattr(state.regs, reg_name, value)
 
     for memory_region_name in dumps:
         try:
@@ -335,15 +317,16 @@ def main(
                 f"Failed to transfer {memory_region_name} at {map_memory_regions[memory_region_name].start:#x} to angr: {e}"
             )
 
-    # 計算 API 參數
-    if specs.API_PROTOTYPE is not None:
-        for index in range(len(specs.API_PROTOTYPE.args)):
-            specs.API_ARGS.append(utils.get_func_arg(state, specs.API_PROTOTYPE, index))
+    # Compute API arguments
+    if spec_obj.API_PROTOTYPE is not None:
+        for index in range(len(spec_obj.API_PROTOTYPE.args)):
+            spec_obj.API_ARGS.append(
+                utils.get_func_arg(state, spec_obj.API_PROTOTYPE, index)
+            )
 
-    specs.init_inspect(state)
-    specs.init_input(state)
+    spec_obj.init_inspect(state)
+    spec_obj.init_input(state)
 
-    # 關閉 renode
     if renode:
         try:
             avatar_target.protocols.execution.console_command("monitor quit")
@@ -354,46 +337,30 @@ def main(
     simgr = proj.factory.simgr(state)
     simgr.stashes["violated"] = []
     simgr.stashes["loopseer"] = []
-    specs.END_ADDRS.append(
-        state.solver.eval(specs.CPU.get_current_return_address(state))
+    spec_obj.END_ADDRS.append(
+        state.solver.eval(spec_obj.CPU.get_current_return_address(state))
     )
-    cfg = specs.CPU.setup(state, specs, simgr)
+    cfg = spec_obj.CPU.setup(state, spec_obj, simgr)
     loop_finder = proj.analyses.LoopFinder(kb=cfg.kb, normalize=True)
 
-    merge_points = set()
-    fork_to_join = {}
-    if automatic_merge:
-        merge_roots = {specs.BEGIN_ADDR}
+    if deterministic_dfs:
+        simgr.use_technique(DFSPickFirstSuccessor())
+    elif automatic_merge:
+        merge_roots = {spec_obj.BEGIN_ADDR}
         merge_roots.update(
             isr.address
-            for isr in specs.CPU.get_isr_memory_report(proj, state, specs).isrs
+            for isr in spec_obj.CPU.get_isr_memory_report(proj, state, spec_obj).isrs
         )
         merge_points, fork_to_join = discover_acyclic_merge_plan(
             cfg, merge_roots, loop_finder.loops
         )
         logger.info(
-            "Discovered %d acyclic CFG merge points and %d fork instructions "
-            "from %d execution roots: %s",
-            len(merge_points),
-            len(fork_to_join),
-            len(merge_roots),
-            ", ".join(hex(addr) for addr in sorted(merge_points)),
+            f"Discovered {len(merge_points)} acyclic CFG merge points and {len(fork_to_join)} fork instructions from {len(merge_roots)} execution roots: {', '.join(hex(addr) for addr in sorted(merge_points))}"
         )
-    if deterministic_dfs:
-        simgr.use_technique(DFSPickFirstSuccessor())
-    elif automatic_merge:
-        if not merge_points:
-            logger.warning("Automatic merge is enabled, but no merge points can found.")
-        else:
-            simgr.use_technique(
-                DFSAutomaticMerge(
-                    merge_points=merge_points,
-                    fork_to_join=fork_to_join or {},
-                    max_wait_steps=1024,
-                    max_waiting_states=32,
-                    max_merge_depth=32,
-                )
-            )
+
+        simgr.use_technique(
+            DFSAutomaticMerge(merge_points=merge_points, fork_to_join=fork_to_join)
+        )
     else:
         simgr.use_technique(DFS())
     simgr.use_technique(
@@ -422,6 +389,7 @@ def main(
     print(simgr)
     if len(simgr.errored) > 0:
         print(f"Errors Detected: {len(simgr.errored)} states died")
+
         for err in simgr.errored:
             print("-" * 30)
             print(f"  Error: {err.error}")
@@ -445,13 +413,12 @@ def main(
                     f"    LR: {hex(err.state.solver.eval(err.state.regs.lr))} (Return Address)"
                 )
                 print(f"    R0: {hex(err.state.solver.eval(err.state.regs.r0))}")
-
             except Exception as e:
                 print(f"  Could not extract debug info: {e}")
 
             print("-" * 30)
     elif exploration_monitor.found_count > 0 or proj.verification.violated_count > 0:
-        specs.final(simgr)
+        spec_obj.final(simgr)
 
         if proj.verification.violated_count > 0:
             print(

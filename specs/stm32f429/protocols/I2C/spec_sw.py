@@ -25,10 +25,11 @@ import claripy
 from angr.sim_type import SimTypeBool, SimTypeChar, SimTypeFunction, SimTypePointer
 
 from project import config, utils
+from project.cores.arm.cortex_m.cortex_m import ARMv7M
 from project.cores.arm.cortex_m.dwt import DWT
 from project.peripherals.stm32f4.gpio import GPIO as STM32F4_GPIO
 from project.protocols.i2c import I2CBus
-from project.types import BaseSpec, MemoryRegion
+from project.types import BaseSpec, MemoryRegion, MMIOMemoryRegion
 
 
 class GPIO(STM32F4_GPIO):
@@ -232,6 +233,7 @@ class Spec(BaseSpec):
     # --- Architecture ---
     AVATAR_ARCH = avatar2.archs.arm.ARM_CORTEX_M3
     ANGR_ARCH = archinfo.ArchARMCortexM(endness=archinfo.Endness.LE)
+    ARCH = ARMv7M
 
     # --- Parameters ---
     BOUND_LOOPS = {
@@ -262,6 +264,9 @@ class Spec(BaseSpec):
                 spec=self,
                 name="VECTOR_TABLE_ALIAS",
                 physical_addr=0x08000000,
+            ),
+            "SCB_VTOR": MMIOMemoryRegion(
+                start=0xE000ED08, size=0x4, spec=self, name="SCB_VTOR"
             ),
             "GPIOC": GPIO(start=0x40020800, size=0x400, spec=self, name="GPIOC"),
             "DWT": DWT(start=0xE0001000, size=0x1000, spec=self, name="DWT"),

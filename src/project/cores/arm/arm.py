@@ -5,6 +5,13 @@ from project.types import BPConfig
 
 
 class ARM(BaseCPU):
+    def thumb_mode(self, registers):
+        cpsr = registers.get("cpsr")
+        if cpsr is None:
+            return None
+
+        return bool(cpsr & (1 << 5))
+
     def get_static_interrupt_checkpoints(self, proj, state, cfg, specs):
         ckpts = super().get_static_interrupt_checkpoints(proj, state, cfg, specs)
 

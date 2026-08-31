@@ -103,9 +103,12 @@ class AsynchronousEventGlobals(CustomSimStatePlugin):
 
 
 class BaseCPU(ABC):
-    @abstractmethod
-    def normalize_address(self, addr):
-        return addr
+    def thumb_mode(self, registers) -> bool:
+        return False
+
+    @classmethod
+    def translate_avatar_registers(cls, regs):
+        return regs
 
     def get_current_return_address(self, state):
         if state.arch.call_pushes_ret:

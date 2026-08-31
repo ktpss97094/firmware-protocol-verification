@@ -3,7 +3,6 @@ import pickle
 from pathlib import Path
 
 import angr
-import archinfo
 import claripy
 from angr.sim_state import SimState
 from angr.sim_type import SimTypeFunction
@@ -74,22 +73,22 @@ def symbolic_bit(state, bv, index, name):
 
 
 def get_func_arg(state, prototype, index):
-    """
-    一定要在 function 進入當下呼叫，否則值可能會被覆寫
+    """Get the value of a function argument at a specific index.
 
-    TODO: 改寫成繼承 angr.SimProcedure 的方法，可完全避免覆寫問題
+    Note:
+        Be sure to call this API at the moment the function is entered, otherwise the value may be overwritten.
     """
-
+    # TODO: Rewriting it as a method that inherits from angr.SimProcedure might avoid the overwriting issue.
     return state.project.factory.cc().arg_locs(prototype)[index].get_value(state)
 
 
 def get_func_ret(state, prototype):
-    """
-    一定要在 function return 之後的下一行呼叫，否則值可能會被覆寫
+    """Get the return value of a function.
 
-    TODO: 改寫成繼承 angr.SimProcedure 的方法，可完全避免覆寫問題
+    Note:
+        Be sure to call this API at the moment the function is returned, otherwise the value may be overwritten.
     """
-
+    # TODO: Rewriting it as a method that inherits from angr.SimProcedure might avoid the overwriting issue.
     return state.project.factory.cc().return_val(prototype.returnty).get_value(state)
 
 
@@ -121,34 +120,6 @@ def set_func_args_symbolic(state, prototype: SimTypeFunction, constraints: dict)
             )
 
         arg_locs[index].set_value(state, new_val)
-
-
-def convert_thumb_mode(proj, addr, target=None, is_executing_pc=False):
-    """
-    處理 Thumb Mode 等情況
-
-    Args:
-        is_executing_pc: 是否為當前正在執行的 pc 值
-    """
-
-    # Arm Cortex-M 僅支援 Thumb 指令集
-    if isinstance(proj.arch, archinfo.ArchARMCortexM):
-        return addr | 1
-
-    if isinstance(proj.arch, archinfo.ArchARM):
-        if addr % 2 == 1:
-            return addr
-
-        if is_executing_pc and target:
-            try:
-                cpsr = target.read_register("cpsr")
-                if cpsr & 0x20:
-                    return addr | 1
-            except Exception as e:
-                logger.warning(f"Failed to read CPSR for PC normalization: {e}")
-                return addr
-
-    return addr
 
 
 def get_symbol_addr(proj, symbol_name, is_variable):
