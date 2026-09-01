@@ -28,7 +28,7 @@ from project import config, utils
 from project.cores.arm.cortex_m.cortex_m import ARMv7M
 from project.cores.arm.cortex_m.dwt import DWT
 from project.peripherals.stm32f4.gpio import GPIO as STM32F4_GPIO
-from project.protocols.i2c import I2CBus
+from project.protocols import I2CBus
 from project.types import BaseSpec, MemoryRegion, MMIOMemoryRegion
 
 
