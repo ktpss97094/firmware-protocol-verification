@@ -6,10 +6,7 @@ l = logging.getLogger(name=__name__)
 
 
 class CustomLoopSeer(LoopSeer):
-    """
-    1. 支援 num_inst=1 (單步執行) 的 LoopSeer.
-    2. bound k 表示 restricts the number of back-edge traversals for the loop to at most k
-    """
+    """LoopSeer that supports num_inst=1 (single-step execution)."""
 
     def successors(self, simgr, state, **kwargs):
         node = self.cfg.model.get_any_node(state.addr, anyaddr=True)
@@ -37,7 +34,7 @@ class CustomLoopSeer(LoopSeer):
                     continue_addrs = [e[0].addr for e in loop.continue_edges]
 
                     if self.limit_concrete_loops or len(succs.successors) > 1:
-                        # 利用 CFG 找出上一條指令所屬的 Basic Block 起始地址
+                        # Use the CFG to find the starting address of the basic block to which the previous instruction belongs
                         prev_node = self.cfg.model.get_any_node(
                             succ_state.history.addr, anyaddr=True
                         )
@@ -45,7 +42,7 @@ class CustomLoopSeer(LoopSeer):
                             prev_node.addr if prev_node else succ_state.history.addr
                         )
 
-                        # 改用 prev_block_addr 來判斷是否經過 continue edge
+                        # Use prev_block_addr instead to determine whether a continue edge has been encountered
                         if prev_block_addr in continue_addrs:
                             l.debug(
                                 "Continue edge traversed, incrementing back_edge_trip_counts"

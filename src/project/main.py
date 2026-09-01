@@ -104,6 +104,8 @@ def read_renode_mmio(avatar_target: avatar2.Target, base_addr: int, size: int) -
 
 
 def LoopSeer_bound_reached_handler(seer, state, bound_loops):
+    """Bound k means restrict the number of back-edge traversals for the loop to at most k."""
+
     loop = state.loop_data.current_loop[-1][0]
     header_addr = loop.entry.addr
 
