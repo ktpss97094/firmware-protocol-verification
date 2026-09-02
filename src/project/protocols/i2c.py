@@ -1,3 +1,4 @@
+import copy
 import inspect
 
 import claripy
@@ -48,7 +49,7 @@ class I2CBus(CustomSimStatePlugin):
         o = super().copy(memo)
 
         for field in inspect.get_annotations(type(self)):
-            setattr(o, field, getattr(self, field))
+            setattr(o, field, copy.copy(getattr(self, field)))
 
         return o
 

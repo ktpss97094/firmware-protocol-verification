@@ -181,7 +181,7 @@ class BaseCPU(ABC):
         for access in report.initializer_accesses:
             if access.unresolved is None:
                 continue
-            logger.warning(
+            logger.info(
                 "Adding conservative checkpoint for unresolved main memory access | "
                 "function: %s | instruction: %#x | operation: %s | reason: %s",
                 access.function,
@@ -190,14 +190,14 @@ class BaseCPU(ABC):
                 access.unresolved,
             )
         for function, callsite in report.initializer_unresolved_calls:
-            logger.warning(
+            logger.info(
                 "Adding conservative checkpoint for unresolved main call | function: %s | callsite: %#x",
                 function,
                 callsite,
             )
         for isr in report.isrs:
             for access in isr.unresolved_accesses:
-                logger.warning(
+                logger.info(
                     "Adding conservative checkpoint for unresolved ISR memory access | ISR: %s | "
                     "function: %s | instruction: %#x | operation: %s | reason: %s",
                     isr.isr,
@@ -207,7 +207,7 @@ class BaseCPU(ABC):
                     access.unresolved,
                 )
             for function, callsite in isr.unresolved_calls:
-                logger.warning(
+                logger.info(
                     "Adding conservative checkpoint for unresolved ISR call | ISR: %s | "
                     "function: %s | callsite: %#x",
                     isr.isr,

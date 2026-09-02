@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import copy
+import inspect
 import logging
 from collections import defaultdict
 from functools import cache
 
 import angr
 import claripy
+from angr.errors import SimMergeError
 
 from project import utils
 from project.analyses.isr_memory import ISRTarget
 from project.cores.arm.arm import ARM
 from project.cores.arm.cortex_m.nvic import NVIC
-from project.types import BPConfig, EventForkHandler
+from project.types import BPConfig, CustomSimStatePlugin, EventForkHandler
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,8 @@ class CortexM(ARM):
             self.AsynchronousEventManager(cpu=self, end_addrs=specs.END_ADDRS)
         )
 
+        self.ExceptionGlobals.register_default("excp_globals")
+
         return cfg
 
     def thumb_mode(self, registers) -> bool:
@@ -47,10 +52,8 @@ class CortexM(ARM):
     def excp_entry(self, state, int_no):
         self._push_basic_frame(state)
 
-        priority_stack = state.globals.get("priority_stack", []).copy()
-        priority_stack.append(state.globals.get("current_priority", 256))
-        state.globals["priority_stack"] = priority_stack
-        state.globals["current_priority"] = NVIC.get_irq_priority(state, int_no)
+        state.excp_globals.priority_stack.append(state.excp_globals.current_priority)
+        state.excp_globals.current_priority = NVIC.get_irq_priority(state, int_no)
 
         _, isr_addr = self._get_exception_handler_address(state, int_no)
         state.regs.pc = isr_addr
@@ -84,10 +87,10 @@ class CortexM(ARM):
         pc = self._pop(state)
         state.regs.iepsr = self._pop(state)
 
-        priority_stack = state.globals.get("priority_stack", []).copy()
         try:
-            state.globals["current_priority"] = priority_stack.pop()
-            state.globals["priority_stack"] = priority_stack
+            state.excp_globals.current_priority = (
+                state.excp_globals.priority_stack.pop()
+            )
         except IndexError:
             raise Exception("Priority stack underflow")
 
@@ -228,7 +231,7 @@ class CortexM(ARM):
             eligible_irqs = []
             for irq, trig_conds in pending_irqs.items():
                 prio = NVIC.get_irq_priority(state, irq)
-                if prio < state.globals.get("current_priority", 256):
+                if prio < state.excp_globals.current_priority:
                     eligible_irqs.append((prio, irq, trig_conds))
             self.cpu._sort_irqs(eligible_irqs)
             return [
@@ -239,6 +242,43 @@ class CortexM(ARM):
 
         def trigger_event(self, state, irq):
             self.cpu.excp_entry(state, irq)
+
+    class ExceptionGlobals(CustomSimStatePlugin):
+        current_priority: int
+        priority_stack: list[int]
+
+        def __init__(self, current_priority=None, priority_stack=None):
+            super().__init__()
+
+            self.current_priority = (
+                current_priority if current_priority is not None else 256
+            )
+            self.priority_stack = priority_stack if priority_stack is not None else []
+
+        def copy(self, memo):
+            o = super().copy(memo)
+
+            for field in inspect.get_annotations(type(self)):
+                setattr(o, field, copy.copy(getattr(self, field)))
+
+            return o
+
+        def _merge_key(self):
+            return (self.current_priority, tuple(self.priority_stack))
+
+        def merge(self, others, merge_conditions, common_ancestor=None):
+            del common_ancestor
+
+            if any(
+                self.current_priority != other.current_priority
+                or self.priority_stack != other.priority_stack
+                for other in others
+            ):
+                raise SimMergeError(
+                    "Cannot merge Exception globals (current_priority or priority_stack)"
+                )
+
+            return False
 
     def set_handlers(self, state, cfg, specs):
         self.interrupt_handler = CortexM._InterruptHandler(

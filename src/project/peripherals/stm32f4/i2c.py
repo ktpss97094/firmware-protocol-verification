@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import inspect
 from dataclasses import dataclass
 
@@ -39,7 +40,7 @@ class Globals(CustomSimStatePlugin):
         o = super().copy(memo)
 
         for field in inspect.get_annotations(type(self)):
-            setattr(o, field, getattr(self, field))
+            setattr(o, field, copy.copy(getattr(self, field)))
 
         return o
 

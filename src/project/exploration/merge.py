@@ -48,11 +48,9 @@ def _acyclic_postdominator_merge_plan(graph, loop_node_addrs):
 
 
 def discover_acyclic_merge_plan(cfg, start_addrs, loops):
-    """
-    Find structured, non-loop branch instructions and their join points.
+    """Find structured, non-loop branch instructions and their join points.
 
-    Loop joins are excluded because waiting for all loop paths at a barrier can
-    deadlock across different iteration counts.
+    Loop joins are excluded because waiting for all loop paths at a barrier can deadlock across different iteration counts.
     """
 
     if isinstance(start_addrs, int):
@@ -103,10 +101,7 @@ class DFSAutomaticMerge(DFS):
     """
     DFS with lineage-scoped merging at structured acyclic joins.
 
-    Every real fork gets a dynamic token. A join only waits for descendants of
-    that fork, so unrelated states in the DFS deferred stash cannot retain join
-    states indefinitely. Guardrails release states without merging; they never
-    discard a path.
+    Every real fork gets a dynamic token. A join only waits for descendants of that fork, so unrelated states in the DFS deferred stash cannot retain join states indefinitely. Guardrails release states without merging; they never discard a path.
     """
 
     _TOKEN_STACK_KEY = "_dfs_join_tokens"
@@ -258,8 +253,6 @@ class DFSAutomaticMerge(DFS):
                 for frame in state.callstack
             ),
             loop_data_key(state),
-            state.globals.get("current_priority", 256),  # TODO: 改成 plugin, 移除
-            tuple(state.globals.get("priority_stack", ())),
             frozenset(state.posix.fd) if state.has_plugin("posix") else None,
             plugin_keys,
         )
