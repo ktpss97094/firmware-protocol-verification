@@ -11,7 +11,7 @@ import claripy
 from angr.errors import SimMergeError
 
 from project import utils
-from project.analyses.isr_memory import ISRTarget
+from project.analyses.memory import ISRTarget
 from project.cores.arm.arm import ARM
 from project.cores.arm.cortex_m.nvic import NVIC
 from project.types import BPConfig, CustomSimStatePlugin, EventForkHandler
@@ -23,7 +23,7 @@ class CortexM(ARM):
     VTOR_ADDR = None
 
     def setup(self, state, specs, simgr):
-        # ARMv7-M Architecture Reference Manual B1.5.8 Exception return behavior
+        # ARMv7-M Architecture Reference Manual: Exception return behavior
         # 實際上 processor 的行為是攔截到 write exception return value 到 pc 的時機做 exception return；但我的實作是讓 pc 成功 write exception return value 之後，把 pc 要執行的指令 hook 成 exception return 行為
         state.project.hook(
             0xFFFFFFF1, self._ExcpReturnProcedure(cpu=self)
@@ -298,7 +298,8 @@ class ARMv7M(CortexM):
 
     @classmethod
     def translate_avatar_registers(cls, regs):
-        # xpsr is split into multiple registers in angr. https://support.arm.com/documentation/100166/0001?lang=en
+        # ARMv7-M Architecture Reference Manual: The special-purpose Program Status Registers, xPSR
+        # xpsr is split into multiple registers in angr
         regs["flags"] = regs["xpsr"] & 0xF0000000
         regs["qflag32"] = (regs["xpsr"] >> 27) & 1
         regs["iepsr"] = (regs["xpsr"] & 0x1FF) | (regs["xpsr"] & (1 << 24))

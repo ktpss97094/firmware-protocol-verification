@@ -98,8 +98,7 @@ class _DFSJoinToken:
 
 
 class DFSAutomaticMerge(DFS):
-    """
-    DFS with lineage-scoped merging at structured acyclic joins.
+    """DFS with lineage-scoped merging at structured acyclic joins.
 
     Every real fork gets a dynamic token. A join only waits for descendants of that fork, so unrelated states in the DFS deferred stash cannot retain join states indefinitely. Guardrails release states without merging; they never discard a path.
     """
@@ -111,12 +110,12 @@ class DFSAutomaticMerge(DFS):
         self,
         merge_points,
         fork_to_join,
-        deferred_stash="deferred",
         max_wait_steps=1024,
         max_waiting_states=32,
         max_merge_depth=32,
     ):
-        super().__init__(deferred_stash=deferred_stash)
+        super().__init__()
+
         if max_wait_steps < 1:
             raise ValueError("max_wait_steps must be positive")
         if max_waiting_states < 1:
@@ -141,6 +140,7 @@ class DFSAutomaticMerge(DFS):
 
     def setup(self, simgr):
         super().setup(simgr)
+
         simgr.stashes.setdefault(self.waiting_stash, [])
 
     def _normalize_stack(self, state):

@@ -7,6 +7,11 @@
 
 * Ubuntu 24.04 LTS
 
+### Evaluated Hardware
+
+* [STM32F429I-DISC1](https://www.st.com/en/evaluation-tools/32f429idiscovery.html)
+* [Stethogram](https://hdl.handle.net/11296/25jnqe)
+
 ## Prerequisite
 
 1. Install [uv](https://github.com/astral-sh/uv)
@@ -15,11 +20,20 @@
     sudo apt-get update
     sudo apt-get install -y python3-pip python3-setuptools python3-dev cmake build-essential gdb-multiarch
     ```
-3. Install OpenOCD
+3. Install [OpenOCD](https://github.com/openocd-org/openocd)
     ```sh
     sudo apt update
-    sudo apt install openocd
+    sudo apt install -y build-essential autoconf automake libtool pkg-config texinfo libusb-1.0-0-dev libjaylink-dev libjim-dev
+    git clone --recursive https://github.com/openocd-org/openocd.git
+    cd openocd
+    ./bootstrap
+    ./configure --enable-stlink --enable-jlink --prefix=/usr/local
+    make -j"$(nproc)"
+    sudo make install
     ```
+
+    > [!WARNING]
+    > `sudo apt install openocd` can easily install, but it may provide an outdated version, which could lead to errors.
 4. Install [Renode](https://github.com/renode/renode)
 
 ## Build
@@ -49,7 +63,7 @@ Open two terminals.
 
 1. First terminal:
     ```sh
-    openocd -f <interface script> -f <target script>
+    openocd -f <board script>
     ```
 2. Second terminal:
     ```sh

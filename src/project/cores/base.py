@@ -4,13 +4,14 @@ from abc import ABC, abstractmethod
 from bisect import bisect_right
 from collections import defaultdict
 from functools import cache, partial
+from pathlib import Path
 
 import angr
 import claripy
 import pyvex
 from angr.errors import SimMergeError
 
-from project.analyses.isr_memory import ISRTarget, analyze_isr_memory
+from project.analyses.memory import ISRTarget, MemoryAnalyzer
 from project.types import (
     AccessEffects,
     BPConfig,
@@ -175,10 +176,9 @@ class BaseCPU(ABC):
 
     @cache
     def _get_isr_memory_report(self, proj, specs, isr_targets):
-        report = analyze_isr_memory(
-            proj.filename, specs, isr_targets=tuple(isr_targets)
-        )
-        for access in report.initializer_accesses:
+        report = MemoryAnalyzer(Path(proj.filename)).analyze(specs, isr_targets)
+
+        for access in report.app_root_accesses:
             if access.unresolved is None:
                 continue
             logger.info(
@@ -189,7 +189,7 @@ class BaseCPU(ABC):
                 access.operation,
                 access.unresolved,
             )
-        for function, callsite in report.initializer_unresolved_calls:
+        for function, callsite in report.app_root_unresolved_calls:
             logger.info(
                 "Adding conservative checkpoint for unresolved main call | function: %s | callsite: %#x",
                 function,
@@ -219,12 +219,12 @@ class BaseCPU(ABC):
     def _get_shared_access_regions_and_unresolved(self, proj, state, specs):
         report = self.get_isr_memory_report(proj, state, specs)
         flow_accesses = [
-            report.initializer_accesses,
+            report.app_root_accesses,
             *(isr.accesses for isr in report.isrs),
         ]
 
         unresolved_inst_addrs = set()
-        for function, callsite in report.initializer_unresolved_calls:
+        for function, callsite in report.app_root_unresolved_calls:
             self._add_unresolved_instruction(
                 unresolved_inst_addrs, callsite, f"unresolved call in {function}"
             )

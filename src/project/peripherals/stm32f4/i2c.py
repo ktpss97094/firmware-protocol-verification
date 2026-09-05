@@ -167,11 +167,27 @@ class I2C(MMIOMemoryRegion):
             )
         )
 
-    def post_read(self, state):
-        addr, offset, readout_value = super().post_read(state)
+    def pre_read(self, state):
+        addr, offset = super().pre_read(state)
         transaction = I2CTransaction.begin(self, state)
 
         transaction.event_bus_busy_may_change()
+
+        transaction.finish().commit()
+        return addr, offset
+
+    def pre_write(self, state):
+        addr, offset, value = super().pre_write(state)
+        transaction = I2CTransaction.begin(self, state)
+
+        transaction.event_bus_busy_may_change()
+
+        transaction.finish().commit()
+        return addr, offset, value
+
+    def post_read(self, state):
+        addr, offset, readout_value = super().post_read(state)
+        transaction = I2CTransaction.begin(self, state)
 
         match offset:
             case I2C.I2C_SR1.OFFSET:
@@ -588,6 +604,8 @@ class I2CTransaction:
         )
 
     def event_bus_busy_may_change(self):
+        """Environment-induced non-determinism on the BUSY bit."""
+
         next_busy = claripy.If(
             self.new.sr2[I2C.I2C_SR2.MSL.bit] == 1,
             claripy.BVV(1, 1),

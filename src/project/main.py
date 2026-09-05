@@ -45,10 +45,14 @@ def init_logging(log_name: Path | None = None) -> None:
 
     # pcode error
     logging.getLogger("angr.engines.pcode.lifter").setLevel(logging.CRITICAL)
-    # loop_data is only merged when state_merge_key() proves both copies identical.
+    # loop_data is only merged when state_merge_key() proves both copies identical
     logging.getLogger("angr.state_plugins.loop_data").setLevel(logging.ERROR)
     # SimMergeError
     logging.getLogger("angr.sim_manager").setLevel(logging.ERROR)
+    #
+    # logging.getLogger(
+    #     "angr.analyses.calling_convention.fact_collector.SimEngineFactCollectorVEX"
+    # ).setLevel(logging.CRITICAL)
 
 
 def load_spec_class(spec_arg: Path) -> Type[Any]:
@@ -197,9 +201,7 @@ def main(
         )
     else:
         avatar_target = avatar.add_target(
-            avatar2.OpenOCDTarget,
-            openocd_script=spec_class.OPENOCD_INTERFACE_SCRIPT_PATH,
-            additional_args=["-f", spec_class.OPENOCD_TARGET_SCRIPT_PATH],
+            avatar2.OpenOCDTarget, openocd_script=spec_class.OPENOCD_SCRIPT_PATH
         )
 
     # Filter out the memory regions that need to be transfered

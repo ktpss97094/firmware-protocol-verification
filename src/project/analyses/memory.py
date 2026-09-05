@@ -85,20 +85,17 @@ class ISRReport:
 @dataclasses.dataclass
 class AnalysisReport:
     elf: Path
-    initializer: str
+    app_root: str
     pointer_facts: list[PointerFact]
-    initializer_accesses: list[Access]
-    initializer_unresolved_calls: list[tuple[str, int]]
+    app_root_accesses: list[Access]
+    app_root_unresolved_calls: list[tuple[str, int]]
     isrs: list[ISRReport]
 
     @property
     def complete(self) -> bool:
         return (
-            not any(
-                access.unresolved is not None
-                for access in self.initializer_accesses
-            )
-            and not self.initializer_unresolved_calls
+            not any(access.unresolved is not None for access in self.app_root_accesses)
+            and not self.app_root_unresolved_calls
             and all(report.complete for report in self.isrs)
         )
 
@@ -312,37 +309,30 @@ def _record_rda_memory(recorder: _Recorder):
         SimEngineRDVEX._handle_expr_Load = original_load_expr
 
 
-class ISRMemoryAnalyzer:
+class MemoryAnalyzer:
     def __init__(
         self,
-        elf_path: str | Path,
+        elf_path: Path,
         *,
-        initializer: str = "main",
+        app_root: str = "main",
         init_depth: int = 4,
         isr_depth: int = 8,
         max_iterations: int = 8,
     ):
-        self.elf_path = Path(elf_path).resolve()
-        self.initializer = initializer
+        self.elf_path = elf_path
+        self.app_root = app_root
         self.init_depth = init_depth
         self.isr_depth = isr_depth
         self.max_iterations = max_iterations
 
-        self.project = angr.Project(str(self.elf_path), auto_load_libs=False)
+        # Create a clean angr project
+        self.project = angr.Project(self.elf_path, auto_load_libs=False)
         self.cfg = self.project.analyses.CFGFast(
             normalize=True, data_references=True, resolve_indirect_jumps=True
         )
-        fact_logger = logging.getLogger(
-            "angr.analyses.calling_convention.fact_collector.SimEngineFactCollectorVEX"
+        self.project.analyses.CompleteCallingConventions(
+            recover_variables=True, analyze_callsites=True
         )
-        previous_level = fact_logger.level
-        fact_logger.setLevel(logging.CRITICAL)
-        try:
-            self.project.analyses.CompleteCallingConventions(
-                recover_variables=True, analyze_callsites=True
-            )
-        finally:
-            fact_logger.setLevel(previous_level)
 
         stack_symbol = self.project.loader.find_symbol("_estack")
         self.stack_base = (
@@ -419,7 +409,7 @@ class ISRMemoryAnalyzer:
         recorder = _Recorder()
         with _record_rda_memory(recorder):
             self.project.analyses.ReachingDefinitions(
-                self._function_by_name(self.initializer),
+                self._function_by_name(self.app_root),
                 function_handler=_PreservingFunctionHandler(self.init_depth),
                 track_tmps=True,
                 element_limit=30,
@@ -466,10 +456,14 @@ class ISRMemoryAnalyzer:
         unique = {
             (fact.cell.address, fact.value, fact.instruction): fact for fact in facts
         }
-        return values_by_cell, sorted(
-            unique.values(),
-            key=lambda fact: (fact.cell.address, fact.value, fact.instruction or 0),
-        ), recorder.accesses
+        return (
+            values_by_cell,
+            sorted(
+                unique.values(),
+                key=lambda fact: (fact.cell.address, fact.value, fact.instruction or 0),
+            ),
+            recorder.accesses,
+        )
 
     def _add_mmio_backers(self, facts: dict[int, set[int]]) -> None:
         pages = {
@@ -518,14 +512,9 @@ class ISRMemoryAnalyzer:
         section = self.project.loader.find_section_containing(address)
         if section is not None and section.is_writable:
             return MemoryObject(
-                f"{section.name}@{address:#x}",
-                address,
-                max(1, size),
-                "section",
+                f"{section.name}@{address:#x}", address, max(1, size), "section"
             )
-        return MemoryObject(
-            f"memory@{address:#x}", address, max(1, size), "unknown"
-        )
+        return MemoryObject(f"memory@{address:#x}", address, max(1, size), "unknown")
 
     def _build_accesses(
         self, raw_accesses: list[_RawAccess], *, resolve_stack: bool
@@ -580,9 +569,7 @@ class ISRMemoryAnalyzer:
             if access.address is None:
                 continue
             effects = effects.union(
-                specs.get_access_effects(
-                    access.operation, access.address, access.size
-                )
+                specs.get_access_effects(access.operation, access.address, access.size)
             )
             region = self._region_for(access.address, access.size, specs)
             if region is None:
@@ -608,9 +595,7 @@ class ISRMemoryAnalyzer:
             for (name, start, size, kind), data in grouped.items()
         ]
         regions.sort(key=lambda region: (region.kind, region.start, region.name))
-        unresolved = [
-            access for access in accesses if access.unresolved is not None
-        ]
+        unresolved = [access for access in accesses if access.unresolved is not None]
         unresolved_calls = self._unresolved_calls(target.function)
         if unresolved or unresolved_calls:
             effects = effects.union(AccessEffects())
@@ -637,7 +622,7 @@ class ISRMemoryAnalyzer:
             )
 
         targets = self._resolve_isr_targets(isr_targets)
-        facts_by_cell, pointer_facts, initializer_raw_accesses = (
+        facts_by_cell, pointer_facts, app_root_raw_accesses = (
             self._collect_pointer_facts(specs)
         )
         self._add_mmio_backers(facts_by_cell)
@@ -668,24 +653,12 @@ class ISRMemoryAnalyzer:
                 )
             )
 
-        initializer_function = self._function_by_name(self.initializer)
+        app_root_function = self._function_by_name(self.app_root)
         return AnalysisReport(
             self.elf_path,
-            self.initializer,
+            self.app_root,
             pointer_facts,
-            self._build_accesses(initializer_raw_accesses, resolve_stack=True),
-            self._unresolved_calls(initializer_function),
+            self._build_accesses(app_root_raw_accesses, resolve_stack=True),
+            self._unresolved_calls(app_root_function),
             reports,
         )
-
-
-def analyze_isr_memory(
-    elf_path: str | Path,
-    specs,
-    *,
-    initializer: str = "main",
-    isr_targets: tuple[ISRTarget, ...] | None = None,
-) -> AnalysisReport:
-    return ISRMemoryAnalyzer(elf_path, initializer=initializer).analyze(
-        specs, isr_targets
-    )
