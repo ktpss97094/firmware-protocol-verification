@@ -108,6 +108,9 @@ class AsynchronousEventGlobals(CustomSimStatePlugin):
 
 
 class BaseCPU(ABC):
+    # Optional ABI assumptions for recursive memory analysis.
+    MEMORY_PRESERVED_REGISTERS: tuple[str, ...] = ()
+
     def thumb_mode(self, registers) -> bool:
         return False
 
@@ -176,7 +179,9 @@ class BaseCPU(ABC):
 
     @cache
     def _get_isr_memory_report(self, proj, specs, isr_targets):
-        report = MemoryAnalyzer(Path(proj.filename)).analyze(specs, isr_targets)
+        report = MemoryAnalyzer(
+            Path(proj.filename), preserved_registers=self.MEMORY_PRESERVED_REGISTERS
+        ).analyze(specs, isr_targets)
 
         for access in report.app_root_accesses:
             if access.unresolved is None:

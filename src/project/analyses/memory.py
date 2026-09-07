@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-import logging
 from collections import defaultdict
 from pathlib import Path
 
@@ -11,11 +10,10 @@ import claripy
 from angr.analyses.reaching_definitions.engine_vex import SimEngineRDVEX
 from angr.analyses.reaching_definitions.function_handler import FunctionHandler
 from angr.analyses.reaching_definitions.rd_initializer import RDAStateInitializer
+from angr.errors import SimMemoryMissingError
 from angr.storage.memory_mixins.paged_memory.pages.multi_values import MultiValues
 
 from project.types import AccessEffects, MMIOMemoryRegion
-
-logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -166,33 +164,27 @@ class _BinaryObjectIndex:
 
 
 class _PreservingFunctionHandler(FunctionHandler):
-    _preserved_registers = ("sp", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11")
+    """Apply an explicitly supplied ABI assumption around angr's recursion."""
 
-    def handle_local_function(self, state, data) -> None:
-        if (
-            self.interfunction_level <= 0
-            or data.function is None
-            or data.function.name == "UnresolvableCallTarget"
-        ):
-            self.handle_generic_function(state, data)
-            return
+    def __init__(self, depth: int, preserved_registers: tuple[str, ...]):
+        super().__init__(depth)
+        self.preserved_registers = preserved_registers
 
+    def recurse_analysis(self, state, data) -> None:
         saved = {}
-        for reg_name in self._preserved_registers:
-            offset, size = state.arch.registers[reg_name]
-            with contextlib.suppress(Exception):
-                saved[reg_name] = state.registers.load(
+        for name in self.preserved_registers:
+            offset, size = state.arch.registers[name]
+            try:
+                saved[offset] = state.registers.load(
                     offset, size, endness=state.arch.register_endness
                 )
+            except SimMemoryMissingError:
+                # An undefined input register has no known value to preserve.
+                continue
 
-        self.interfunction_level -= 1
-        try:
-            self.recurse_analysis(state, data)
-        finally:
-            self.interfunction_level += 1
+        super().recurse_analysis(state, data)
 
-        for reg_name, values in saved.items():
-            offset, _ = state.arch.registers[reg_name]
+        for offset, values in saved.items():
             state.registers.store(offset, values, endness=state.arch.register_endness)
 
 
@@ -318,12 +310,14 @@ class MemoryAnalyzer:
         init_depth: int = 4,
         isr_depth: int = 8,
         max_iterations: int = 8,
+        preserved_registers: tuple[str, ...] = (),
     ):
         self.elf_path = elf_path
         self.app_root = app_root
         self.init_depth = init_depth
         self.isr_depth = isr_depth
         self.max_iterations = max_iterations
+        self.preserved_registers = preserved_registers
 
         # Create a clean angr project
         self.project = angr.Project(self.elf_path, auto_load_libs=False)
@@ -410,7 +404,9 @@ class MemoryAnalyzer:
         with _record_rda_memory(recorder):
             self.project.analyses.ReachingDefinitions(
                 self._function_by_name(self.app_root),
-                function_handler=_PreservingFunctionHandler(self.init_depth),
+                function_handler=_PreservingFunctionHandler(
+                    self.init_depth, self.preserved_registers
+                ),
                 track_tmps=True,
                 element_limit=30,
                 max_iterations=self.max_iterations,
@@ -445,12 +441,7 @@ class MemoryAnalyzer:
                 values_by_cell[cell.address].add(concrete)
                 target = self._region_for(concrete, self.project.arch.bytes, specs)
                 facts.append(
-                    PointerFact(
-                        cell,
-                        concrete,
-                        target.name if target is not None else f"{concrete:#x}",
-                        store.instruction,
-                    )
+                    PointerFact(cell, concrete, target.name, store.instruction)
                 )
 
         unique = {
@@ -494,7 +485,7 @@ class MemoryAnalyzer:
                     unresolved.add((function.name, callsite))
         return sorted(unresolved, key=lambda item: (item[0], item[1]))
 
-    def _region_for(self, address: int, size: int, specs) -> MemoryObject | None:
+    def _region_for(self, address: int, size: int, specs) -> MemoryObject:
         obj = self.binary_objects.find_object(address)
         if obj is not None:
             return obj
@@ -528,7 +519,9 @@ class MemoryAnalyzer:
                 and raw.stack_offset is not None
                 and self.stack_base is not None
             ):
-                address = (self.stack_base + raw.stack_offset) & 0xFFFFFFFF
+                address = (self.stack_base + raw.stack_offset) & (
+                    (1 << self.project.arch.bits) - 1
+                )
 
             accesses.add(
                 Access(
@@ -572,8 +565,6 @@ class MemoryAnalyzer:
                 specs.get_access_effects(access.operation, access.address, access.size)
             )
             region = self._region_for(access.address, access.size, specs)
-            if region is None:
-                continue
             key = (region.name, region.start, region.size, region.kind)
             entry = grouped.setdefault(
                 key, {"operations": set(), "addresses": set(), "functions": set()}
@@ -597,8 +588,6 @@ class MemoryAnalyzer:
         regions.sort(key=lambda region: (region.kind, region.start, region.name))
         unresolved = [access for access in accesses if access.unresolved is not None]
         unresolved_calls = self._unresolved_calls(target.function)
-        if unresolved or unresolved_calls:
-            effects = effects.union(AccessEffects())
 
         return ISRReport(
             target.function.name,
@@ -638,7 +627,9 @@ class MemoryAnalyzer:
                 with _record_rda_memory(recorder):
                     self.project.analyses.ReachingDefinitions(
                         target.function,
-                        function_handler=_PreservingFunctionHandler(self.isr_depth),
+                        function_handler=_PreservingFunctionHandler(
+                            self.isr_depth, self.preserved_registers
+                        ),
                         state_initializer=initializer,
                         track_tmps=True,
                         element_limit=30,

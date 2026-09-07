@@ -21,6 +21,18 @@ logger = logging.getLogger(__name__)
 
 class CortexM(ARM):
     VTOR_ADDR = None
+    # Firmware ABI assumption for ordinary calls, not exception entry/return. angr can lose saved registers when VEX aligns a PUSH address: RDA cannot resolve the masked stack offset and skips the store.
+    MEMORY_PRESERVED_REGISTERS = (
+        "sp",
+        "r4",
+        "r5",
+        "r6",
+        "r7",
+        "r8",
+        "r9",
+        "r10",
+        "r11",
+    )
 
     def setup(self, state, specs, simgr):
         # ARMv7-M Architecture Reference Manual: Exception return behavior
