@@ -139,14 +139,12 @@ class CortexM(ARM):
             raise ValueError(f"Vector entry for modeled IRQ {irq} is null")
         return ISRTarget(irq=irq, address=isr_addr, source=vector_addr)
 
-    def _compute_initial_sp(self, state):
+    def _compute_initial_sp(self, proj):
         """
         ArchARMCortexM 的 initial_sp 是預設值，實際上是根據 firmware linker script 決定，會被放在 IVT 開頭
         """
 
-        return state.project.loader.memory.unpack_word(
-            state.project.loader.main_object.min_addr
-        )
+        return proj.loader.memory.unpack_word(proj.loader.main_object.min_addr)
 
     def _compute_stack_size(self, state):
         limit_symbols = ["__StackLimit", "_estack_limit", "__stack_limit", "_ebss"]

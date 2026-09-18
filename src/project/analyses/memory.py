@@ -13,6 +13,7 @@ from angr.analyses.reaching_definitions.rd_initializer import RDAStateInitialize
 from angr.errors import SimMemoryMissingError
 from angr.storage.memory_mixins.paged_memory.pages.multi_values import MultiValues
 
+from project import utils
 from project.types import AccessEffects, MMIOMemoryRegion
 
 
@@ -138,6 +139,8 @@ class _ResolvedISRTarget:
 
 
 class _BinaryObjectIndex:
+    """Map memory addresses to original symbol names and offsets."""
+
     def __init__(self, project):
         objects = {}
         for symbol in project.loader.main_object.symbols:
@@ -306,6 +309,7 @@ class MemoryAnalyzer:
         self,
         elf_path: Path,
         *,
+        init_sp: int,
         app_root: str = "main",
         init_depth: int = 4,
         isr_depth: int = 8,
@@ -318,6 +322,7 @@ class MemoryAnalyzer:
         self.isr_depth = isr_depth
         self.max_iterations = max_iterations
         self.preserved_registers = preserved_registers
+        self.init_sp = init_sp
 
         # Create a clean angr project
         self.project = angr.Project(self.elf_path, auto_load_libs=False)
@@ -328,49 +333,26 @@ class MemoryAnalyzer:
             recover_variables=True, analyze_callsites=True
         )
 
-        stack_symbol = self.project.loader.find_symbol("_estack")
-        self.stack_base = (
-            stack_symbol.rebased_addr if stack_symbol is not None else None
-        )
         self.binary_objects = _BinaryObjectIndex(self.project)
-
-    def _function_by_name(self, name: str):
-        function = self.cfg.kb.functions.function(name=name)
-        if function is None:
-            raise ValueError(f"Function not found in ELF: {name}")
-        return function
-
-    def _function_at(self, address: int):
-        function = self.cfg.kb.functions.get(address)
-        if function is None:
-            raise ValueError(f"Function not found at ISR address {address:#x}")
-        return function
 
     def _resolve_isr_targets(
         self, isr_targets: tuple[ISRTarget, ...]
     ) -> list[_ResolvedISRTarget]:
+        """Resolve ISR addresses to angr functions."""
+
         targets = []
+
         for target in isr_targets:
             try:
-                function = self._function_at(target.address)
+                function = utils.get_func_by_addr(self.cfg, target.address)
             except ValueError as error:
-                source = (
-                    f" from source {target.source:#x}"
-                    if target.source is not None
-                    else ""
-                )
                 raise ValueError(
-                    f"Cannot resolve modeled IRQ {target.irq}: target{source} "
-                    f"points to {target.address:#x}"
+                    f"Cannot resolve modeled IRQ {target.irq}, source: {target.source:#x}, address: {target.address:#x}"
                 ) from error
-            targets.append(_ResolvedISRTarget(target.irq, target.address, function))
-        return targets
 
-    def _function_name(self, instruction: int | None) -> str:
-        if instruction is None:
-            return "<external>"
-        function = self.cfg.kb.functions.floor_func(instruction)
-        return function.name if function is not None else "<unknown>"
+            targets.append(_ResolvedISRTarget(target.irq, target.address, function))
+
+        return targets
 
     @staticmethod
     def _is_pointer_value(value: claripy.ast.BV) -> bool:
@@ -382,18 +364,16 @@ class MemoryAnalyzer:
                 or 0x40000000 <= concrete < 0x60000000
                 or concrete >= 0xE0000000
             )
-        return value.variables == frozenset({"stack_base"})
+        return value.variables == frozenset({"init_sp"})
 
     def _concretize_pointer(self, value: claripy.ast.BV) -> int | None:
         if not value.symbolic:
             return value.concrete_value
-        if self.stack_base is None or value.variables != frozenset({"stack_base"}):
+        if self.init_sp is None or value.variables != frozenset({"init_sp"}):
             return None
-        stack_var = claripy.BVS(
-            "stack_base", self.project.arch.bits, explicit_name=True
-        )
+        stack_var = claripy.BVS("init_sp", self.project.arch.bits, explicit_name=True)
         solver = claripy.Solver()
-        solver.add(stack_var == self.stack_base)
+        solver.add(stack_var == self.init_sp)
         solutions = solver.eval(value, 2)
         return solutions[0] if len(solutions) == 1 else None
 
@@ -403,7 +383,7 @@ class MemoryAnalyzer:
         recorder = _Recorder()
         with _record_rda_memory(recorder):
             self.project.analyses.ReachingDefinitions(
-                self._function_by_name(self.app_root),
+                utils.get_func_by_addr(self.cfg, self.app_root),
                 function_handler=_PreservingFunctionHandler(
                     self.init_depth, self.preserved_registers
                 ),
@@ -517,9 +497,9 @@ class MemoryAnalyzer:
                 address is None
                 and resolve_stack
                 and raw.stack_offset is not None
-                and self.stack_base is not None
+                and self.init_sp is not None
             ):
-                address = (self.stack_base + raw.stack_offset) & (
+                address = (self.init_sp + raw.stack_offset) & (
                     (1 << self.project.arch.bits) - 1
                 )
 
@@ -528,7 +508,7 @@ class MemoryAnalyzer:
                     raw.operation,
                     raw.instruction,
                     raw.size,
-                    self._function_name(raw.instruction),
+                    utils.get_func_name_by_inst(self.cfg, raw.instruction),
                     address=address,
                     stack_offset=raw.stack_offset,
                     unresolved=raw.unresolved,
@@ -644,12 +624,11 @@ class MemoryAnalyzer:
                 )
             )
 
-        app_root_function = self._function_by_name(self.app_root)
         return AnalysisReport(
             self.elf_path,
             self.app_root,
             pointer_facts,
             self._build_accesses(app_root_raw_accesses, resolve_stack=True),
-            self._unresolved_calls(app_root_function),
+            self._unresolved_calls(utils.get_func_by_addr(self.cfg, self.app_root)),
             reports,
         )

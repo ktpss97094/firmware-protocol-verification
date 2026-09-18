@@ -180,7 +180,9 @@ class BaseCPU(ABC):
     @cache
     def _get_isr_memory_report(self, proj, specs, isr_targets):
         report = MemoryAnalyzer(
-            Path(proj.filename), preserved_registers=self.MEMORY_PRESERVED_REGISTERS
+            Path(proj.filename),
+            init_sp=self._compute_initial_sp(proj),
+            preserved_registers=self.MEMORY_PRESERVED_REGISTERS,
         ).analyze(specs, isr_targets)
 
         for access in report.app_root_accesses:

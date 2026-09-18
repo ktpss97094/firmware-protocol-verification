@@ -12,6 +12,8 @@ __all__ = [
     "replace_bit",
     "same_ast",
     "merge_ast_values",
+    "get_func_by_name",
+    "get_func_by_addr",
     "get_func_arg",
     "get_func_ret",
     "set_func_args_symbolic",
@@ -78,6 +80,41 @@ def merge_ast_values(state, value, other_values, merge_conditions):
     if merge_conditions is None:
         return state.solver.union([value] + other_values)
     return claripy.ite_cases(zip(merge_conditions[1:], other_values), value)
+
+
+def get_func_by_name(cfg, name: str):
+    function = cfg.kb.functions.function(name=name)
+
+    if function is None:
+        raise ValueError(f"Function {name} not found")
+
+    return function
+
+
+def get_func_by_addr(cfg, address: int):
+    function = cfg.kb.functions.get(address)
+
+    if function is None:
+        raise ValueError(f"Function not found at address {address:#x}")
+
+    return function
+
+
+def get_func_name_by_inst(cfg, instruction_address: int | None) -> str:
+    """Get the function name to which the instruction belongs.
+
+    Returns:
+        The function name if the instruction belongs to a function.
+        "<external>" if the instruction is not from actual CPU instructions.
+        "<unknown>" if the instruction does not belong to any known function.
+    """
+
+    if instruction_address is None:
+        return "<external>"
+
+    function = cfg.kb.functions.floor_func(instruction_address)
+
+    return function.name if function is not None else "<unknown>"
 
 
 def get_func_arg(state, prototype, index):
