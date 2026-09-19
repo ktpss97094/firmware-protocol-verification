@@ -288,6 +288,7 @@ def main(
     regs[avatar_target._arch.pc_name] = proj.arch.x_addr(
         regs[avatar_target._arch.pc_name], thumb=spec_obj.CPU.thumb_mode(regs)
     )
+    regs = {k.lower(): v for k, v in regs.items()}
 
     dumps = {}
     for memory_region_name, memory_region in map_memory_regions.items():

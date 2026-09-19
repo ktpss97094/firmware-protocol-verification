@@ -6,6 +6,7 @@
 ## Environment
 
 * Ubuntu 24.04 LTS
+* OpenOCD v0.12.0
 
 ### Evaluated Hardware
 
@@ -20,20 +21,10 @@
     sudo apt-get update
     sudo apt-get install -y python3-pip python3-setuptools python3-dev cmake build-essential gdb-multiarch
     ```
-3. Install [OpenOCD](https://github.com/openocd-org/openocd)
+3. Install OpenOCD
     ```sh
-    sudo apt update
-    sudo apt install -y build-essential autoconf automake libtool pkg-config texinfo libusb-1.0-0-dev libjaylink-dev libjim-dev
-    git clone --recursive https://github.com/openocd-org/openocd.git
-    cd openocd
-    ./bootstrap
-    ./configure --enable-stlink --enable-jlink --prefix=/usr/local
-    make -j"$(nproc)"
-    sudo make install
+    sudo apt install openocd
     ```
-
-    > [!WARNING]
-    > `sudo apt install openocd` can easily install, but it may provide an outdated version, which could lead to errors.
 4. Install [Renode](https://github.com/renode/renode)
 
 ## Build

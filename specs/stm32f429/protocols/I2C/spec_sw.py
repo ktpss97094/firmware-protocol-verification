@@ -227,7 +227,7 @@ class Spec(BaseSpec):
         config.PROJECT_ROOT
         / "firmwares/stm32f429/build/protocols/I2C/master/Blocking_Mode/Software/stm32_bitbang_i2c/firmware.elf"
     )
-    OPENOCD_SCRIPT_PATH = "/usr/local/share/openocd/scripts/board/stm32f429disc1.cfg"
+    OPENOCD_SCRIPT_PATH = "/usr/share/openocd/scripts/board/stm32f429disc1.cfg"
 
     # --- Architecture ---
     AVATAR_ARCH = avatar2.archs.arm.ARM_CORTEX_M3

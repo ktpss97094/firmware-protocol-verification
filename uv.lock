@@ -136,7 +136,7 @@ dependencies = [
     { name = "unicorn" },
 ]
 wheels = [
-    { url = "https://github.com/ktpss97094/avatar2/releases/download/v1.4.7+fpv/avatar2-1.4.7+fpv-py3-none-any.whl", hash = "sha256:23e0857ac1fd1f7aaf3a8d4fb6d33e7d74f0dd1635afb147e8d99ba6f34c2328" },
+    { url = "https://github.com/ktpss97094/avatar2/releases/download/v1.4.7+fpv/avatar2-1.4.7+fpv-py3-none-any.whl", hash = "sha256:8bafdb998a543fbe7e782412ea3fb9cbc69b574e4645cfc2df04a178dda3ba07" },
 ]
 
 [package.metadata]
