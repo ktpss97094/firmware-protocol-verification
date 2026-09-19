@@ -153,14 +153,6 @@ class BaseCPU(ABC):
                 irq_numbers.add(irq)
         return tuple(sorted(irq_numbers))
 
-    @staticmethod
-    def _concrete_state_value(state, value, description):
-        if isinstance(value, int):
-            return value
-        if not state.solver.unique(value):
-            raise ValueError(f"Cannot resolve concrete value for {description}")
-        return state.solver.eval(value)
-
     def _compute_isr_target(self, state, irq: int) -> ISRTarget:
         raise NotImplementedError(
             f"{type(self).__name__} does not provide ISR target discovery"
@@ -172,18 +164,13 @@ class BaseCPU(ABC):
             for irq in self._modeled_irq_numbers(specs)
         )
 
-    def get_isr_memory_report(self, proj, state, specs):
-        return self._get_isr_memory_report(
-            proj, specs, self.get_isr_targets(state, specs)
-        )
-
     @cache
-    def _get_isr_memory_report(self, proj, specs, isr_targets):
+    def get_isr_memory_report(self, state, specs):
         report = MemoryAnalyzer(
-            Path(proj.filename),
-            init_sp=self._compute_initial_sp(proj),
+            Path(state.project.filename),
+            stack_base=self._compute_initial_sp(state),
             preserved_registers=self.MEMORY_PRESERVED_REGISTERS,
-        ).analyze(specs, isr_targets)
+        ).analyze(specs, self.get_isr_targets(state, specs))
 
         for access in report.app_root_accesses:
             if access.unresolved is None:
@@ -224,7 +211,7 @@ class BaseCPU(ABC):
         return report
 
     def _get_shared_access_regions_and_unresolved(self, proj, state, specs):
-        report = self.get_isr_memory_report(proj, state, specs)
+        report = self.get_isr_memory_report(state, specs)
         flow_accesses = [
             report.app_root_accesses,
             *(isr.accesses for isr in report.isrs),
@@ -379,6 +366,10 @@ class BaseCPU(ABC):
 
     @abstractmethod
     def _compute_dma_synchronize_instruction_checkpoints(self):
+        pass
+
+    @abstractmethod
+    def _compute_initial_sp(self, state):
         pass
 
     def get_end_addrs_ckpts(self, end_addrs):

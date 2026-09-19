@@ -309,7 +309,8 @@ class MemoryAnalyzer:
         self,
         elf_path: Path,
         *,
-        init_sp: int,
+        # angr's RDA uses "stack_base" string
+        stack_base: int,
         app_root: str = "main",
         init_depth: int = 4,
         isr_depth: int = 8,
@@ -322,7 +323,7 @@ class MemoryAnalyzer:
         self.isr_depth = isr_depth
         self.max_iterations = max_iterations
         self.preserved_registers = preserved_registers
-        self.init_sp = init_sp
+        self.stack_base = stack_base
 
         # Create a clean angr project
         self.project = angr.Project(self.elf_path, auto_load_libs=False)
@@ -354,26 +355,16 @@ class MemoryAnalyzer:
 
         return targets
 
-    @staticmethod
-    def _is_pointer_value(value: claripy.ast.BV) -> bool:
-        if not value.symbolic:
-            concrete = value.concrete_value
-            return (
-                0x08000000 <= concrete < 0x10000000
-                or 0x10000000 <= concrete < 0x40000000
-                or 0x40000000 <= concrete < 0x60000000
-                or concrete >= 0xE0000000
-            )
-        return value.variables == frozenset({"init_sp"})
-
     def _concretize_pointer(self, value: claripy.ast.BV) -> int | None:
         if not value.symbolic:
             return value.concrete_value
-        if self.init_sp is None or value.variables != frozenset({"init_sp"}):
+        if self.stack_base is None or value.variables != frozenset({"stack_base"}):
             return None
-        stack_var = claripy.BVS("init_sp", self.project.arch.bits, explicit_name=True)
+        stack_var = claripy.BVS(
+            "stack_base", self.project.arch.bits, explicit_name=True
+        )
         solver = claripy.Solver()
-        solver.add(stack_var == self.init_sp)
+        solver.add(stack_var == self.stack_base)
         solutions = solver.eval(value, 2)
         return solutions[0] if len(solutions) == 1 else None
 
@@ -412,14 +403,17 @@ class MemoryAnalyzer:
             cell = PointerCell(
                 self.binary_objects.name_for(store.address), store.address
             )
+
             for value in store.values:
-                if not self._is_pointer_value(value):
-                    continue
                 concrete = self._concretize_pointer(value)
                 if concrete is None:
                     continue
-                values_by_cell[cell.address].add(concrete)
+
                 target = self._region_for(concrete, self.project.arch.bytes, specs)
+                if target.kind in ("invalid", "unknown"):
+                    continue
+
+                values_by_cell[cell.address].add(concrete)
                 facts.append(
                     PointerFact(cell, concrete, target.name, store.instruction)
                 )
@@ -470,15 +464,15 @@ class MemoryAnalyzer:
         if obj is not None:
             return obj
 
-        if address < 0x1000:
-            return MemoryObject("NULL-derived", 0, 0x1000, "invalid")
-
         modeled = specs.get_memory_region(address)
         if modeled is not None:
             offset = address - modeled.start
             name = modeled.name if offset == 0 else f"{modeled.name}+{offset:#x}"
             kind = "mmio" if isinstance(modeled, MMIOMemoryRegion) else "memory"
             return MemoryObject(name, address, max(1, size), kind)
+
+        if address < 0x1000:
+            return MemoryObject("NULL-derived", 0, 0x1000, "invalid")
 
         section = self.project.loader.find_section_containing(address)
         if section is not None and section.is_writable:
@@ -497,9 +491,9 @@ class MemoryAnalyzer:
                 address is None
                 and resolve_stack
                 and raw.stack_offset is not None
-                and self.init_sp is not None
+                and self.stack_base is not None
             ):
-                address = (self.init_sp + raw.stack_offset) & (
+                address = (self.stack_base + raw.stack_offset) & (
                     (1 << self.project.arch.bits) - 1
                 )
 

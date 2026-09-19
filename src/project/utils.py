@@ -44,6 +44,15 @@ def store(state: angr.SimState, addr, value, size=None):
     )
 
 
+def eval_unique(state, value, description):
+    if isinstance(value, int):
+        return value
+    if not state.solver.unique(value):
+        raise ValueError(f"Cannot resolve unique value for {description}")
+
+    return state.solver.eval(value)
+
+
 def generate_symbolic(state, name, mask=None, size=None):
     size = size if size is not None else state.arch.bits
     mask = mask if mask is not None else claripy.BVV(-1, size)

@@ -116,9 +116,7 @@ class CortexM(ARM):
     def _get_vector_table_base(self, state):
         if self.VTOR_ADDR is not None:
             return (
-                self._concrete_state_value(
-                    state, utils.load(state, self.VTOR_ADDR), "VTOR"
-                )
+                utils.eval_unique(state, utils.load(state, self.VTOR_ADDR), "VTOR")
                 & 0xFFFFFF80
             )
         return 0x00000000
@@ -126,10 +124,10 @@ class CortexM(ARM):
     def _get_exception_handler_address(self, state, int_no: int):
         excp_no = int_no + 16
         vector_addr = self._get_vector_table_base(state) + (excp_no * state.arch.bytes)
-        isr_addr = self._concrete_state_value(
+        isr_addr = utils.eval_unique(
             state,
             utils.load(state, vector_addr),
-            f"Cortex-M vector entry for IRQ {int_no}",
+            f"Vector table entry for IRQ {int_no}",
         )
         return vector_addr, isr_addr
 
@@ -139,12 +137,17 @@ class CortexM(ARM):
             raise ValueError(f"Vector entry for modeled IRQ {irq} is null")
         return ISRTarget(irq=irq, address=isr_addr, source=vector_addr)
 
-    def _compute_initial_sp(self, proj):
-        """
-        ArchARMCortexM 的 initial_sp 是預設值，實際上是根據 firmware linker script 決定，會被放在 IVT 開頭
+    def _compute_initial_sp(self, state):
+        """Get the initial main stack pointer (MSP) value.
+
+        Note:
+            initial_sp in angr's ArchARMCortexM is the default value.
+            It is actually determined by the firmware linker script, and will be placed at the beginning of the vector table.
         """
 
-        return proj.loader.memory.unpack_word(proj.loader.main_object.min_addr)
+        return utils.eval_unique(
+            state, utils.load(state, self._get_vector_table_base(state)), "MSP"
+        )
 
     def _compute_stack_size(self, state):
         limit_symbols = ["__StackLimit", "_estack_limit", "__stack_limit", "_ebss"]

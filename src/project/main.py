@@ -353,7 +353,7 @@ def main(
         merge_roots = {spec_obj.BEGIN_ADDR}
         merge_roots.update(
             isr.address
-            for isr in spec_obj.CPU.get_isr_memory_report(proj, state, spec_obj).isrs
+            for isr in spec_obj.CPU.get_isr_memory_report(state, spec_obj).isrs
         )
         merge_points, fork_to_join = discover_acyclic_merge_plan(
             cfg, merge_roots, loop_finder.loops
