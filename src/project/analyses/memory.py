@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 import angr
@@ -14,164 +14,58 @@ from angr.errors import SimMemoryMissingError
 from angr.storage.memory_mixins.paged_memory.pages.multi_values import MultiValues
 
 from project import utils
-from project.types import AccessEffects, MMIOMemoryRegion
 
 
-@dataclasses.dataclass(frozen=True)
-class MemoryObject:
-    name: str
-    start: int
-    size: int
-    kind: str
-
-    @property
-    def end(self) -> int:
-        return self.start + self.size
-
-
-@dataclasses.dataclass(frozen=True)
-class PointerCell:
-    name: str
-    address: int
-
-
-@dataclasses.dataclass(frozen=True)
-class PointerFact:
-    cell: PointerCell
-    value: int
-    target: str
-    instruction: int | None
-
-
-@dataclasses.dataclass(frozen=True)
+@dataclass(frozen=True)
 class Access:
     operation: str
     instruction: int | None
     size: int
-    function: str
     address: int | None = None
-    stack_offset: int | None = None
     unresolved: str | None = None
 
 
-@dataclasses.dataclass(frozen=True)
-class RegionAccess:
+@dataclass
+class FlowReport:
     name: str
-    kind: str
-    start: int
-    size: int
-    operations: tuple[str, ...]
-    addresses: tuple[int, ...]
-    functions: tuple[str, ...]
-
-
-@dataclasses.dataclass
-class ISRReport:
-    isr: str
-    irq: int
     address: int
-    accesses: list[Access]
-    regions: list[RegionAccess]
-    unresolved_accesses: list[Access]
-    unresolved_calls: list[tuple[str, int]]
-    effects: AccessEffects = dataclasses.field(default_factory=AccessEffects)
-
-    @property
-    def complete(self) -> bool:
-        return not self.unresolved_accesses and not self.unresolved_calls
+    accesses: set[Access]
+    unresolved_calls: set[int | None]
 
 
-@dataclasses.dataclass
+@dataclass
 class AnalysisReport:
-    elf: Path
-    app_root: str
-    pointer_facts: list[PointerFact]
-    app_root_accesses: list[Access]
-    app_root_unresolved_calls: list[tuple[str, int]]
-    isrs: list[ISRReport]
-
-    @property
-    def complete(self) -> bool:
-        return (
-            not any(access.unresolved is not None for access in self.app_root_accesses)
-            and not self.app_root_unresolved_calls
-            and all(report.complete for report in self.isrs)
-        )
-
-    @property
-    def effects(self) -> AccessEffects:
-        effects = AccessEffects()
-        for report in self.isrs:
-            effects = effects.union(report.effects)
-        return effects
+    app_root: FlowReport
+    isrs: list[FlowReport]
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclass(frozen=True)
 class ISRTarget:
     irq: int
     address: int
     source: int | None = None
 
 
-@dataclasses.dataclass
-class _RawAccess:
-    operation: str
-    instruction: int | None
-    size: int
-    address: int | None = None
-    stack_offset: int | None = None
-    unresolved: str | None = None
-
-
-@dataclasses.dataclass
-class _RawStore:
-    instruction: int | None
-    address: int
-    size: int
-    values: tuple[claripy.ast.BV, ...]
-
-
-@dataclasses.dataclass(frozen=True)
-class _ResolvedISRTarget:
-    irq: int
-    address: int
-    function: object
-
-
-class _BinaryObjectIndex:
-    """Map memory addresses to original symbol names and offsets."""
-
-    def __init__(self, project):
-        objects = {}
-        for symbol in project.loader.main_object.symbols:
-            if symbol.size <= 0 or symbol.type.name != "TYPE_OBJECT":
-                continue
-            key = (symbol.rebased_addr, symbol.size, symbol.name)
-            objects[key] = MemoryObject(
-                symbol.name, symbol.rebased_addr, symbol.size, "symbol"
-            )
-        self.objects = sorted(
-            objects.values(), key=lambda obj: (obj.start, -obj.size, obj.name)
-        )
-
-    def find_object(self, address: int) -> MemoryObject | None:
-        matches = [obj for obj in self.objects if obj.start <= address < obj.end]
-        return min(matches, key=lambda obj: obj.size) if matches else None
-
-    def name_for(self, address: int) -> str:
-        obj = self.find_object(address)
-        if obj is None:
-            return f"memory@{address:#x}"
-        offset = address - obj.start
-        return obj.name if offset == 0 else f"{obj.name}+{offset:#x}"
-
-
-class _PreservingFunctionHandler(FunctionHandler):
-    """Apply an explicitly supplied ABI assumption around angr's recursion."""
+class _FunctionHandler(FunctionHandler):
+    """Recurse with the supplied ABI assumptions; report calls without a body analysis."""
 
     def __init__(self, depth: int, preserved_registers: tuple[str, ...]):
         super().__init__(depth)
         self.preserved_registers = preserved_registers
+        self.unresolved_calls: set[int | None] = set()
+
+    def handle_generic_function(self, state, data):
+        # Includes unresolved targets and calls beyond the recursion limit. VEX's
+        # callsite block may contain earlier instructions, so use the call itself.
+        instruction = data.callsite_codeloc.ins_addr
+        if instruction is None and data.callsite_codeloc.block_addr is not None:
+            block = state.analysis.project.factory.block(
+                data.callsite_codeloc.block_addr
+            )
+            if block.instruction_addrs:
+                instruction = block.instruction_addrs[-1]
+        self.unresolved_calls.add(instruction)
+        super().handle_generic_function(state, data)
 
     def recurse_analysis(self, state, data) -> None:
         saved = {}
@@ -182,7 +76,6 @@ class _PreservingFunctionHandler(FunctionHandler):
                     offset, size, endness=state.arch.register_endness
                 )
             except SimMemoryMissingError:
-                # An undefined input register has no known value to preserve.
                 continue
 
         super().recurse_analysis(state, data)
@@ -192,7 +85,7 @@ class _PreservingFunctionHandler(FunctionHandler):
 
 
 class _PointerInitializer(RDAStateInitializer):
-    def __init__(self, arch, project, facts: dict[int, set[int]]):
+    def __init__(self, arch, project, facts: dict[int, set[int | None]]):
         super().__init__(arch, project=project)
         self.facts = facts
 
@@ -201,11 +94,16 @@ class _PointerInitializer(RDAStateInitializer):
     ) -> None:
         super().initialize_function_state(state, cc, func_addr, rtoc_value)
         for address, values in self.facts.items():
-            if not values:
-                continue
+            # Preserve unknown alternatives alongside resolved pointers. Main
+            # stack pointers have already been bound to the main-entry SP.
             data = MultiValues(
                 offset_to_values={
-                    0: {claripy.BVV(value, self.arch.bits) for value in values}
+                    0: {
+                        state.top(self.arch.bits)
+                        if value is None
+                        else claripy.BVV(value, self.arch.bits)
+                        for value in values
+                    }
                 }
             )
             state.memory.store(
@@ -214,68 +112,107 @@ class _PointerInitializer(RDAStateInitializer):
 
 
 class _Recorder:
-    def __init__(self):
-        self.accesses: list[_RawAccess] = []
-        self.stores: list[_RawStore] = []
+    def __init__(self, collect_stores=False, app_root_entry_sp: int | None = None):
+        self.app_root_entry_sp = app_root_entry_sp
+        self._stack_values = {}
+        self.accesses: set[Access] = set()
+        self.collect_stores = collect_stores
+        self.stores: dict[int, set[int | None]] = defaultdict(set)
 
-    def _record_addresses(self, engine, operation: str, addresses, size: int):
+    def concretize(self, value) -> int | None:
+        if isinstance(value, int):
+            return value
+        if not value.symbolic:
+            return value.concrete_value
+        if self.app_root_entry_sp is None or value.variables != frozenset(
+            {"stack_base"}
+        ):
+            return None
+        # The RDA root is main, so this symbol denotes SP before main's prologue.
+        # Solving also handles aligned PUSH addresses which get_stack_offset
+        # cannot express as a simple offset.
+        if value in self._stack_values:
+            return self._stack_values[value]
+        solver = claripy.Solver()
+        solver.add(
+            claripy.BVS("stack_base", value.size(), explicit_name=True)
+            == self.app_root_entry_sp
+        )
+        concrete = solver.eval(value, 1)[0]
+        self._stack_values[value] = concrete
+        return concrete
+
+    def record_addresses(self, engine, operation: str, addresses, size: int):
+        if not addresses:
+            self.accesses.add(
+                Access(operation, engine.ins_addr, size, unresolved="empty address set")
+            )
+        for address in addresses:
+            concrete = self.concretize(address)
+            reason = None
+            if concrete is None:
+                if engine.state.is_top(address):
+                    reason = "unknown address"
+                elif engine.state.is_stack_address(address):
+                    # An ISR can preempt at different stack depths. Its own stack
+                    # must not be bound to the main-entry SP.
+                    reason = "ISR stack address"
+                else:
+                    reason = "symbolic address"
+            self.accesses.add(
+                Access(operation, engine.ins_addr, size, concrete, reason)
+            )
+
+    def record_store(self, engine, addresses, size, data):
+        if not self.collect_stores or size != engine.arch.bytes:
+            return
+        if (
+            data.count() == 1
+            and 0 in data
+            and data[0]
+            and all(
+                isinstance(value, claripy.ast.BV) and value.size() == engine.arch.bits
+                for value in data[0]
+            )
+        ):
+            values = {self.concretize(value) for value in data[0]}
+        else:
+            # Fragments are not complete pointers; do not invent addresses by
+            # treating each fragment as an independent machine word.
+            values = {None}
         for address in addresses:
             if isinstance(address, int):
-                self.accesses.append(
-                    _RawAccess(operation, engine.ins_addr, size, address=address)
-                )
-            elif engine.state.is_top(address):
-                self.accesses.append(
-                    _RawAccess(
-                        operation, engine.ins_addr, size, unresolved="TOP address"
-                    )
-                )
-            elif engine.state.is_stack_address(address):
-                self.accesses.append(
-                    _RawAccess(
-                        operation,
-                        engine.ins_addr,
-                        size,
-                        stack_offset=engine.state.get_stack_offset(address),
-                    )
-                )
+                self.stores[address].update(values)
             elif not address.symbolic:
-                self.accesses.append(
-                    _RawAccess(
-                        operation, engine.ins_addr, size, address=address.concrete_value
-                    )
-                )
-            else:
-                self.accesses.append(
-                    _RawAccess(
-                        operation, engine.ins_addr, size, unresolved=str(address)
-                    )
-                )
+                self.stores[address.concrete_value].update(values)
 
 
 @contextlib.contextmanager
 def _record_rda_memory(recorder: _Recorder):
+    # RDA creates its own engines, including for recursive calls. Scope these
+    # hooks to a single synchronous analysis and always restore them.
     original_load = SimEngineRDVEX._load_core
     original_store = SimEngineRDVEX._store_core
     original_load_expr = SimEngineRDVEX._handle_expr_Load
+    statement_handlers = {
+        name: getattr(SimEngineRDVEX, name)
+        for name in ("_handle_stmt_Store", "_handle_stmt_StoreG", "_handle_stmt_LLSC")
+    }
 
     def load_core(engine, addresses, size, endness):
         address_list = list(addresses)
-        recorder._record_addresses(engine, "read", address_list, size)
+        recorder.record_addresses(engine, "read", address_list, size)
         return original_load(engine, address_list, size, endness)
 
     def store_core(engine, addresses, size, data, data_old=None, endness=None):
         address_list = list(addresses)
-        recorder._record_addresses(engine, "write", address_list, size)
-        values = tuple(value for _, value_set in data.items() for value in value_set)
-        for address in address_list:
-            if isinstance(address, int):
-                concrete = address
-            elif address.symbolic:
-                continue
-            else:
-                concrete = address.concrete_value
-            recorder.stores.append(_RawStore(engine.ins_addr, concrete, size, values))
+        recorder.record_addresses(engine, "write", address_list, size)
+        recorder.record_store(
+            engine,
+            address_list,
+            size,
+            data.merge(data_old) if data_old is not None else data,
+        )
         return original_store(
             engine, address_list, size, data, data_old=data_old, endness=endness
         )
@@ -283,8 +220,8 @@ def _record_rda_memory(recorder: _Recorder):
     def load_expr(engine, expr):
         addresses = engine._expr_bv(expr.addr)
         if not (addresses.count() == 1 and 0 in addresses):
-            recorder.accesses.append(
-                _RawAccess(
+            recorder.accesses.add(
+                Access(
                     "read",
                     engine.ins_addr,
                     expr.result_size(engine.tyenv) // engine.arch.byte_width,
@@ -293,40 +230,68 @@ def _record_rda_memory(recorder: _Recorder):
             )
         return original_load_expr(engine, expr)
 
+    def wrap_statement(original):
+        def statement(engine, stmt):
+            if engine._expr_bv(stmt.addr).count() != 1:
+                data = stmt.data if hasattr(stmt, "data") else stmt.storedata
+                bits = (
+                    engine.tyenv.sizeof(stmt.result)
+                    if data is None
+                    else data.result_size(engine.tyenv)
+                )
+                recorder.accesses.add(
+                    Access(
+                        "read" if data is None else "write",
+                        engine.ins_addr,
+                        bits // engine.arch.byte_width,
+                        unresolved="non-singleton address set",
+                    )
+                )
+            return original(engine, stmt)
+
+        return statement
+
     SimEngineRDVEX._load_core = load_core
     SimEngineRDVEX._store_core = store_core
     SimEngineRDVEX._handle_expr_Load = load_expr
+    for name, original in statement_handlers.items():
+        setattr(SimEngineRDVEX, name, wrap_statement(original))
     try:
         yield
     finally:
         SimEngineRDVEX._load_core = original_load
         SimEngineRDVEX._store_core = original_store
         SimEngineRDVEX._handle_expr_Load = original_load_expr
+        for name, original in statement_handlers.items():
+            setattr(SimEngineRDVEX, name, original)
 
 
 class MemoryAnalyzer:
+    """Collect accesses per flow; dependency and side-effect checks belong to the CPU.
+
+    Bind main's stack to its measured entry SP so exported stack pointers retain
+    their addresses in ISR analysis. ISR-local stacks and other unresolved points
+    remain explicit; CFG/RDA coverage and analysis bounds still limit completeness.
+    """
+
     def __init__(
         self,
         elf_path: Path,
         *,
-        # angr's RDA uses "stack_base" string
-        stack_base: int,
+        app_root_entry_sp: int,
         app_root: str = "main",
         init_depth: int = 4,
         isr_depth: int = 8,
         max_iterations: int = 8,
         preserved_registers: tuple[str, ...] = (),
     ):
-        self.elf_path = elf_path
+        self.app_root_entry_sp = app_root_entry_sp
         self.app_root = app_root
         self.init_depth = init_depth
         self.isr_depth = isr_depth
         self.max_iterations = max_iterations
         self.preserved_registers = preserved_registers
-        self.stack_base = stack_base
-
-        # Create a clean angr project
-        self.project = angr.Project(self.elf_path, auto_load_libs=False)
+        self.project = angr.Project(elf_path, auto_load_libs=False)
         self.cfg = self.project.analyses.CFGFast(
             normalize=True, data_references=True, resolve_indirect_jumps=True
         )
@@ -334,295 +299,63 @@ class MemoryAnalyzer:
             recover_variables=True, analyze_callsites=True
         )
 
-        self.binary_objects = _BinaryObjectIndex(self.project)
-
-    def _resolve_isr_targets(
-        self, isr_targets: tuple[ISRTarget, ...]
-    ) -> list[_ResolvedISRTarget]:
-        """Resolve ISR addresses to angr functions."""
-
-        targets = []
-
-        for target in isr_targets:
-            try:
-                function = utils.get_func_by_addr(self.cfg, target.address)
-            except ValueError as error:
-                raise ValueError(
-                    f"Cannot resolve modeled IRQ {target.irq}, source: {target.source:#x}, address: {target.address:#x}"
-                ) from error
-
-            targets.append(_ResolvedISRTarget(target.irq, target.address, function))
-
-        return targets
-
-    def _concretize_pointer(self, value: claripy.ast.BV) -> int | None:
-        if not value.symbolic:
-            return value.concrete_value
-        if self.stack_base is None or value.variables != frozenset({"stack_base"}):
-            return None
-        stack_var = claripy.BVS(
-            "stack_base", self.project.arch.bits, explicit_name=True
-        )
-        solver = claripy.Solver()
-        solver.add(stack_var == self.stack_base)
-        solutions = solver.eval(value, 2)
-        return solutions[0] if len(solutions) == 1 else None
-
-    def _collect_pointer_facts(
-        self, specs
-    ) -> tuple[dict[int, set[int]], list[PointerFact], list[_RawAccess]]:
-        recorder = _Recorder()
+    def _analyze_flow(self, function, depth, recorder, initializer=None):
+        handler = _FunctionHandler(depth, self.preserved_registers)
         with _record_rda_memory(recorder):
             self.project.analyses.ReachingDefinitions(
-                utils.get_func_by_addr(self.cfg, self.app_root),
-                function_handler=_PreservingFunctionHandler(
-                    self.init_depth, self.preserved_registers
-                ),
+                function,
+                function_handler=handler,
+                state_initializer=initializer,
                 track_tmps=True,
                 element_limit=30,
                 max_iterations=self.max_iterations,
                 merge_into_tops=False,
                 track_liveness=False,
             )
+        return FlowReport(
+            function.name, function.addr, recorder.accesses, handler.unresolved_calls
+        )
 
-        values_by_cell: dict[int, set[int]] = defaultdict(set)
-        facts: list[PointerFact] = []
-        for store in recorder.stores:
-            if store.size != self.project.arch.bytes:
-                continue
-            # Without type metadata, every pointer-shaped word stored in writable
-            # memory is a possible persistent pointer cell. This may add facts,
-            # but does not discard a pointer solely because DWARF is unavailable.
-            section = self.project.loader.find_section_containing(store.address)
-            region = specs.get_memory_region(store.address)
-            if not (
-                (section is not None and section.is_writable)
-                or (region is not None and region.transfer)
+    def analyze(self, specs, isr_targets: tuple[ISRTarget, ...]) -> AnalysisReport:
+        main_recorder = _Recorder(
+            collect_stores=True, app_root_entry_sp=self.app_root_entry_sp
+        )
+        main = self._analyze_flow(
+            utils.get_func_by_name(self.cfg, self.app_root),
+            self.init_depth,
+            main_recorder,
+        )
+        # Infer possible pointer cells from word stores to writable memory.
+        # Avoid initializing unrelated scalar state from main's stores; retain
+        # all alternatives (including unknowns) once a cell may hold a pointer.
+        facts = {}
+        for address, values in main_recorder.stores.items():
+            section = self.project.loader.find_section_containing(address)
+            region = specs.get_memory_region(address)
+            writable = (section is not None and section.is_writable) or (
+                region is not None and region.transfer
+            )
+            if writable and any(
+                value is None
+                or specs.get_memory_region(value) is not None
+                or self.project.loader.find_section_containing(value) is not None
+                for value in values
             ):
-                continue
-            cell = PointerCell(
-                self.binary_objects.name_for(store.address), store.address
-            )
-
-            for value in store.values:
-                concrete = self._concretize_pointer(value)
-                if concrete is None:
-                    continue
-
-                target = self._region_for(concrete, self.project.arch.bytes, specs)
-                if target.kind in ("invalid", "unknown"):
-                    continue
-
-                values_by_cell[cell.address].add(concrete)
-                facts.append(
-                    PointerFact(cell, concrete, target.name, store.instruction)
+                facts[address] = values
+        initializer = _PointerInitializer(self.project.arch, self.project, facts)
+        reports = {}
+        isrs = []
+        for target in isr_targets:
+            if target.address not in reports:
+                try:
+                    function = utils.get_func_by_addr(self.cfg, target.address)
+                except ValueError as error:
+                    raise ValueError(
+                        f"Cannot resolve modeled IRQ {target.irq} at {target.address:#x}"
+                    ) from error
+                reports[target.address] = self._analyze_flow(
+                    function, self.isr_depth, _Recorder(), initializer
                 )
-
-        unique = {
-            (fact.cell.address, fact.value, fact.instruction): fact for fact in facts
-        }
-        return (
-            values_by_cell,
-            sorted(
-                unique.values(),
-                key=lambda fact: (fact.cell.address, fact.value, fact.instruction or 0),
-            ),
-            recorder.accesses,
-        )
-
-    def _add_mmio_backers(self, facts: dict[int, set[int]]) -> None:
-        pages = {
-            value & ~0xFFF
-            for values in facts.values()
-            for value in values
-            if 0x40000000 <= value < 0x60000000 or value >= 0xE0000000
-        }
-        for page in sorted(pages):
-            if page in self.project.loader.memory:
-                continue
-            self.project.loader.memory.add_backer(page, bytes(0x1000))
-
-    def _unresolved_calls(self, root) -> list[tuple[str, int]]:
-        functions = {root, *root.functions_reachable()}
-        unresolved = set()
-        for function in functions:
-            for callsite in function.get_call_sites():
-                target = function.get_call_target(callsite)
-                target_function = (
-                    self.cfg.kb.functions.get(target) if target is not None else None
-                )
-                if (
-                    target is None
-                    or target_function is None
-                    or target_function.name == "UnresolvableCallTarget"
-                ):
-                    unresolved.add((function.name, callsite))
-        return sorted(unresolved, key=lambda item: (item[0], item[1]))
-
-    def _region_for(self, address: int, size: int, specs) -> MemoryObject:
-        obj = self.binary_objects.find_object(address)
-        if obj is not None:
-            return obj
-
-        modeled = specs.get_memory_region(address)
-        if modeled is not None:
-            offset = address - modeled.start
-            name = modeled.name if offset == 0 else f"{modeled.name}+{offset:#x}"
-            kind = "mmio" if isinstance(modeled, MMIOMemoryRegion) else "memory"
-            return MemoryObject(name, address, max(1, size), kind)
-
-        if address < 0x1000:
-            return MemoryObject("NULL-derived", 0, 0x1000, "invalid")
-
-        section = self.project.loader.find_section_containing(address)
-        if section is not None and section.is_writable:
-            return MemoryObject(
-                f"{section.name}@{address:#x}", address, max(1, size), "section"
-            )
-        return MemoryObject(f"memory@{address:#x}", address, max(1, size), "unknown")
-
-    def _build_accesses(
-        self, raw_accesses: list[_RawAccess], *, resolve_stack: bool
-    ) -> list[Access]:
-        accesses = set()
-        for raw in raw_accesses:
-            address = raw.address
-            if (
-                address is None
-                and resolve_stack
-                and raw.stack_offset is not None
-                and self.stack_base is not None
-            ):
-                address = (self.stack_base + raw.stack_offset) & (
-                    (1 << self.project.arch.bits) - 1
-                )
-
-            accesses.add(
-                Access(
-                    raw.operation,
-                    raw.instruction,
-                    raw.size,
-                    utils.get_func_name_by_inst(self.cfg, raw.instruction),
-                    address=address,
-                    stack_offset=raw.stack_offset,
-                    unresolved=raw.unresolved,
-                )
-            )
-
-        return sorted(
-            accesses,
-            key=lambda access: (
-                access.function,
-                access.instruction or 0,
-                access.operation,
-                access.address if access.address is not None else -1,
-                access.size,
-                access.unresolved or "",
-            ),
-        )
-
-    def _build_isr_report(
-        self, target: _ResolvedISRTarget, raw_accesses: list[_RawAccess], specs
-    ) -> ISRReport:
-        grouped: dict[tuple[str, int, int, str], dict[str, set]] = {}
-        effects = AccessEffects()
-        accesses = self._build_accesses(raw_accesses, resolve_stack=False)
-
-        for access in accesses:
-            if access.unresolved is not None:
-                continue
-            if access.stack_offset is not None:
-                continue
-            if access.address is None:
-                continue
-            effects = effects.union(
-                specs.get_access_effects(access.operation, access.address, access.size)
-            )
-            region = self._region_for(access.address, access.size, specs)
-            key = (region.name, region.start, region.size, region.kind)
-            entry = grouped.setdefault(
-                key, {"operations": set(), "addresses": set(), "functions": set()}
-            )
-            entry["operations"].add(access.operation)
-            entry["addresses"].add(access.address)
-            entry["functions"].add(access.function)
-
-        regions = [
-            RegionAccess(
-                name,
-                kind,
-                start,
-                size,
-                tuple(sorted(data["operations"])),
-                tuple(sorted(data["addresses"])),
-                tuple(sorted(data["functions"])),
-            )
-            for (name, start, size, kind), data in grouped.items()
-        ]
-        regions.sort(key=lambda region: (region.kind, region.start, region.name))
-        unresolved = [access for access in accesses if access.unresolved is not None]
-        unresolved_calls = self._unresolved_calls(target.function)
-
-        return ISRReport(
-            target.function.name,
-            target.irq,
-            target.address,
-            accesses,
-            regions,
-            unresolved,
-            unresolved_calls,
-            effects,
-        )
-
-    def analyze(
-        self, specs, isr_targets: tuple[ISRTarget, ...] | None
-    ) -> AnalysisReport:
-        if isr_targets is None:
-            raise ValueError(
-                "ISR targets must be provided by the CPU/core from an angr state; "
-                "isr_memory.py no longer discovers handlers from ELF vector symbols "
-                "or section names."
-            )
-
-        targets = self._resolve_isr_targets(isr_targets)
-        facts_by_cell, pointer_facts, app_root_raw_accesses = (
-            self._collect_pointer_facts(specs)
-        )
-        self._add_mmio_backers(facts_by_cell)
-        initializer = _PointerInitializer(
-            self.project.arch, self.project, facts_by_cell
-        )
-
-        accesses_by_address = {}
-        reports = []
-        for target in targets:
-            if target.address not in accesses_by_address:
-                recorder = _Recorder()
-                with _record_rda_memory(recorder):
-                    self.project.analyses.ReachingDefinitions(
-                        target.function,
-                        function_handler=_PreservingFunctionHandler(
-                            self.isr_depth, self.preserved_registers
-                        ),
-                        state_initializer=initializer,
-                        track_tmps=True,
-                        element_limit=30,
-                        max_iterations=self.max_iterations,
-                        merge_into_tops=False,
-                        track_liveness=False,
-                    )
-                accesses_by_address[target.address] = recorder.accesses
-            reports.append(
-                self._build_isr_report(
-                    target, accesses_by_address[target.address], specs
-                )
-            )
-
-        return AnalysisReport(
-            self.elf_path,
-            self.app_root,
-            pointer_facts,
-            self._build_accesses(app_root_raw_accesses, resolve_stack=True),
-            self._unresolved_calls(utils.get_func_by_addr(self.cfg, self.app_root)),
-            reports,
-        )
+            # Distinct IRQs remain distinct flows even when they share a handler.
+            isrs.append(reports[target.address])
+        return AnalysisReport(main, isrs)

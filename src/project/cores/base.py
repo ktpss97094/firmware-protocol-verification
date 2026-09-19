@@ -132,13 +132,13 @@ class BaseCPU(ABC):
         raise NotImplementedError("No return address can be retrieved")
 
     @staticmethod
-    def _add_unresolved_instruction(unresolved_inst_addrs, instruction, description):
+    def _add_unresolved_instruction(checkpoints, instruction, description):
         if instruction is None:
             raise ValueError(
                 f"Cannot create a checkpoint for {description}: "
                 "the analyzer did not report an instruction address"
             )
-        unresolved_inst_addrs.add(instruction)
+        checkpoints.add(instruction)
 
     @staticmethod
     def _modeled_irq_numbers(specs) -> tuple[int, ...]:
@@ -166,79 +166,37 @@ class BaseCPU(ABC):
 
     @cache
     def get_isr_memory_report(self, state, specs):
-        report = MemoryAnalyzer(
+        return MemoryAnalyzer(
             Path(state.project.filename),
-            stack_base=self._compute_initial_sp(state),
+            app_root_entry_sp=state.globals["app_root_entry_sp"],
             preserved_registers=self.MEMORY_PRESERVED_REGISTERS,
         ).analyze(specs, self.get_isr_targets(state, specs))
 
-        for access in report.app_root_accesses:
-            if access.unresolved is None:
-                continue
-            logger.info(
-                "Adding conservative checkpoint for unresolved main memory access | "
-                "function: %s | instruction: %#x | operation: %s | reason: %s",
-                access.function,
-                access.instruction or 0,
-                access.operation,
-                access.unresolved,
-            )
-        for function, callsite in report.app_root_unresolved_calls:
-            logger.info(
-                "Adding conservative checkpoint for unresolved main call | function: %s | callsite: %#x",
-                function,
-                callsite,
-            )
-        for isr in report.isrs:
-            for access in isr.unresolved_accesses:
-                logger.info(
-                    "Adding conservative checkpoint for unresolved ISR memory access | ISR: %s | "
-                    "function: %s | instruction: %#x | operation: %s | reason: %s",
-                    isr.isr,
-                    access.function,
-                    access.instruction or 0,
-                    access.operation,
-                    access.unresolved,
-                )
-            for function, callsite in isr.unresolved_calls:
-                logger.info(
-                    "Adding conservative checkpoint for unresolved ISR call | ISR: %s | "
-                    "function: %s | callsite: %#x",
-                    isr.isr,
-                    function,
-                    callsite,
-                )
-        return report
+    def _get_shared_access_regions_and_unresolved(self, state, specs):
+        """Select known cross-flow dependencies and checkpoint unresolved points.
 
-    def _get_shared_access_regions_and_unresolved(self, proj, state, specs):
+        Unresolved instructions are kept individually, as in the existing static
+        abstraction. This does not claim complete alias coverage for operations
+        whose addresses or function bodies the analysis cannot resolve.
+        """
         report = self.get_isr_memory_report(state, specs)
-        flow_accesses = [
-            report.app_root_accesses,
-            *(isr.accesses for isr in report.isrs),
-        ]
-
-        unresolved_inst_addrs = set()
-        for function, callsite in report.app_root_unresolved_calls:
-            self._add_unresolved_instruction(
-                unresolved_inst_addrs, callsite, f"unresolved call in {function}"
-            )
-        for isr in report.isrs:
-            for function, callsite in isr.unresolved_calls:
-                self._add_unresolved_instruction(
-                    unresolved_inst_addrs, callsite, f"unresolved call in {function}"
-                )
-
+        flows = [report.app_root, *report.isrs]
+        checkpoints = set()
         flow_entries = []
         flow_effects = []
-        for accesses in flow_accesses:
+        for flow in flows:
+            for instruction in flow.unresolved_calls:
+                self._add_unresolved_instruction(
+                    checkpoints, instruction, f"unresolved call in {flow.name}"
+                )
             entries = []
             effects = AccessEffects()
-            for access in accesses:
+            for access in flow.accesses:
                 if access.address is None or access.unresolved is not None:
                     self._add_unresolved_instruction(
-                        unresolved_inst_addrs,
+                        checkpoints,
                         access.instruction,
-                        f"unresolved {access.operation} in {access.function}",
+                        f"unresolved {access.operation} in {flow.name}",
                     )
                     continue
                 access_effects = specs.get_access_effects(
@@ -250,50 +208,38 @@ class BaseCPU(ABC):
             flow_effects.append(effects)
 
         shared = {"read": [], "write": []}
-        for flow_index, entries in enumerate(flow_entries):
-            other_effects = AccessEffects()
-            for other_index, effects in enumerate(flow_effects):
-                if other_index != flow_index:
-                    other_effects = other_effects.union(effects)
-
+        for index, entries in enumerate(flow_entries):
+            other_effects = AccessEffects().union(
+                *(effects for i, effects in enumerate(flow_effects) if i != index)
+            )
             for access, effects in entries:
                 if effects.conflicts_with(other_effects):
                     shared[access.operation].append((access.address, access.size))
-
         return {
             operation: _MemoryAccessRegions(regions)
             for operation, regions in shared.items()
-        }, unresolved_inst_addrs
+        }, checkpoints
 
     def get_static_interrupt_checkpoints(self, proj, state, cfg, specs):
-        # 1. shared variables (regions) R/W 之前
-        shared_regions, unresolved_inst_addrs = (
-            self._get_shared_access_regions_and_unresolved(proj, state, specs)
+        shared, unresolved = self._get_shared_access_regions_and_unresolved(
+            state, specs
         )
         ckpts = {
             BPConfig(
-                "mem_read",
+                f"mem_{operation}",
                 when=angr.BP_BEFORE,
                 condition=partial(
                     self._inspect_access_in_regions,
-                    operation="read",
-                    regions=shared_regions["read"],
+                    operation=operation,
+                    regions=regions,
                 ),
-            ),
-            BPConfig(
-                "mem_write",
-                when=angr.BP_BEFORE,
-                condition=partial(
-                    self._inspect_access_in_regions,
-                    operation="write",
-                    regions=shared_regions["write"],
-                ),
-            ),
-        }
-        for inst_addr in unresolved_inst_addrs:
-            ckpts.add(
-                BPConfig("instruction", when=angr.BP_BEFORE, instruction=inst_addr)
             )
+            for operation, regions in shared.items()
+        }
+        ckpts.update(
+            BPConfig("instruction", when=angr.BP_BEFORE, instruction=instruction)
+            for instruction in unresolved
+        )
 
         for node in cfg.graph.nodes():
             if node.block is None:
@@ -301,38 +247,22 @@ class BaseCPU(ABC):
 
             block = proj.factory.block(node.addr, size=node.size)
 
-            for stmt_idx, stmt in enumerate(block.vex.statements):
-                # 1. Memory Bus Event (Memory Barriers, Synchronization events) 之前
-                # e.g., ARM 的 DSB, DMB, ISB
-                if isinstance(stmt, pyvex.stmt.MBE):
-                    try:
-                        ins_addr = block.instruction_addrs[
-                            self._stmt_idx_to_inst_idx(block.vex, stmt_idx)
-                        ]
-                        ckpts.add(
-                            BPConfig(
-                                "instruction", when=angr.BP_BEFORE, instruction=ins_addr
-                            )
+            instruction = None
+            for stmt in block.vex.statements:
+                if isinstance(stmt, pyvex.stmt.IMark):
+                    instruction = stmt.addr + stmt.delta
+                elif isinstance(stmt, pyvex.stmt.MBE) or (
+                    isinstance(stmt, pyvex.stmt.LLSC) and stmt.storedata is not None
+                ):
+                    if instruction is None:
+                        raise ValueError(
+                            "Synchronization event has no instruction address"
                         )
-                    except IndexError:
-                        pass
-                # 2. Store-Conditional 之前
-                # e.g., ARM 的 STREX
-                elif isinstance(stmt, pyvex.stmt.LLSC):
-                    if hasattr(stmt, "storedata") and stmt.storedata != 0:
-                        try:
-                            ins_addr = block.instruction_addrs[
-                                self._stmt_idx_to_inst_idx(block.vex, stmt_idx)
-                            ]
-                            ckpts.add(
-                                BPConfig(
-                                    "instruction",
-                                    when=angr.BP_BEFORE,
-                                    instruction=ins_addr,
-                                )
-                            )
-                        except IndexError:
-                            pass
+                    ckpts.add(
+                        BPConfig(
+                            "instruction", when=angr.BP_BEFORE, instruction=instruction
+                        )
+                    )
 
         # 3. End Addresses 之前
         ckpts.update(self.get_end_addrs_ckpts(specs.END_ADDRS))
@@ -368,10 +298,6 @@ class BaseCPU(ABC):
     def _compute_dma_synchronize_instruction_checkpoints(self):
         pass
 
-    @abstractmethod
-    def _compute_initial_sp(self, state):
-        pass
-
     def get_end_addrs_ckpts(self, end_addrs):
         ckpts = set()
 
@@ -385,17 +311,6 @@ class BaseCPU(ABC):
     @cache
     def get_dma_synchronize_instruction_checkpoints(self):
         return self._compute_dma_synchronize_instruction_checkpoints()
-
-    def _stmt_idx_to_inst_idx(self, vex_block, stmt_idx):
-        """
-        將 VEX 的 statement index 轉回對應的 instruction index
-        """
-
-        curr_inst = 0
-        for i in range(stmt_idx + 1):
-            if isinstance(vex_block.statements[i], pyvex.stmt.IMark):
-                curr_inst += 1
-        return curr_inst - 1 if curr_inst > 0 else 0
 
     class AsynchronousEventManager(angr.ExplorationTechnique):
         def __init__(self, cpu, end_addrs):

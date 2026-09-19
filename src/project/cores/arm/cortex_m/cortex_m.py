@@ -137,36 +137,6 @@ class CortexM(ARM):
             raise ValueError(f"Vector entry for modeled IRQ {irq} is null")
         return ISRTarget(irq=irq, address=isr_addr, source=vector_addr)
 
-    def _compute_initial_sp(self, state):
-        """Get the initial main stack pointer (MSP) value.
-
-        Note:
-            initial_sp in angr's ArchARMCortexM is the default value.
-            It is actually determined by the firmware linker script, and will be placed at the beginning of the vector table.
-        """
-
-        return utils.eval_unique(
-            state, utils.load(state, self._get_vector_table_base(state)), "MSP"
-        )
-
-    def _compute_stack_size(self, state):
-        limit_symbols = ["__StackLimit", "_estack_limit", "__stack_limit", "_ebss"]
-
-        stack_limit = None
-        for sym_name in limit_symbols:
-            sym = state.project.loader.find_symbol(sym_name)
-            if sym is not None:
-                stack_limit = sym.rebased_addr
-                break
-
-        if stack_limit is not None:
-            return self._compute_initial_sp(state) - stack_limit
-        else:
-            logger.warning(
-                f"Cannot find stack limit symbol, using default stack size {state.arch.stack_size}"
-            )
-            return state.arch.stack_size
-
     def _sort_irqs(self, irqs):
         # 1. trigger condition 為 concrete true 的放到前面
         for _, _, trig_conds in irqs:

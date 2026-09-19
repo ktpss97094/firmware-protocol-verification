@@ -107,6 +107,41 @@ def read_renode_mmio(avatar_target: avatar2.Target, base_addr: int, size: int) -
     return bytes(data)
 
 
+def _run_to_snapshot(
+    target: avatar2.Target, proj: angr.Project, begin_addr: int
+) -> int:
+    """Capture main's entry SP, then stop at the requested snapshot address."""
+
+    main_symbol = proj.loader.find_symbol("main")
+    if main_symbol is None:
+        raise ValueError("Cannot capture main-entry SP: firmware has no main symbol")
+
+    def read_register(name):
+        value = target.read_register(name)
+        return int(value[0] if isinstance(value, (list, tuple)) else value)
+
+    def stop_at(address):
+        address = proj.arch.m_addr(address)
+        pc_name = target._arch.pc_name
+        if proj.arch.m_addr(read_register(pc_name)) == address:
+            return
+        breakpoint = target.set_breakpoint(address, temporary=True)
+        if breakpoint is None or breakpoint is False or breakpoint == -1:
+            raise RuntimeError(f"Unable to set breakpoint at {address:#x}")
+        target.cont()
+        target.wait()
+        stopped_at = proj.arch.m_addr(read_register(pc_name))
+        if stopped_at != address:
+            raise RuntimeError(
+                f"Target stopped at {stopped_at:#x}, expected {address:#x}"
+            )
+
+    stop_at(main_symbol.rebased_addr)
+    entry_sp = read_register(proj.arch.register_names[proj.arch.sp_offset])
+    stop_at(begin_addr)
+    return entry_sp
+
+
 def LoopSeer_bound_reached_handler(seer, state, bound_loops):
     """Bound k means restrict the number of back-edge traversals for the loop to at most k."""
 
@@ -230,9 +265,7 @@ def main(
             avatar_target.protocols.execution.console_command("monitor reset halt")
         except Exception as e:
             logger.warning(f"Failed to reset/halt GDB target: {e}")
-    avatar_target.set_breakpoint(spec_obj.BEGIN_ADDR)
-    avatar_target.cont()
-    avatar_target.wait()
+    app_root_entry_sp = _run_to_snapshot(avatar_target, proj, spec_obj.BEGIN_ADDR)
     logger.info("Hit the breakpoint. Extracting state")
 
     regs = {}
@@ -296,6 +329,7 @@ def main(
             angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
         },
     )
+    state.globals["app_root_entry_sp"] = app_root_entry_sp
     for opt in {
         angr.options.TRACK_MEMORY_ACTIONS,
         angr.options.TRACK_REGISTER_ACTIONS,

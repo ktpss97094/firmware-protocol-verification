@@ -109,23 +109,6 @@ def get_func_by_addr(cfg, address: int):
     return function
 
 
-def get_func_name_by_inst(cfg, instruction_address: int | None) -> str:
-    """Get the function name to which the instruction belongs.
-
-    Returns:
-        The function name if the instruction belongs to a function.
-        "<external>" if the instruction is not from actual CPU instructions.
-        "<unknown>" if the instruction does not belong to any known function.
-    """
-
-    if instruction_address is None:
-        return "<external>"
-
-    function = cfg.kb.functions.floor_func(instruction_address)
-
-    return function.name if function is not None else "<unknown>"
-
-
 def get_func_arg(state, prototype, index):
     """Get the value of a function argument at a specific index.
 
