@@ -1,0 +1,10 @@
+# Renode's STM32F429 GPIO peripheral does not implement the OTYPER register currently, so there is no open-drain setting
+
+mach create
+machine LoadPlatformDescription @platforms/cpus/stm32f429.repl
+# Renode's STM32F429 does not include DWT currently
+machine LoadPlatformDescriptionFromString "dwt: Miscellaneous.DWT @ sysbus 0xE0001000 { frequency: 72000000 }"
+
+sysbus LoadELF @../firmwares/stm32f429/build/protocols/I2C/master/Blocking_Mode/Hardware/stm32f4xx-hal-driver/firmware.elf
+
+machine StartGdbServer 3333 true

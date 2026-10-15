@@ -1,0 +1,21 @@
+[submodule "firmwares/efm32gg11/protocols/AT_Command/Stethogram"]
+	path = firmwares/efm32gg11/protocols/AT_Command/Stethogram
+	url = https://git.epl.tw/DavidPeng/Stethogram.git
+[submodule "firmwares/stm32f429/lib/stm32f4xx-hal-driver"]
+	path = firmwares/stm32f429/lib/stm32f4xx-hal-driver
+	url = https://github.com/STMicroelectronics/stm32f4xx-hal-driver.git
+[submodule "firmwares/stm32f429/lib/CMSIS_5"]
+	path = firmwares/stm32f429/lib/CMSIS_5
+	url = https://github.com/ARM-software/CMSIS_5.git
+[submodule "firmwares/stm32f429/lib/cmsis-device-f4"]
+	path = firmwares/stm32f429/lib/cmsis-device-f4
+	url = https://github.com/STMicroelectronics/cmsis-device-f4.git
+[submodule "firmwares/stm32f429/lib/stm32_bitbang_i2c"]
+	path = firmwares/stm32f429/lib/stm32_bitbang_i2c
+	url = https://github.com/ktpss97094/stm32_bitbang_i2c.git
+[submodule "evaluation/automated-firmware-verification-using-firmware-hardware-interaction-patterns"]
+	path = evaluation/automated-firmware-verification-using-firmware-hardware-interaction-patterns
+	url = https://github.com/ktpss97094/firmware-protocol-verification-baseline.git
+[submodule "firmwares/stm32f429/lib/libopencm3"]
+	path = firmwares/stm32f429/lib/libopencm3
+	url = https://github.com/libopencm3/libopencm3.git

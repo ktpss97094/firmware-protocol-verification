@@ -1,0 +1,294 @@
+from __future__ import annotations
+
+import copy
+import inspect
+import logging
+from collections import defaultdict
+from functools import cache
+
+import angr
+import claripy
+from angr.errors import SimMergeError
+
+from project import utils
+from project.analyses.memory import ISRTarget
+from project.cores.arm.arm import ARM
+from project.cores.arm.cortex_m.nvic import NVIC
+from project.types import BPConfig, CustomSimStatePlugin, EventForkHandler
+
+logger = logging.getLogger(__name__)
+
+
+class CortexM(ARM):
+    VTOR_ADDR = None
+    # Firmware ABI assumption for ordinary calls, not exception entry/return. angr can lose saved registers when VEX aligns a PUSH address: RDA cannot resolve the masked stack offset and skips the store.
+    MEMORY_PRESERVED_REGISTERS = (
+        "sp",
+        "r4",
+        "r5",
+        "r6",
+        "r7",
+        "r8",
+        "r9",
+        "r10",
+        "r11",
+    )
+
+    def setup(self, state, specs, simgr):
+        # ARMv7-M Architecture Reference Manual: Exception return behavior
+        # In fact, the processor intercepts the exception return when the write exception return value is being loaded into pc; however, this implementation, after the PC successfully writes the exception return value, it hooks the instruction that the pc is about to execute to trigger the exception return behavior
+        state.project.hook(
+            0xFFFFFFF1, self._ExcpReturnProcedure(cpu=self)
+        )  # return to handler mode, main stack, basic frame
+        state.project.hook(
+            0xFFFFFFF9, self._ExcpReturnProcedure(cpu=self)
+        )  # return to thread mode, main stack, basic frame
+        # TODO: when the return stack is the process stack pointer (PSP) and the frame type is "extended"
+
+        # Execute only after all hooks have completed
+        cfg = state.project.analyses.CFGFast(normalize=True, cross_references=True)
+
+        specs.set_handlers(cpu=self, state=state, cfg=cfg, specs=specs)
+        self.set_handlers(state=state, cfg=cfg, specs=specs)
+        simgr.use_technique(
+            self.AsynchronousEventManager(cpu=self, end_addrs=specs.END_ADDRS)
+        )
+
+        self.ExceptionGlobals.register_default("excp_globals")
+
+        return cfg
+
+    def thumb_mode(self, registers) -> bool:
+        return True
+
+    def excp_entry(self, state, int_no):
+        self._push_basic_frame(state)
+
+        state.excp_globals.priority_stack.append(state.excp_globals.current_priority)
+        state.excp_globals.current_priority = NVIC.get_irq_priority(state, int_no)
+
+        _, isr_addr = self._get_exception_handler_address(state, int_no)
+        state.regs.pc = isr_addr
+        state.regs.lr = 0xFFFFFFF1 if NVIC.is_in_handler_mode(state) else 0xFFFFFFF9
+
+    def _push_basic_frame(self, state):
+        # ARMv7-M Architecture Reference Manual B1.5.6 Exception entry behavior
+        self._push(
+            state, state.regs.iepsr
+        )  # TODO: push iepsr is imprecise; check the behavior in B1.5.6
+        self._push(state, state.regs.pc)
+        self._push(state, state.regs.lr)
+        self._push(state, state.regs.r12)
+        self._push(state, state.regs.r3)
+        self._push(state, state.regs.r2)
+        self._push(state, state.regs.r1)
+        self._push(state, state.regs.r0)
+
+    def _push(self, s, reg):
+        s.regs.sp -= 4
+        utils.store(s, s.regs.sp, reg)
+
+    def excp_exit(self, state):
+        # ARMv7-M Architecture Reference Manual B1.5.8 Exception return behavior
+        state.regs.r0 = self._pop(state)
+        state.regs.r1 = self._pop(state)
+        state.regs.r2 = self._pop(state)
+        state.regs.r3 = self._pop(state)
+        state.regs.r12 = self._pop(state)
+        state.regs.lr = self._pop(state)
+        pc = self._pop(state)
+        state.regs.iepsr = self._pop(state)
+
+        try:
+            state.excp_globals.current_priority = (
+                state.excp_globals.priority_stack.pop()
+            )
+        except IndexError:
+            raise Exception("Priority stack underflow")
+
+        return pc
+
+    def _pop(self, state):
+        reg = utils.load(state, state.regs.sp)
+        state.regs.sp += 4
+        return reg
+
+    def _get_vector_table_base(self, state):
+        if self.VTOR_ADDR is not None:
+            return (
+                utils.eval_unique(state, utils.load(state, self.VTOR_ADDR), "VTOR")
+                & 0xFFFFFF80
+            )
+        return 0x00000000
+
+    def _get_exception_handler_address(self, state, int_no: int):
+        excp_no = int_no + 16
+        vector_addr = self._get_vector_table_base(state) + (excp_no * state.arch.bytes)
+        isr_addr = utils.eval_unique(
+            state,
+            utils.load(state, vector_addr),
+            f"Vector table entry for IRQ {int_no}",
+        )
+        return vector_addr, isr_addr
+
+    def _compute_isr_target(self, state, irq: int) -> ISRTarget:
+        vector_addr, isr_addr = self._get_exception_handler_address(state, irq)
+        if isr_addr == 0:
+            raise ValueError(f"Vector entry for modeled IRQ {irq} is null")
+        return ISRTarget(irq=irq, address=isr_addr, source=vector_addr)
+
+    def _sort_irqs(self, irqs):
+        # 1. Place the trigger conditions that evaluate to true at the beginning
+        for _, _, trig_conds in irqs:
+            concrete_trues = []
+            not_concrete_trues = []
+
+            for trig_cond in trig_conds:
+                if trig_cond.is_true():
+                    concrete_trues.append(trig_cond)
+                else:
+                    not_concrete_trues.append(trig_cond)
+
+            trig_conds[:] = concrete_trues + not_concrete_trues
+
+        # Sort by priority and IRQ number
+        irqs.sort(key=lambda x: (x[0], x[1]))
+
+    class _ExcpReturnProcedure(angr.SimProcedure):
+        NO_RET = True
+
+        def __init__(self, cpu, **kwargs):
+            super().__init__(**kwargs)
+            self.cpu = cpu
+
+        def run(self):
+            # TODO: If an EXC_RETURN value is loaded into the PC when in Thread mode, or from the vector table, or by any other instruction, the value is treated as an address, not as a special value. The 0xFXXXXXXX address range, that includes all possible EXC_RETURN values, has Execute Never (XN) permissions, and loading this value causes a MemManage exception, or an INVSTATE UsageFault exception, or escalation of the exception to a HardFault.
+            pc = self.cpu.excp_exit(self.state)
+
+            self.successors.add_successor(self.state, pc, claripy.true(), "Ijk_Boring")
+
+    def get_static_interrupt_checkpoints(self, proj, state, cfg, specs):
+        ckpts = super().get_static_interrupt_checkpoints(proj, state, cfg, specs)
+
+        ckpts.add(BPConfig("instruction", when=angr.BP_AFTER, instruction=0xFFFFFFF1))
+        ckpts.add(BPConfig("instruction", when=angr.BP_AFTER, instruction=0xFFFFFFF9))
+
+        return ckpts
+
+    def _compute_dma_synchronize_instruction_checkpoints(self):
+        return set()
+
+    class _InterruptHandler(EventForkHandler):
+        def __init__(self, cpu, state, cfg, specs):
+            self.cpu = cpu
+            self.specs = specs
+
+            for ckpt in self.get_checkpoints(state, cfg, specs):
+                ckpt.apply_to(state, handler=self)
+
+        @cache
+        def get_checkpoints(self, state, cfg, specs):
+            ckpts = set()
+
+            ckpts.update(
+                self.cpu.get_static_interrupt_checkpoints(
+                    proj=state.project, state=state, cfg=cfg, specs=specs
+                )
+            )
+
+            # DMA
+            for dma in specs.get_DMAs():
+                ckpts.update(dma.dma_handler.get_checkpoints())
+
+            return ckpts
+
+        def get_eligible_events(self, state):
+            # Collect all pending IRQs from peripherals
+            pending_irqs = defaultdict(list)  # {irq: trigger conditions, ...}
+            for region in self.specs.get_MMIOMemoryRegions():
+                for trig_cond, kwargs in region.get_pending_irqs(state):
+                    irq = kwargs["irq"]
+                    pending_irqs[irq].append(trig_cond)
+
+            # Exclude IRQs with a priority lower than the current one, and sort the IRQs by priority
+            eligible_irqs = []
+            for irq, trig_conds in pending_irqs.items():
+                prio = NVIC.get_irq_priority(state, irq)
+                if prio < state.excp_globals.current_priority:
+                    eligible_irqs.append((prio, irq, trig_conds))
+            self.cpu._sort_irqs(eligible_irqs)
+            return [
+                (trig_cond, {"irq": irq})
+                for _, irq, trig_conds in eligible_irqs
+                for trig_cond in trig_conds
+            ]
+
+        def trigger_event(self, state, irq):
+            self.cpu.excp_entry(state, irq)
+
+    class ExceptionGlobals(CustomSimStatePlugin):
+        current_priority: int
+        priority_stack: list[int]
+
+        def __init__(self, current_priority=None, priority_stack=None):
+            super().__init__()
+
+            self.current_priority = (
+                current_priority if current_priority is not None else 256
+            )
+            self.priority_stack = priority_stack if priority_stack is not None else []
+
+        def copy(self, memo):
+            o = super().copy(memo)
+
+            for field in inspect.get_annotations(type(self)):
+                setattr(o, field, copy.copy(getattr(self, field)))
+
+            return o
+
+        def _merge_key(self):
+            return (self.current_priority, tuple(self.priority_stack))
+
+        def merge(self, others, merge_conditions, common_ancestor=None):
+            del common_ancestor
+
+            if any(
+                self.current_priority != other.current_priority
+                or self.priority_stack != other.priority_stack
+                for other in others
+            ):
+                raise SimMergeError(
+                    "Cannot merge Exception globals (current_priority or priority_stack)"
+                )
+
+            return False
+
+    def set_handlers(self, state, cfg, specs):
+        self.interrupt_handler = CortexM._InterruptHandler(
+            cpu=self, state=state, cfg=cfg, specs=specs
+        )
+
+
+class ARMv7M(CortexM):
+    VTOR_ADDR = 0xE000ED08
+
+    def __init__(self, has_fpu=False):
+        self.has_fpu = has_fpu
+
+    def _push_extended_frame(self, state):
+        # TODO: Extended frame type
+        raise NotImplementedError("Extended Frame is not implemented yet")
+
+    @classmethod
+    def translate_avatar_registers(cls, regs):
+        # ARMv7-M Architecture Reference Manual: The special-purpose Program Status Registers, xPSR
+        # xpsr is split into multiple registers in angr
+        regs["flags"] = regs["xpsr"] & 0xF0000000
+        regs["qflag32"] = (regs["xpsr"] >> 27) & 1
+        regs["iepsr"] = (regs["xpsr"] & 0x1FF) | (regs["xpsr"] & (1 << 24))
+        regs["itstate"] = (((regs["xpsr"] >> 10) & 0x3F) << 2) | (
+            (regs["xpsr"] >> 25) & 0x3
+        )
+        regs.pop("xpsr", None)
+
+        return regs
